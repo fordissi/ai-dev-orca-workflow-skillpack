@@ -136,3 +136,47 @@ test("repository routing cases all conform to the registry", async () => {
   assert.equal(cases.cases.length, 10);
   assert.deepEqual(validateRoutingCases(cases, registry), []);
 });
+
+const requiredContractFields = [
+  "contract_version", "task_id", "authoritative_owner", "implementation_role", "implementation_slot", "minimum_tier",
+  "review_role", "review_slot", "actual_provider", "actual_model", "actual_model_family", "resource_checked_at",
+  "implementer_provider", "implementer_model_family", "reviewer_provider", "reviewer_model_family",
+  "permission_ceiling", "max_repair_attempts", "failed_repair_count",
+  "stop_conditions", "TASK_RESULT", "RESOURCE_STATUS",
+];
+
+// Added beyond the plan: the dispatch command is how the permission ceiling is
+// actually enforced, and the routing evidence is what makes a selection
+// auditable without storing quota payloads.
+const requiredResolutionFields = [
+  "dispatch_command", "capability_slot", "selected_candidate", "registry_version",
+  "resource_overlay_applied", "fallback_used", "selection_reason",
+];
+
+test("execution contract template exposes every required field", async () => {
+  const contract = await readFile("templates/ROUTER_EXECUTION_CONTRACT_TEMPLATE.md", "utf8");
+  assert.deepEqual(requiredContractFields.filter((field) => !contract.includes(field)), []);
+  assert.deepEqual(requiredResolutionFields.filter((field) => !contract.includes(field)), []);
+});
+
+test("contract template separates strategic contract from operational resolution", async () => {
+  const contract = await readFile("templates/ROUTER_EXECUTION_CONTRACT_TEMPLATE.md", "utf8");
+  assert.match(contract, /STRATEGIC CONTRACT/);
+  assert.match(contract, /OPERATIONAL RESOLUTION/);
+  // The strategic half must not depend on filesystem, registry or quota visibility.
+  assert.match(contract, /MUST NOT DEPEND ON/);
+  assert.match(contract, /unresolved/);
+  for (const code of ["CONFIG_INVALID", "ROUTING_UNAVAILABLE", "POLICY_BLOCKED", "RESOURCE_BLOCKED", "PERMISSION_BLOCKED"]) {
+    assert.ok(contract.includes(code), `contract template is missing blocked reason code ${code}`);
+  }
+});
+
+test("handoff and session templates carry their required sections", async () => {
+  const handoff = await readFile("templates/CURRENT_PROJECT_HANDOFF_TEMPLATE.md", "utf8");
+  const session = await readFile("templates/NEW_SESSION_START_TEMPLATE.txt", "utf8");
+  for (const field of ["active_contract", "resource_snapshot", "next_gate", "things_not_to_redo"]) {
+    assert.ok(handoff.includes(field), `handoff template is missing ${field}`);
+  }
+  assert.match(session, /do not guess quota/);
+  assert.ok(session.includes("production_access: false"));
+});

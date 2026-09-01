@@ -1,4 +1,64 @@
-請依序載入 Skill/Workflow、Model Routing、Resource Routing、Current Project Handoff。
-第一輪只 verify repo/HEAD/working tree、閱讀 authoritative docs、回 Current State / Next Gate / Blockers / Contracts，並提出 Orca execution plan。
-不要直接 implementation。
-Execution plan 必須包含 capability slot、concurrency mode、Router/worker、reasoning、quota consideration、permissions、worktree、allowed/prohibited changes、acceptance criteria、reviewer、stop conditions。
+NEW SESSION START — Orca multi-agent workflow
+
+1. READ ORDER (authoritative, in this order)
+   SKILL -> WORKFLOW_POLICY -> CONCURRENCY_POLICY -> MODEL_ROUTING_POLICY
+        -> MODEL_REGISTRY -> RESOURCE_AWARE_ROUTING -> OFFICIAL_COMMANDS
+        -> Current Project Handoff
+
+   Markdown policy is normative. The validator under scripts/ is only a
+   conformance checker. If they disagree, correct the code, not the policy.
+
+2. VERIFY BEFORE ANYTHING ELSE (operational router only)
+   - repo, worktree selector and branch match the handoff
+   - actual HEAD, and whether the working tree is clean
+   - the active contract and its authoritative_owner
+   - which gate is next
+
+   A strategic router MUST NOT DEPEND ON being able to run these checks. If you
+   cannot verify state yourself, say so and request the verification rather
+   than assuming it passed.
+
+3. REPORT FIRST, ACT SECOND
+   Answer Current State / Next Gate / Remaining Blockers / Authoritative
+   Contracts before dispatching any implementation. Do not dispatch before the
+   authoritative_owner is confirmed.
+
+4. CONCURRENCY IS EXPLICIT
+   Default is SEQUENTIAL. State the mode you are using and why. Name exactly
+   one integration owner. Same implementation chain stays in one worktree; a
+   fresh session is not a fresh worktree.
+
+5. MINIMUM PERMISSIONS
+   discovery and review: read-only
+   implementation: workspace write only
+   network: off unless the task requires it
+   production_access: false
+
+   Express the permission ceiling as the literal dispatch command with the
+   sandbox and approval flags passed explicitly. A prose declaration is not
+   enough: the worker's local CLI configuration silently overrides defaults
+   you did not state on the command line.
+
+6. QUOTA
+   do not guess quota. If a reliable usage figure cannot be read, the state is
+   UNKNOWN. Never derive a state from an invented percentage threshold.
+   UNKNOWN is neither punished nor rewarded: registry order decides.
+
+   Never store raw quota payloads, provider credentials, account identifiers,
+   or provider conversation IDs in any artifact.
+
+7. ROLE BOUNDARY
+   Strategic router: task decomposition, six-dimension classification, role /
+   slot / minimum_tier, concurrency mode, gate decisions. Plain text only.
+   Operational router: verification, registry lookup, resource overlay,
+   candidate selection, dispatch_command construction.
+
+   Capability requirements are strategic. Concrete candidate selection is
+   operational. dispatch_command stays unresolved until the operational router
+   fills it in.
+
+8. STOPPING
+   BLOCKED must carry a reason code: CONFIG_INVALID, ROUTING_UNAVAILABLE,
+   POLICY_BLOCKED, RESOURCE_BLOCKED, PERMISSION_BLOCKED. Never lower
+   minimum_tier, drop independent-review disjointness, or raise permissions to
+   get past a block. Escalate or return to the human gate instead.
