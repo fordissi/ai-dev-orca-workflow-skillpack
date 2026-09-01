@@ -13,6 +13,34 @@ OpenUsage 是 provider quota aggregation 的 reference implementation。其 nati
 
 找出 Codex / Claude / Antigravity 在 Windows 上可安全 machine-read 的 quota snapshot。
 
+## 現況（2026-09-01 調查結果）
+
+問題的範圍已經縮小，不再是「要不要自己寫 provider adapter」：
+
+| Provider | 現況 |
+|---|---|
+| Claude | 解法已存在於 Orca 內部 |
+| Codex | 解法已存在於 Orca 內部 |
+| Antigravity | Orca 已有 proxy 基礎，但 integration 尚不完整 |
+
+**真正缺的是 read-only 的 CLI / IPC 暴露介面。** Orca 內部已持有 normalize 後的
+rate-limit 狀態，但沒有對外的唯讀讀取路徑，因此 `RESOURCE_STATE` 目前只能靠
+`USER_STATEMENT` 或維持 `UNKNOWN`。
+
+期望的上游介面（尚不存在）：
+
+```bash
+orca rate-limits --json
+```
+
+或把 rate limit 併入既有的 `orca status --json`。Feature request 的一句話說法是
+**Expose normalized RateLimitService state as read-only CLI JSON.**
+
+這條路徑之所以是正確方向，是因為它符合 `policies/RESOURCE_AWARE_ROUTING.md` 對
+`ORCA_RUNTIME` 這個 HIGH trust source 的條件：`credential_access: NONE`、
+`persistence: MEMORY_ONLY`。**在該介面出現之前，不得以需要 credential 的手段
+取得 quota 並冒充 HIGH trust。** 自行刮取或代理登入狀態都不符合這個條件。
+
 ## Steps
 
 1. 先查官方文件與本機 CLI 的 usage/status 命令。

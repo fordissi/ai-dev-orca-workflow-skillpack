@@ -278,3 +278,25 @@ test("entry point link checker rejects broken repository links", async () => {
   assert.ok(findings.length > 0, "a broken repository-relative link must be reported");
   assert.match(findings.join("\n"), /broken link/);
 });
+
+test("resource state requires a declared source and refuses sourceless confidence", () => {
+  const base = { checked_at: null, available: true, source: "ORCA_RUNTIME" };
+
+  assert.deepEqual(validateResourceState({ providers: { codex: { ...base, state: "GREEN" } } }), []);
+
+  assert.match(
+    validateResourceState({ providers: { codex: { checked_at: null, available: true, state: "GREEN" } } }).join("\n"),
+    /source: expected one of/,
+  );
+
+  // A snapshot with no trustworthy source may not claim a confident state.
+  assert.match(
+    validateResourceState({ providers: { codex: { ...base, source: "UNKNOWN", state: "GREEN" } } }).join("\n"),
+    /source UNKNOWN cannot carry state/,
+  );
+
+  assert.deepEqual(
+    validateResourceState({ providers: { codex: { ...base, source: "USER_STATEMENT", state: "YELLOW" } } }),
+    [],
+  );
+});

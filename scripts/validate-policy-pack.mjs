@@ -17,6 +17,10 @@ import { pathToFileURL } from "node:url";
 import { parse as parseYaml } from "yaml";
 
 const RESOURCE_STATES = ["GREEN", "YELLOW", "RED", "UNKNOWN"];
+
+// A snapshot's authority is inherited from its source; the snapshot itself is
+// only an overlay/cache. Trust levels live in RESOURCE_AWARE_ROUTING.md.
+const RESOURCE_SOURCES = ["ORCA_RUNTIME", "USER_STATEMENT", "UNKNOWN"];
 const CANDIDATE_STATUSES = ["stable", "experimental"];
 const REQUIRED_CANDIDATE_FIELDS = [
   "provider",
@@ -181,6 +185,13 @@ export function validateResourceState(state, options = {}) {
       findings.push(`${at}.checked_at: expected a timestamp or null`);
     } else if (entry.checked_at !== null && !isNonEmptyString(entry.checked_at)) {
       findings.push(`${at}.checked_at: expected an ISO timestamp string or null`);
+    }
+
+    if (!RESOURCE_SOURCES.includes(entry.source)) {
+      findings.push(`${at}.source: expected one of ${RESOURCE_SOURCES.join("|")}`);
+    } else if (entry.source === "UNKNOWN" && entry.state !== "UNKNOWN") {
+      // No trustworthy source cannot produce a confident state. That is a guess.
+      findings.push(`${at}: source UNKNOWN cannot carry state ${JSON.stringify(entry.state)}`);
     }
 
     if (typeof entry.available === "boolean") {

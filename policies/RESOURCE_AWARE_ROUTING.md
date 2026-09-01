@@ -7,6 +7,55 @@ Status: normative
 
 **Quota 是 routing signal，不是 architecture authority。** 它只能在已達到相同 `minimum_tier` 的候選之間重排順序，永遠不能降低能力門檻、改變架構決策，或繞過 human gate。Slot 與 candidate 演算法屬於 [`MODEL_ROUTING_POLICY.md`](MODEL_ROUTING_POLICY.md)。
 
+## RESOURCE_STATE 是 overlay/cache，不是 source of truth
+
+```text
+Provider / runtime quota source
+        ↓  讀取並 normalize
+RESOURCE_STATE snapshot          ← overlay / cache
+        ↓  套用
+Operational Router
+```
+
+**Router 不生產 quota，只消費它。** `RESOURCE_STATE` 是某個上游來源在某個時間點的
+normalize 後快照，它的權威性完全繼承自 `source`——快照本身不是權威。
+
+因此：
+
+- 沒有上游來源時，狀態是 `UNKNOWN`，**不是**「router 認為應該是的值」。
+- 快照過期時重新讀取上游，而不是沿用或外推。
+- 快照內容可以被丟棄重建；任何**只存在於快照中**的資訊都是錯誤的設計。
+
+## Source types 與 trust
+
+每筆狀態必須宣告 `source`，只允許下列值：
+
+```yaml
+resource_sources:
+  ORCA_RUNTIME:
+    trust: HIGH
+    credential_access: NONE
+    persistence: MEMORY_ONLY
+  USER_STATEMENT:
+    trust: MEDIUM
+  UNKNOWN:
+    trust: NONE
+```
+
+| Source | Trust | 說明 |
+|---|---|---|
+| `ORCA_RUNTIME` | HIGH | 由 Orca runtime 提供的 normalize 後狀態。不需要 credential access；只存在於記憶體，不落地。 |
+| `USER_STATEMENT` | MEDIUM | 人工告知，例如「Codex 五小時窗剩約 10%」。可信但無法自動更新，過期後降為 `UNKNOWN`。 |
+| `UNKNOWN` | NONE | 沒有可信來源。 |
+
+**`source: UNKNOWN` 時 `state` 必須是 `UNKNOWN`。** 沒有來源卻宣告 `GREEN` /
+`YELLOW` / `RED`，就是在猜。
+
+`credential_access: NONE` 與 `persistence: MEMORY_ONLY` 是 `ORCA_RUNTIME` 之所以
+可信的原因，也是它的邊界：這條路徑不接觸 credential、不落盤，因此不會把敏感資料
+帶進 artifact。任何需要 credential 才能取得的 quota 來源，在通過獨立審查前
+不得列為 HIGH trust。
+
 ## Never guess
 
 讀不到可靠 usage 時，state 一律為 `UNKNOWN`。**禁止估算、禁止從百分比自行推導 state。**

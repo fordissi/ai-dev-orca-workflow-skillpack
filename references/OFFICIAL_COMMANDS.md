@@ -88,6 +88,25 @@ orca worktree set --worktree active --comment "<text>" --workspace-status in-pro
 所在的 worktree 執行會連自己一起停止。Router 無法只收掉單一 worker terminal；
 需要清理時交由人在 Orca UI 關閉該 tab。
 
+**Orca 目前沒有 read-only 的 quota / rate-limit CLI 介面。** `orca status --json`
+回報 app、runtime、capabilities，但不含 normalize 後的 rate-limit 狀態。因此
+`RESOURCE_STATE` 目前只能由 `USER_STATEMENT` 或 `UNKNOWN` 填充，無法自動取得
+`ORCA_RUNTIME` 這個 HIGH trust 來源。
+
+理想的上游介面是把 normalize 後的 RateLimitService 狀態以唯讀 JSON 暴露出來，例如：
+
+```bash
+orca rate-limits --json          # 尚不存在，僅為期望介面
+orca status --json               # 或把 rate limit 併入現有輸出
+```
+
+這是值得提出的 upstream feature request：**Expose normalized RateLimitService
+state as read-only CLI JSON.** 它符合 `RESOURCE_AWARE_ROUTING.md` 對
+`ORCA_RUNTIME` 的信任條件——不需要 credential access、只需記憶體內狀態——
+因此能在不觸碰 credential 的前提下讓 routing 拿到可信 quota。
+
+在該介面存在之前，**不得**以任何需要 credential 的方式取得 quota 來冒充 HIGH trust。
+
 Structured DAG / stateful coordination：見
 https://github.com/stablyai/orca/blob/main/skill-guides/orchestration.md
 
