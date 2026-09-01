@@ -44,9 +44,11 @@ SKILL → WORKFLOW_POLICY → CONCURRENCY_POLICY → MODEL_ROUTING_POLICY
 
 Reviewer 預設 read-only，並且**必須直接檢查 filesystem、`git diff` 與測試輸出**，不得僅依 worker 的完成摘要作結論。
 
-### Strategic router 不假設有檔案系統存取權
+### Strategic router 不得依賴檔案系統
 
-Strategic router 可能是**沒有檔案系統、無法執行命令的介面**（例如網頁版對話）。整條流程必須在這個前提下仍然成立。
+**Strategic router MUST NOT DEPEND ON direct filesystem access, local registry visibility, or live quota visibility.**
+
+這是依賴限制，不是能力限制。Strategic router 若剛好能讀檔（例如它本身是本機 agent），可以讀；但整條流程的正確性**不得建立在它讀得到之上**。它可能是網頁版對話這類沒有檔案系統、無法執行命令的介面，流程在該前提下仍須成立。
 
 因此職責如此切分：
 
@@ -60,11 +62,13 @@ Strategic router 可能是**沒有檔案系統、無法執行命令的介面**�
 | validation commands 與 acceptance criteria | 組出逐字 dispatch command 與 permission 旗標 |
 | human gate 判定與停止條件 | 建立/重用 worktree 與 terminal、收斂結果 |
 
-**Candidate 選擇屬於 operational router，不屬於 strategic router。** Strategic router 指定的是能力需求（slot 與 `minimum_tier`），不是具體模型；它讀不到 registry 與即時 resource state，任何由它直接指名模型的行為都是猜測。
+**Candidate 選擇屬於 operational router，不屬於 strategic router。** Strategic router 指定的是能力需求（`role`、`slot`、`minimum_tier`），不是具體模型。它不得依賴 registry 與即時 resource state 的可見性，因此直接指名模型即是猜測。
+
+同理，`dispatch_command` 在 strategic contract 中維持 **unresolved**，由 operational router 在解析候選後填入。
 
 Operational router 回傳 `BLOCKED` 時，交還給 strategic router 或 human 重新決策，不得自行放寬 `minimum_tier` 或 independent review 的 disjointness。
 
-Strategic router 也不執行 lifecycle 的 `verify` 階段——它無法確認 HEAD 或 working tree。該階段一律由 operational router 執行並回報。
+Strategic router 也不執行 lifecycle 的 `verify` 階段——它不得依賴自己能確認 HEAD 或 working tree。該階段一律由 operational router 執行並回報。
 
 ## Lifecycle
 
@@ -145,3 +149,16 @@ Worker 結束時回傳 `TASK_RESULT` 與 `RESOURCE_STATUS` 兩段結構化 foote
 ## Security 與資料邊界
 
 本 repository 是可重用的政策包，不存放 project secrets、個人資料或客戶資料。所有 command automation 在發布前以官方 upstream 文件與本機 `--help` 重新驗證；兩者不一致時以實際安裝版本為執行依據並記錄差異。
+
+### Public repository commit policy
+
+預計公開發布的 repository，其 Git history 本身就是公開產物。Commit message 與 trailer 一律遵守：
+
+- **不放 private AI session URL。**
+- **不放本機 harness 或 session identifier。**
+- **不放 provider conversation ID。**
+- `Co-Authored-By` 為 optional，不是必要項。
+- **不得僅為了 AI attribution 而改寫本來有效的歷史。**
+- Commit message 保留 technical rationale、scope 與 verification 即可。
+
+工具或 harness 的預設 trailer 慣例若與本節衝突，以本節為準：attribution 的價值低於公開歷史中不出現營運資料。
