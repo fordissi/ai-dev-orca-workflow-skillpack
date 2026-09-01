@@ -3,8 +3,13 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { parse } from "yaml";
 import {
+  classifyCommand,
+  classifyExecutionState,
+  classifyPermissionRequest,
+  normalizePermissionCeiling,
   scanText,
   selectCandidate,
+  validateExecutionCases,
   validateHistory,
   validateMarkdownLinks,
   validateRegistry,
@@ -12,6 +17,10 @@ import {
   validateRepository,
   validateRoutingCases,
 } from "../scripts/validate-policy-pack.mjs";
+
+// Execution classifications also carry a human-readable reason. The tests
+// assert on the decision, not on its wording.
+const pick = ({ state, action, code }) => ({ state, action, code });
 
 const registry = {
   capability_tier_order: ["CHEAP", "DEFAULT", "STRONG", "DEEP"],
@@ -675,4 +684,428 @@ test("per-cycle return and durable handoff stay distinguishable", async () => {
   assert.ok(ret.includes("HANDOFF_UPDATE"), "the return has no field for naming the updated handoff sections");
   assert.ok(handoff.includes("HANDOFF_UPDATE"), "the handoff does not explain how updates are reported back");
   assert.match(handoff, /不得互相取代/);
+});
+
+/* ------------------------------------------------------------------------ *
+ * Operational execution lifecycle
+ *
+ * The three failures these cover are all misclassifications: a slow reviewer
+ * read as blocked, a read-only ceiling read as "no shell at all", and an
+ * exhausted turn budget read as a routing failure.
+ * ------------------------------------------------------------------------ */
+
+test("a poll window is a router heartbeat, never a worker deadline", () => {
+  // The window expiring with new output is the ordinary case.
+  assert.deepEqual(
+    pick(classifyExecutionState({ session_active: true, progress_observed: true, elapsed_ms: 60_000, since_progress_ms: 0 })),
+    { state: "ACTIVE", action: "CONTINUE", code: null },
+  );
+
+  // Total runtime carries no weight of its own: an hour of work with progress
+  // a minute ago is the same decision as a minute of work.
+  for (const elapsed of [60_000, 3_600_000, 86_400_000]) {
+    assert.deepEqual(
+      pick(classifyExecutionState({ session_active: true, progress_observed: false, elapsed_ms: elapsed, since_progress_ms: 60_000 })),
+      { state: "QUIET", action: "CONTINUE", code: null },
+      `total elapsed ${elapsed}ms must not change the decision`,
+    );
+  }
+});
+
+test("only silence since the last progress can produce a stall", () => {
+  const silent = { session_active: true, progress_observed: false, elapsed_ms: 1_200_000, since_progress_ms: 1_200_000 };
+
+  assert.equal(classifyExecutionState(silent, { stallThresholdMs: 900_000 }).state, "STALLED");
+  assert.equal(classifyExecutionState(silent, { stallThresholdMs: 900_000 }).action, "STALL_INTERVENTION");
+
+  // Deep reasoning raises the threshold rather than being declared stuck at an
+  // implementation task's cadence.
+  assert.equal(classifyExecutionState(silent, { stallThresholdMs: 2_400_000 }).state, "QUIET");
+
+  // A stall buys an inspection. It is never a permission or routing verdict.
+  const stalled = classifyExecutionState(silent, { stallThresholdMs: 900_000 });
+  assert.equal(stalled.code, null);
+  assert.notEqual(stalled.state, "PERMISSION_BLOCKED");
+  assert.notEqual(stalled.state, "ROUTING_UNAVAILABLE");
+});
+
+test("a hard ceiling asks a human rather than declaring a failure", () => {
+  const result = classifyExecutionState(
+    { session_active: true, progress_observed: true, elapsed_ms: 7_200_000, since_progress_ms: 1_000 },
+    { hardCeilingMs: 7_200_000 },
+  );
+  assert.deepEqual(pick(result), { state: "HARD_EXECUTION_CEILING", action: "HUMAN_GATE", code: null });
+
+  // Absent a declared ceiling there is no ceiling to hit.
+  assert.equal(
+    classifyExecutionState({ session_active: true, progress_observed: true, elapsed_ms: 86_400_000, since_progress_ms: 1_000 }).state,
+    "ACTIVE",
+  );
+});
+
+test("an exhausted turn budget resumes the chain instead of failing it", () => {
+  const exhausted = (continuationCount) => ({
+    session_active: false,
+    progress_observed: false,
+    elapsed_ms: 900_000,
+    since_progress_ms: 5_000,
+    continuation_count: continuationCount,
+    exit: { kind: "max_turns" },
+  });
+
+  for (const spent of [0, 1]) {
+    const result = classifyExecutionState(exhausted(spent));
+    assert.deepEqual(pick(result), { state: "MAX_TURNS_REACHED", action: "CONTINUATION", code: null });
+  }
+
+  // Bounded: the budget is spent, so the decision goes to a human.
+  assert.deepEqual(pick(classifyExecutionState(exhausted(2))), { state: "MAX_TURNS_REACHED", action: "HUMAN_GATE", code: null });
+
+  // A session that ended without a result is a different thing entirely, and
+  // must not be resumable forever through the continuation path.
+  assert.deepEqual(
+    pick(classifyExecutionState({ session_active: false, elapsed_ms: 1_000, exit: { kind: "failure" } })),
+    { state: "PROCESS_EXIT_FAILURE", action: "REPAIR_OR_ESCALATE", code: null },
+  );
+});
+
+test("the two blocked exits stay distinct from every timing signal", () => {
+  // A session that vanished without an exit record is genuinely unroutable.
+  assert.deepEqual(
+    pick(classifyExecutionState({ session_active: false, progress_observed: false, elapsed_ms: 300_000, since_progress_ms: 300_000 })),
+    { state: "ROUTING_UNAVAILABLE", action: "BLOCKED", code: "ROUTING_UNAVAILABLE" },
+  );
+
+  // A request outside the ceiling is genuinely permission-blocked.
+  const denied = classifyExecutionState(
+    { session_active: true, permission_request: { kind: "filesystem_write", path: "src/app.ts" } },
+    { permissionCeiling: { sandbox: "read-only" } },
+  );
+  assert.deepEqual(pick(denied), { state: "PERMISSION_BLOCKED", action: "BLOCKED", code: "PERMISSION_BLOCKED" });
+
+  // A request inside the ceiling is not an interruption at all.
+  const allowed = classifyExecutionState(
+    { session_active: true, permission_request: { kind: "command", command: "git diff" } },
+    { permissionCeiling: { sandbox: "read-only" } },
+  );
+  assert.deepEqual(pick(allowed), { state: "ACTIVE", action: "CONTINUE", code: null });
+});
+
+test("a command is classified by its invocation, not by its executable", () => {
+  // The same executable on both sides of the boundary.
+  assert.equal(classifyCommand("git diff --stat").classification, "read_only");
+  assert.equal(classifyCommand("git log --oneline -5").classification, "read_only");
+  assert.equal(classifyCommand("git commit -m wip").classification, "mutating");
+  assert.equal(classifyCommand("git push origin main").classification, "mutating");
+
+  // A read-only subcommand carrying a mutating flag is not read-only.
+  assert.equal(classifyCommand("git branch").classification, "read_only");
+  assert.equal(classifyCommand("git branch -D feature").classification, "mutating");
+
+  // A reader that redirects is a writer.
+  assert.equal(classifyCommand("cat notes.md").classification, "read_only");
+  assert.equal(classifyCommand("cat notes.md > out.md").classification, "mutating");
+
+  // Unrecognised is its own answer, so a refusal can be triaged.
+  assert.equal(classifyCommand("deploy-tool --apply").classification, "unknown");
+  assert.equal(classifyCommand("").classification, "unknown");
+
+  // Paths, quoting and Windows extensions must not defeat the lookup.
+  assert.equal(classifyCommand("/usr/bin/git status").classification, "read_only");
+  assert.equal(classifyCommand("git.exe status").classification, "read_only");
+  assert.equal(classifyCommand('"C:\\Program Files\\Git\\bin\\git.exe" push origin main').classification, "mutating");
+});
+
+test("read, execute and write are three capabilities, not one", () => {
+  const reviewer = { sandbox: "read-only" };
+
+  // The whole point: a read-only reviewer can still run its tools.
+  assert.equal(classifyPermissionRequest({ kind: "command", command: "Get-Content migration.sql" }, reviewer).allowed, true);
+  assert.equal(classifyPermissionRequest({ kind: "filesystem_read", path: "src/app.ts" }, reviewer).allowed, true);
+
+  // And still cannot change anything.
+  for (const request of [
+    { kind: "filesystem_write", path: "src/app.ts" },
+    { kind: "command", command: "git commit -m wip" },
+    { kind: "command", command: "rm -rf build" },
+    { kind: "database_write", target: "orders" },
+    { kind: "production", target: "api" },
+    { kind: "push" },
+  ]) {
+    const decision = classifyPermissionRequest(request, reviewer);
+    assert.equal(decision.allowed, false, `${JSON.stringify(request)} must not be allowed`);
+    assert.equal(decision.code, "PERMISSION_BLOCKED");
+  }
+
+  // The decomposed form can express what the legacy shorthand could not:
+  // inspection without a shell at all.
+  const noShell = { filesystem: { read: true, write: false }, command_execution: { allowed: false, mutation: false } };
+  assert.equal(classifyPermissionRequest({ kind: "command", command: "git status" }, noShell).allowed, false);
+  assert.equal(classifyPermissionRequest({ kind: "filesystem_read", path: "src/app.ts" }, noShell).allowed, true);
+
+  // Commit and push stay fenced even when workspace mutation is granted.
+  const implementer = { sandbox: "workspace-write", may_commit: false };
+  assert.equal(classifyPermissionRequest({ kind: "filesystem_write", path: "src/app.ts" }, implementer).allowed, true);
+  assert.equal(classifyPermissionRequest({ kind: "command", command: "git commit -m feat" }, implementer).allowed, false);
+});
+
+test("human approval gates a capability but never widens the ceiling", () => {
+  const reviewer = { sandbox: "read-only" };
+
+  // Approval is surfaced on a permitted operation...
+  const read = classifyPermissionRequest({ kind: "command", command: "Get-Content migration.sql" }, reviewer);
+  assert.equal(read.allowed, true);
+  assert.equal(read.approval_required, true);
+
+  // ...and cannot be used to carry a denied one through.
+  const write = classifyPermissionRequest({ kind: "filesystem_write", path: "src/app.ts", human_approved: true }, reviewer);
+  assert.equal(write.allowed, false);
+  assert.equal(write.approval_required, false);
+
+  // A contract that does not want per-command prompts says so explicitly.
+  const unattended = { filesystem: { read: true, write: false }, command_execution: { allowed: true, mutation: false, human_approval: "never" } };
+  assert.equal(classifyPermissionRequest({ kind: "command", command: "git status" }, unattended).approval_required, false);
+});
+
+test("v0.3 permission ceilings keep working and keep meaning what they meant", () => {
+  const legacyReviewer = normalizePermissionCeiling({ sandbox: "read-only", network: "none", production_access: false });
+  assert.deepEqual(legacyReviewer.filesystem, { read: true, write: false });
+  assert.equal(legacyReviewer.command_execution.allowed, true);
+  assert.equal(legacyReviewer.command_execution.mutation, false);
+  assert.equal(legacyReviewer.network.allowed, false);
+  assert.equal(legacyReviewer.legacy_sandbox, "read-only");
+
+  const legacyImplementer = normalizePermissionCeiling({ sandbox: "workspace-write", network: "restricted" });
+  assert.deepEqual(legacyImplementer.filesystem, { read: true, write: true });
+  assert.equal(legacyImplementer.command_execution.mutation, true);
+  assert.equal(legacyImplementer.network.allowed, true);
+
+  // Unstated capabilities are denied, never inherited from the sandbox word.
+  for (const ceiling of [legacyReviewer, legacyImplementer]) {
+    assert.deepEqual(ceiling.database, { read: false, write: false });
+    assert.equal(ceiling.production_access, false);
+    assert.equal(ceiling.may_commit, false);
+    assert.equal(ceiling.may_push, false);
+  }
+
+  // An explicit decomposed field wins over the legacy shorthand beside it.
+  const mixed = normalizePermissionCeiling({ sandbox: "workspace-write", filesystem: { read: true, write: false } });
+  assert.equal(mixed.filesystem.write, false);
+
+  // An unrecognised sandbox word grants nothing rather than guessing.
+  const unknown = normalizePermissionCeiling({ sandbox: "something-new" });
+  assert.equal(unknown.filesystem.read, false);
+  assert.equal(unknown.command_execution.allowed, false);
+
+  // No ceiling at all is not an open ceiling.
+  const absent = normalizePermissionCeiling(undefined);
+  assert.equal(absent.filesystem.read, false);
+  assert.equal(absent.command_execution.allowed, false);
+  assert.equal(classifyPermissionRequest({ kind: "filesystem_read" }, undefined).allowed, false);
+});
+
+test("repository execution cases all conform to the executable semantics", async () => {
+  const cases = parse(await readFile("tests/execution-cases.yaml", "utf8"));
+  const names = new Set(cases.cases.map(({ name }) => name));
+
+  for (const required of [
+    "poll_timeout_with_new_output", "long_total_runtime_with_recent_progress",
+    "no_progress_past_stall_threshold", "hard_ceiling_with_active_process",
+    "long_audit_without_a_verdict_yet", "max_turns_with_recoverable_state",
+    "max_turns_beyond_continuation_budget", "reviewer_reads_a_file_through_a_shell_command",
+    "reviewer_attempts_a_filesystem_write", "reviewer_attempts_a_commit",
+    "human_approval_does_not_widen_the_ceiling",
+  ]) {
+    assert.ok(names.has(required), `execution cases are missing ${required}`);
+  }
+
+  assert.deepEqual(validateExecutionCases(cases), []);
+});
+
+test("execution case validator rejects a case whose expectation drifts", () => {
+  const drifted = {
+    cases: [
+      {
+        name: "slow_is_not_blocked",
+        kind: "waiting",
+        why: "a fixture asserting the wrong thing must be caught",
+        observation: { session_active: true, progress_observed: true, elapsed_ms: 3_600_000 },
+        expect: { state: "PERMISSION_BLOCKED", action: "BLOCKED" },
+      },
+    ],
+  };
+  assert.match(validateExecutionCases(drifted).join("\n"), /expected state "PERMISSION_BLOCKED", got "ACTIVE"/);
+
+  // `must_not` is what encodes the misclassifications this section exists for.
+  const mustNot = {
+    cases: [
+      {
+        name: "stall_must_not_be_permission",
+        kind: "waiting",
+        why: "guards the exact confusion the real cycle produced",
+        observation: { session_active: true, permission_request: { kind: "filesystem_write" } },
+        expect: { state: "PERMISSION_BLOCKED", action: "BLOCKED" },
+        must_not: ["PERMISSION_BLOCKED"],
+      },
+    ],
+  };
+  assert.match(validateExecutionCases(mustNot).join("\n"), /must not classify as PERMISSION_BLOCKED/);
+
+  assert.deepEqual(validateExecutionCases({ cases: [] }), ["execution cases: expected a non-empty `cases` list"]);
+});
+
+test("workflow policy owns the execution lifecycle and permission semantics", async () => {
+  const workflow = await readFile("policies/WORKFLOW_POLICY.md", "utf8");
+
+  assert.match(workflow, /## Execution lifecycle semantics/);
+  assert.match(workflow, /## Permission ceiling 的能力分解/);
+
+  // The invariant, stated where the rule lives.
+  for (const line of ["poll timeout != task timeout", "total runtime != stall duration", "slow != blocked"]) {
+    assert.ok(workflow.includes(line), `workflow policy is missing the invariant line: ${line}`);
+  }
+
+  // Every execution state must be nameable in the normative text.
+  for (const state of [
+    "ACTIVE", "QUIET", "STALLED", "COMPLETE", "MAX_TURNS_REACHED",
+    "PROCESS_EXIT_FAILURE", "HARD_EXECUTION_CEILING", "PERMISSION_BLOCKED", "ROUTING_UNAVAILABLE",
+  ]) {
+    assert.ok(workflow.includes(state), `workflow policy is missing execution state ${state}`);
+  }
+
+  // Each decomposed capability must be expressible.
+  for (const capability of ["filesystem", "command_execution", "mutation", "human_approval", "database", "production_access", "may_commit", "may_push"]) {
+    assert.ok(workflow.includes(capability), `workflow policy cannot express ${capability}`);
+  }
+
+  // Backward compatibility is a stated rule, not an accident of parsing.
+  assert.match(workflow, /sandbox: read-only/);
+  assert.match(workflow, /仍然有效/);
+
+  // Continuation is bounded and is not repair.
+  assert.match(workflow, /max_continuation_attempts/);
+  assert.match(workflow, /不得建立無限 continuation/);
+  assert.match(workflow, /Repair 與 continuation 是兩件事/);
+
+  // The owner table must name what this section now owns.
+  assert.match(workflow, /\| `WORKFLOW_POLICY\.md` \|[^|]*execution lifecycle/);
+  assert.match(workflow, /\| `WORKFLOW_POLICY\.md` \|[^|]*permission ceiling 語意/);
+});
+
+test("execution states never become a second definition of the blocked codes", async () => {
+  const workflow = await readFile("policies/WORKFLOW_POLICY.md", "utf8");
+  const routing = await readFile("policies/MODEL_ROUTING_POLICY.md", "utf8");
+
+  // The workflow policy names the codes but defers their meaning.
+  assert.match(workflow, /這些是觀察狀態，不是 blocked reason code/);
+  assert.ok(workflow.includes("MODEL_ROUTING_POLICY.md"), "workflow policy must point at the reason-code owner");
+  // The execution-state table legitimately names PERMISSION_BLOCKED and
+  // ROUTING_UNAVAILABLE as its two hand-off exits. What must stay unique is the
+  // reason-code definition table, which its "who can lift it" column
+  // identifies: a second one of those is a second owner.
+  const definitionHeader = "| Code | 意義 | 誰能解除 |";
+  const owners = [];
+  for (const file of [
+    "policies/WORKFLOW_POLICY.md", "policies/MODEL_ROUTING_POLICY.md",
+    "policies/CONCURRENCY_POLICY.md", "policies/RESOURCE_AWARE_ROUTING.md",
+    "templates/ROUTER_EXECUTION_CONTRACT_TEMPLATE.md", "templates/STRATEGIC_RETURN_TEMPLATE.md",
+    "skills/orca-multi-agent-dev/SKILL.md", "README.md",
+  ]) {
+    if ((await readFile(file, "utf8")).includes(definitionHeader)) owners.push(file);
+  }
+  assert.deepEqual(owners, ["policies/MODEL_ROUTING_POLICY.md"], "the reason-code table must have exactly one owner");
+
+  // The routing policy, which does own them, states what they are not.
+  assert.match(routing, /### Execution state 不是 blocked reason code/);
+  for (const notBlocked of ["模型執行時間長", "polling window 逾時", "尚未產出最終結論", "Reached max turns"]) {
+    assert.ok(routing.includes(notBlocked), `routing policy does not exclude "${notBlocked}" from PERMISSION_BLOCKED`);
+  }
+
+  // failed_repair_count is owned by the routing policy, so the continuation
+  // exemption is stated there and only there.
+  assert.match(routing, /\*\*Continuation 也不計入 `failed_repair_count`。\*\*/);
+  assert.ok(
+    !/continuation[^\n]*計入 `failed_repair_count`/.test(workflow.replace(/`failed_repair_count` 的計數規則[^\n]*\n/g, "")),
+    "the repair-count rule must not be restated in the workflow policy",
+  );
+});
+
+test("contract template can express the decomposed ceiling and the execution budget", async () => {
+  const contract = await readFile("templates/ROUTER_EXECUTION_CONTRACT_TEMPLATE.md", "utf8");
+
+  for (const field of [
+    "filesystem", "command_execution", "mutation", "human_approval",
+    "database", "production_access", "may_commit", "may_push",
+    "execution_budget", "poll_interval_ms", "stall_threshold_ms",
+    "hard_execution_ceiling_ms", "max_continuation_attempts",
+    "execution_state", "last_progress_at", "continuation_count",
+  ]) {
+    assert.ok(contract.includes(field), `contract template cannot express ${field}`);
+  }
+
+  // The legacy field stays present, so an existing v0.3 contract still parses
+  // against this template rather than being silently invalidated.
+  assert.match(contract, /sandbox:\s+# read-only \| workspace-write（legacy 簡寫，optional）/);
+
+  // And the template must not invite a slow worker to be filed as blocked.
+  assert.match(contract, /\*\*不是 reason code\*\*/);
+});
+
+test("command reference separates a poll window from a worker deadline", async () => {
+  const commands = await readFile("references/OFFICIAL_COMMANDS.md", "utf8");
+
+  assert.match(commands, /`--timeout-ms` 是輪詢窗口，不是 worker 的完成期限/);
+  assert.match(commands, /醒來重新觀察一次/);
+
+  // Progress detection has to use the read mode that has history.
+  assert.match(commands, /cursor read/);
+
+  // The two provider-side facts that caused the misreadings.
+  assert.match(commands, /`--sandbox read-only` 不是「不得執行命令」/);
+  assert.match(commands, /Reached max turns/);
+  assert.match(commands, /execution budget exhaustion/);
+
+  // Implementation guidance points at the semantics owner rather than
+  // restating it.
+  assert.ok(commands.includes("policies/WORKFLOW_POLICY.md"), "command reference must point at the semantics owner");
+});
+
+test("the entry points teach slow-is-not-blocked", async () => {
+  const skill = await readFile("skills/orca-multi-agent-dev/SKILL.md", "utf8");
+  const readme = await readFile("README.md", "utf8");
+
+  for (const [name, text] of [["SKILL.md", skill], ["README.md", readme]]) {
+    assert.ok(text.includes("poll timeout != task timeout"), `${name} is missing the poll-window invariant`);
+    assert.ok(text.includes("slow != blocked"), `${name} is missing the slow-is-not-blocked invariant`);
+    assert.match(text, /MAX_TURNS_REACHED|Reached max turns/, `${name} does not mention turn-budget exhaustion`);
+    assert.match(text, /唯讀命令/, `${name} does not state that read-only still executes commands`);
+  }
+
+  assert.deepEqual(validateMarkdownLinks(skill, { path: "skills/orca-multi-agent-dev/SKILL.md", root: process.cwd() }), []);
+  assert.deepEqual(validateMarkdownLinks(readme, { path: "README.md", root: process.cwd() }), []);
+});
+
+test("hardening left model mapping, tiers, disjointness and concurrency untouched", async () => {
+  const registryText = await readFile("policies/MODEL_REGISTRY.yaml", "utf8");
+  const registryParsed = parse(registryText);
+  const routing = await readFile("policies/MODEL_ROUTING_POLICY.md", "utf8");
+  const concurrency = await readFile("policies/CONCURRENCY_POLICY.md", "utf8");
+
+  // No execution-lifecycle vocabulary leaked into the mapping layer.
+  for (const leaked of ["execution_state", "MAX_TURNS_REACHED", "stall_threshold", "max_continuation_attempts", "command_execution"]) {
+    assert.ok(!registryText.includes(leaked), `the model registry must not carry ${leaked}`);
+  }
+
+  assert.deepEqual(registryParsed.capability_tier_order, ["CHEAP", "DEFAULT", "STRONG", "DEEP"]);
+  assert.deepEqual(validateRegistry(registryParsed), []);
+
+  // The rules this task was told not to touch are still stated.
+  assert.match(routing, /reviewer 的 provider 與 model family \*\*都必須\*\*與 implementer 不同/);
+  assert.match(concurrency, /\*\*永久禁止。\*\*/);
+  assert.match(concurrency, /Concurrency is opt-in, not default/);
+
+  // Continuation must not have grown a second budget inside the registry.
+  for (const slot of Object.values(registryParsed.capability_slots)) {
+    assert.equal(slot.max_continuation_attempts, undefined, "continuation budget belongs to the contract, not the registry");
+  }
 });

@@ -1,0 +1,335 @@
+# Deterministic execution-lifecycle conformance cases.
+#
+# These cases are executed by scripts/validate-policy-pack.mjs. They are a
+# conformance check on the execution lifecycle and permission-ceiling sections
+# of policies/WORKFLOW_POLICY.md, which stays normative: if a case and the
+# Markdown policy disagree, the case is what gets corrected.
+#
+# kind: waiting     -> executed through classifyExecutionState(); expects an
+#                      observation state and the action it implies.
+# kind: permission  -> executed through classifyPermissionRequest(); expects an
+#                      allow/deny decision against a permission ceiling.
+#
+# `must_not` names states or reason codes the case must never produce. It
+# exists because the failures these cases were written for were all
+# misclassifications, not missing checks: a slow reviewer reported as
+# PERMISSION_BLOCKED, an exhausted turn budget reported as ROUTING_UNAVAILABLE.
+
+version: "0.3"
+
+cases:
+
+  # --------------------------------------------------------------------- #
+  # Waiting: a poll window is a router heartbeat, not a worker deadline.
+  # --------------------------------------------------------------------- #
+
+  - name: poll_timeout_with_new_output
+    kind: waiting
+    why: >-
+      A 60-second `orca terminal wait --timeout-ms 60000` expiring only means
+      the router should look again. New output since the last look is
+      progress, so the only correct action is to keep waiting.
+    observation:
+      session_active: true
+      progress_observed: true
+      elapsed_ms: 60000
+      since_progress_ms: 0
+    expect: { state: ACTIVE, action: CONTINUE }
+    must_not: [STALLED, PERMISSION_BLOCKED, ROUTING_UNAVAILABLE]
+
+  - name: long_total_runtime_with_recent_progress
+    kind: waiting
+    why: >-
+      Thirty minutes of total runtime with progress two minutes ago is a long
+      task, not a stuck one. Total elapsed time must never on its own produce
+      a stall or a block; only silence since the last progress can.
+    observation:
+      session_active: true
+      progress_observed: false
+      elapsed_ms: 1800000
+      since_progress_ms: 120000
+    expect: { state: QUIET, action: CONTINUE }
+    must_not: [STALLED, PERMISSION_BLOCKED, ROUTING_UNAVAILABLE]
+
+  - name: quiet_terminal_below_stall_threshold
+    kind: waiting
+    why: >-
+      A reviewer reading a large repository can produce no output for minutes
+      at a time. QUIET is a normal state, not a failure, and it does not
+      shorten as total runtime grows.
+    observation:
+      session_active: true
+      progress_observed: false
+      elapsed_ms: 600000
+      since_progress_ms: 300000
+    expect: { state: QUIET, action: CONTINUE }
+    must_not: [STALLED, PROCESS_EXIT_FAILURE]
+
+  - name: no_progress_past_stall_threshold
+    kind: waiting
+    why: >-
+      Twenty minutes without observable progress on a still-active session is
+      the one timing signal that justifies intervention. It buys an
+      inspection, not a verdict, and it is neither a permission problem nor a
+      routing problem.
+    observation:
+      session_active: true
+      progress_observed: false
+      elapsed_ms: 1200000
+      since_progress_ms: 1200000
+    options: { stall_threshold_ms: 900000 }
+    expect: { state: STALLED, action: STALL_INTERVENTION }
+    must_not: [PERMISSION_BLOCKED, ROUTING_UNAVAILABLE, PROCESS_EXIT_FAILURE]
+
+  - name: deep_reasoning_raises_the_stall_threshold
+    kind: waiting
+    why: >-
+      The same twenty minutes of silence under a deep-reasoning threshold is
+      still QUIET. The threshold is contract-tunable precisely so that deep
+      work is not declared stalled at an implementation task's cadence.
+    observation:
+      session_active: true
+      progress_observed: false
+      elapsed_ms: 1200000
+      since_progress_ms: 1200000
+    options: { stall_threshold_ms: 2400000 }
+    expect: { state: QUIET, action: CONTINUE }
+    must_not: [STALLED]
+
+  - name: hard_ceiling_with_active_process
+    kind: waiting
+    why: >-
+      A hard ceiling reached while the worker is still working is a decision
+      for the human who owns the task - continue, terminate, or reroute. It
+      must never resolve itself into an automatic failure.
+    observation:
+      session_active: true
+      progress_observed: true
+      elapsed_ms: 7200000
+      since_progress_ms: 30000
+    options: { hard_ceiling_ms: 7200000 }
+    expect: { state: HARD_EXECUTION_CEILING, action: HUMAN_GATE }
+    must_not: [PROCESS_EXIT_FAILURE, ROUTING_UNAVAILABLE]
+
+  - name: long_audit_without_a_verdict_yet
+    kind: waiting
+    why: >-
+      The cycle that prompted this section: an active reviewer, no error, no
+      permission gate, still auditing, no final verdict. Absence of a verdict
+      is not a result; the router keeps waiting.
+    observation:
+      session_active: true
+      progress_observed: true
+      elapsed_ms: 2400000
+      since_progress_ms: 45000
+    expect: { state: ACTIVE, action: CONTINUE }
+    must_not: [PERMISSION_BLOCKED, ROUTING_UNAVAILABLE, PROCESS_EXIT_FAILURE]
+
+  - name: session_gone_without_an_exit_record
+    kind: waiting
+    why: >-
+      An unreachable session with no exit record is the one waiting outcome
+      that really is ROUTING_UNAVAILABLE. Keeping it distinct is what stops
+      the code from being stretched to cover slow or quiet sessions.
+    observation:
+      session_active: false
+      progress_observed: false
+      elapsed_ms: 300000
+      since_progress_ms: 300000
+    expect: { state: ROUTING_UNAVAILABLE, action: BLOCKED }
+    must_not: [STALLED, PERMISSION_BLOCKED]
+
+  # --------------------------------------------------------------------- #
+  # Max turns: an exhausted budget is not an error result.
+  # --------------------------------------------------------------------- #
+
+  - name: max_turns_with_recoverable_state
+    kind: waiting
+    why: >-
+      `Reached max turns` means the turn budget ran out, not that the work
+      failed. Partial review state is recoverable, so the chain resumes rather
+      than restarting discovery - and it is neither a routing nor a permission
+      failure.
+    observation:
+      session_active: false
+      progress_observed: false
+      elapsed_ms: 900000
+      since_progress_ms: 10000
+      continuation_count: 0
+      exit: { kind: max_turns }
+    expect: { state: MAX_TURNS_REACHED, action: CONTINUATION }
+    must_not: [ROUTING_UNAVAILABLE, PERMISSION_BLOCKED, PROCESS_EXIT_FAILURE]
+
+  - name: max_turns_within_continuation_budget
+    kind: waiting
+    why: >-
+      A second exhaustion is still inside the default budget of two. Bounded
+      does not mean single-shot.
+    observation:
+      session_active: false
+      progress_observed: false
+      elapsed_ms: 1500000
+      since_progress_ms: 10000
+      continuation_count: 1
+      exit: { kind: max_turns }
+    expect: { state: MAX_TURNS_REACHED, action: CONTINUATION }
+    must_not: [ROUTING_UNAVAILABLE]
+
+  - name: max_turns_beyond_continuation_budget
+    kind: waiting
+    why: >-
+      Continuation is bounded by the same escalation architecture as repair.
+      Once the budget is spent the task goes to a human, never into an endless
+      resume loop.
+    observation:
+      session_active: false
+      progress_observed: false
+      elapsed_ms: 2100000
+      since_progress_ms: 10000
+      continuation_count: 2
+      exit: { kind: max_turns }
+    expect: { state: MAX_TURNS_REACHED, action: HUMAN_GATE }
+    must_not: [ROUTING_UNAVAILABLE, PERMISSION_BLOCKED]
+
+  - name: process_exit_failure_is_not_max_turns
+    kind: waiting
+    why: >-
+      A process that exits without a usable result goes to the existing repair
+      and escalation path. Collapsing it into the continuation path would let
+      a genuinely failing worker be resumed indefinitely.
+    observation:
+      session_active: false
+      progress_observed: false
+      elapsed_ms: 120000
+      since_progress_ms: 5000
+      exit: { kind: failure }
+    expect: { state: PROCESS_EXIT_FAILURE, action: REPAIR_OR_ESCALATE }
+    must_not: [MAX_TURNS_REACHED, ROUTING_UNAVAILABLE, PERMISSION_BLOCKED]
+
+  - name: clean_exit_closes_the_cycle
+    kind: waiting
+    why: >-
+      The ordinary path, kept in the cases so the exit branch is exercised in
+      full rather than only through its failure modes.
+    observation:
+      session_active: false
+      progress_observed: false
+      elapsed_ms: 480000
+      since_progress_ms: 1000
+      exit: { kind: clean }
+    expect: { state: COMPLETE, action: CLOSE }
+
+  # --------------------------------------------------------------------- #
+  # Permission: read, execute and write are three capabilities, not one.
+  # The reviewer ceilings below are written in the LEGACY v0.3 shorthand on
+  # purpose, so the backward-compatible reading is what is under test.
+  # --------------------------------------------------------------------- #
+
+  - name: reviewer_reads_a_file_through_a_shell_command
+    kind: permission
+    why: >-
+      A read-only reviewer inspecting a migration file runs a command. Reading
+      `read-only` as "no shell execution whatsoever" would make independent
+      review impossible; approval may be required, but the capability is
+      inside the ceiling.
+    ceiling: { sandbox: read-only, network: none, production_access: false }
+    request: { kind: command, command: "Get-Content migration.sql" }
+    expect: { allowed: true, code: null, approval_required: true, classification: read_only }
+
+  - name: reviewer_inspects_git_history
+    kind: permission
+    why: >-
+      `git diff` executes git and mutates nothing. The read-only subcommands
+      are what a reviewer's whole job is made of.
+    ceiling: { sandbox: read-only }
+    request: { kind: command, command: "git diff --stat HEAD~1" }
+    expect: { allowed: true, code: null, classification: read_only }
+
+  - name: reviewer_attempts_a_filesystem_write
+    kind: permission
+    why: >-
+      The capability the read-only ceiling actually withholds. This is a
+      genuine PERMISSION_BLOCKED - the required operation exceeds the ceiling.
+    ceiling: { sandbox: read-only }
+    request: { kind: filesystem_write, path: "src/app.ts" }
+    expect: { allowed: false, code: PERMISSION_BLOCKED }
+
+  - name: reviewer_attempts_a_commit
+    kind: permission
+    why: >-
+      `git commit` is git, like `git diff` is git. The classification has to
+      come from the invocation, not from the executable's name.
+    ceiling: { sandbox: read-only }
+    request: { kind: command, command: "git commit -m wip" }
+    expect: { allowed: false, code: PERMISSION_BLOCKED, classification: mutating }
+
+  - name: human_approval_does_not_widen_the_ceiling
+    kind: permission
+    why: >-
+      A human approving a read approves that read. If approval could flip a
+      denied write into an allowed one, the ceiling would be advisory and the
+      contract would mean nothing.
+    ceiling: { sandbox: read-only }
+    request: { kind: filesystem_write, path: "src/app.ts", human_approved: true }
+    expect: { allowed: false, code: PERMISSION_BLOCKED }
+
+  - name: unrecognised_command_fails_closed
+    kind: permission
+    why: >-
+      An executable nobody classified is not thereby safe. Unknown is treated
+      as needing mutation authority, so the allowlist can never be widened by
+      omission.
+    ceiling: { sandbox: read-only }
+    request: { kind: command, command: "deploy-tool --apply" }
+    expect: { allowed: false, code: PERMISSION_BLOCKED, classification: unknown }
+
+  - name: implementer_may_write_but_not_commit
+    kind: permission
+    why: >-
+      Workspace write and commit authority are separate. An implementer whose
+      contract says `may_commit: false` is still stopped at the commit, even
+      though command mutation is inside its ceiling.
+    ceiling: { sandbox: workspace-write, may_commit: false }
+    request: { kind: command, command: "git commit -m 'feat: add handler'" }
+    expect: { allowed: false, code: PERMISSION_BLOCKED }
+
+  - name: implementer_may_mutate_the_workspace
+    kind: permission
+    why: >-
+      The legacy `workspace-write` shorthand has to keep meaning what it meant,
+      or every existing v0.3 contract would change behaviour on upgrade.
+    ceiling: { sandbox: workspace-write }
+    request: { kind: filesystem_write, path: "src/app.ts" }
+    expect: { allowed: true, code: null }
+
+  - name: decomposed_ceiling_can_deny_command_execution_outright
+    kind: permission
+    why: >-
+      Some review contexts really do want inspection without a shell. The
+      decomposed form can express that; the legacy shorthand could not, which
+      is why the two were conflated in the first place.
+    ceiling:
+      filesystem: { read: true, write: false }
+      command_execution: { allowed: false, mutation: false }
+    request: { kind: command, command: "git status" }
+    expect: { allowed: false, code: PERMISSION_BLOCKED }
+
+  - name: database_and_production_are_separate_capabilities
+    kind: permission
+    why: >-
+      Neither is implied by filesystem or command authority. A worker with a
+      writable workspace has no database or production access unless the
+      contract grants it explicitly.
+    ceiling: { sandbox: workspace-write }
+    request: { kind: database_write, target: "orders" }
+    expect: { allowed: false, code: PERMISSION_BLOCKED }
+
+  - name: network_denied_by_the_legacy_none_value
+    kind: permission
+    why: >-
+      `network: none` is the legacy denial and must keep denying. A task that
+      genuinely needs the network against this ceiling is PERMISSION_BLOCKED,
+      which is what that code is for.
+    ceiling: { sandbox: workspace-write, network: none }
+    request: { kind: network, target: "registry.npmjs.org" }
+    expect: { allowed: false, code: PERMISSION_BLOCKED }

@@ -60,12 +60,37 @@ allow_red: false              # true 才允許在只剩 RED 候選時繼續
 concurrency_mode:             # SEQUENTIAL | PARALLEL_INDEPENDENT | COMPETITIVE_DESIGN
 integration_owner:            # 任何 mode 下都只能有一個
 
+# Permission ceiling。filesystem read、command execution 與 filesystem write
+# 是三種能力，不折疊成一個開關：唯讀 reviewer 仍需執行 git diff / rg / cat。
+# 語意由 WORKFLOW_POLICY.md 的「Permission ceiling 的能力分解」定義。
 permission_ceiling:           # 意圖上限；實際旗標由 dispatch_command 強制
-  sandbox:                    # read-only | workspace-write
-  network:                    # none | restricted
+  filesystem:
+    read:                     # true | false
+    write:                    # true | false
+  command_execution:
+    allowed:                  # true | false — 是否可執行任何命令
+    mutation:                 # true | false — 是否可執行會改變狀態的命令
+    human_approval:           # as_required | never — 核准不擴大 ceiling
+  network:
+    allowed: false
+  database:
+    read: false
+    write: false
   production_access: false
-  may_commit:                 # true | false
+  may_commit:                 # true | false — 獨立於 command_execution.mutation
   may_push: false
+
+  # Legacy 相容欄位。既有 v0.3 contract 只寫 sandbox / network 字串仍然有效；
+  # 上面的分解式欄位若明確寫出則優先。對照表見 WORKFLOW_POLICY.md。
+  sandbox:                    # read-only | workspace-write（legacy 簡寫，optional）
+
+# Execution budget。數值是操作指引，不是 parser limit；未填時採 WORKFLOW_POLICY.md
+# 的預設。poll_interval 的逾時只代表「重新觀察一次」，不是 worker 的完成期限。
+execution_budget:
+  poll_interval_ms:           # 預設 60000-120000
+  stall_threshold_ms:         # 預設 600000-1200000；deep reasoning 可更長
+  hard_execution_ceiling_ms:  # 預設不設；設了就在到達時進 human gate，不自動 FAIL
+  max_continuation_attempts: 2  # execution budget 用盡時的續跑上限，不是 repair
 
 authoritative_references:
 task:
@@ -114,7 +139,16 @@ fallback_used:                # unresolved — none，或被跳過的候選及�
 selection_reason:             # unresolved — 為何選它、為何跳過前面的候選
 
 max_repair_attempts:          # unresolved — 來自 registry slot
-failed_repair_count: 0        # 初次 implementation attempt 不計入
+failed_repair_count: 0        # 初次 implementation attempt 不計入；continuation 也不計入
+
+execution_state:              # unresolved — 最後一次輪詢的觀察狀態
+  # ACTIVE | QUIET | STALLED | COMPLETE | MAX_TURNS_REACHED
+  # | PROCESS_EXIT_FAILURE | HARD_EXECUTION_CEILING
+  # | PERMISSION_BLOCKED | ROUTING_UNAVAILABLE
+  state:                      # unresolved
+  last_progress_at:           # unresolved，或 UNKNOWN
+  total_elapsed_ms:           # unresolved — 總時長本身不構成失敗
+  continuation_count: 0       # execution budget 用盡而續跑的次數
 
 dispatch_command:             # unresolved
   # 逐字命令，且必須在命令列明確傳入 sandbox 與 approval 旗標。
@@ -147,6 +181,12 @@ RESOURCE_BLOCKED | PERMISSION_BLOCKED
 
 不得為了讓 `BLOCKED` 變成 `SELECTED` 而降低 `minimum_tier`、放棄 independent review
 的 disjointness、提高權限，或自行翻轉 `allow_experimental` / `allow_red`。
+
+執行過程的觀察狀態（`ACTIVE` / `QUIET` / `STALLED` / `MAX_TURNS_REACHED` 等）
+記在 `execution_state`，**不是 reason code**。慢、安靜、尚無結論或 turn budget 用盡
+都不得填成 `PERMISSION_BLOCKED` 或 `ROUTING_UNAVAILABLE`；語意見
+[`policies/WORKFLOW_POLICY.md`](../policies/WORKFLOW_POLICY.md) 的
+Execution lifecycle semantics 與 routing policy 的 Blocked reason codes。
 
 ---
 

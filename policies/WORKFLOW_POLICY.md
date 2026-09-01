@@ -19,7 +19,7 @@ SKILL → WORKFLOW_POLICY → CONCURRENCY_POLICY → MODEL_ROUTING_POLICY
 
 | Owner | 負責 | 不負責 |
 |---|---|---|
-| `WORKFLOW_POLICY.md` | 角色、precedence、lifecycle、handback、gate、permission、cross-repo | 具體模型名稱 |
+| `WORKFLOW_POLICY.md` | 角色、precedence、lifecycle、execution lifecycle、handback、gate、permission ceiling 語意、cross-repo | 具體模型名稱、blocked reason code 語意 |
 | `CONCURRENCY_POLICY.md` | concurrency mode 與啟用條件 | provider 選擇 |
 | `MODEL_ROUTING_POLICY.md` | task classification、slot 選擇、candidate 演算法、escalation | 即時 quota 數值 |
 | `MODEL_REGISTRY.yaml` | slot 的 ordered candidates、能力下限、repair budget | stable workflow 規則 |
@@ -110,11 +110,246 @@ Fresh agent session 接手前必須先回答：Current State / Next Gate / Remai
 
 命令範例一律不得預設危險權限旗標。
 
+## Permission ceiling 的能力分解
+
+`filesystem read`、`command execution` 與 `filesystem write` 是**三種不同的能力**，
+不得折疊成單一開關。Reviewer 即使完全不改任何檔案，也需要執行
+`git status`、`git diff`、`git log`、`rg`、`cat`、`Get-Content` 這類命令才能完成
+獨立檢查。把「唯讀」理解成「完全不得執行命令」會使 independent review 無法進行。
+
+Permission ceiling 至少必須能分別表達：
+
+```yaml
+permission_ceiling:
+  filesystem:
+    read: true
+    write: false
+  command_execution:
+    allowed: true
+    mutation: false
+    human_approval: as_required
+  network:
+    allowed: false
+  database:
+    read: false
+    write: false
+  production_access: false
+  may_commit: false
+  may_push: false
+```
+
+Read-only discovery / review 的預設語意因此是：
+
+| CAN | CANNOT |
+|---|---|
+| 檢視 repository 內容 | 修改檔案 |
+| 執行唯讀 shell command | 修改 git 狀態 |
+| 檢視 git history / diff / status | commit、push |
+| 讀 tests、source、docs | 變更 database 或 production |
+| — | 變更設定 |
+
+### Command classification
+
+命令是否唯讀由**該次實際 invocation 的用途**決定，不由 executable 名稱決定。
+`git` 同時包含 `git log` 與 `git push`；把整個 executable 一次放行或一次禁止
+都是錯的分界。
+
+一般視為唯讀的例子：`git status`、`git rev-parse`、`git branch`、`git log`、
+`git show`、`git diff`、`git grep`、`rg`、`cat`、`type`、`Get-Content`、
+directory listing。同一個子命令加上 mutating 旗標（例如 `git branch -d`）即不再唯讀。
+
+**未被分類的命令不因此變成唯讀。** 無法判定時 fail closed，比照需要 mutation 權限。
+
+`may_commit` 與 `may_push` 是**獨立的閘**：即使 `command_execution.mutation` 為 true，
+`may_commit: false` 仍然擋下 `git commit`。
+
+### Human approval 不提高 permission ceiling
+
+某些 CLI 在沙箱模式下仍逐條要求人工核准。Human 可以核准唯讀檢查命令；
+**核准只是放行一次落在 ceiling 之內的操作，不擴大 ceiling。**
+核准 `Get-Content migration.sql` 不等於核准 filesystem write。
+被 ceiling 拒絕的操作，不會因為有人按了同意而變成允許——否則 contract 形同虛設。
+
+### Legacy contract 的解讀（backward compatible）
+
+既有 v0.3 contract 寫的是：
+
+```yaml
+permission_ceiling:
+  sandbox: read-only
+  network: none
+  production_access: false
+```
+
+這些 contract **仍然有效**，不需要立即遷移。分解式欄位是**附加**的，不是取代；
+兩者並存時以明確寫出的分解式欄位為準。Legacy 簡寫的權威解讀為：
+
+| Legacy | 解讀 |
+|---|---|
+| `sandbox: read-only` | filesystem read 允許；filesystem write 禁止；唯讀 command execution 允許（受 provider sandbox / approval 約束）；mutation 禁止 |
+| `sandbox: workspace-write` | filesystem read/write 允許；command execution 與 mutation 允許（仍受 `may_commit` / `may_push` 限制） |
+| `network: none` | network 禁止 |
+| 未載明的 database / production / commit / push | 一律 `false` |
+
+`sandbox` 值無法辨識時 fail closed：所有能力視為未授權。
+
+## Execution lifecycle semantics
+
+這一節是 **dispatch 之後、close 之前**的等待、停滯與續跑語意的 normative owner。
+它處理的是**執行過程的觀察狀態**，與 candidate 選擇無關。
+
+### 核心不變式
+
+```text
+poll timeout != task timeout
+total runtime != stall duration
+slow != blocked
+```
+
+`orca terminal wait --timeout-ms 60000` 這類命令若由 router 用於輪詢，該逾時
+**只表示「醒來重新觀察一次狀態」**，不表示「worker 只有 60 秒可以完成」。
+把 polling window 當成 task budget 是誤讀，會把正常的長時間工作判成失敗。
+
+模型執行時間長本身**不是** failure、**不是** permission blocker、**不是**
+routing failure。architecture review、long-context discovery、deep reasoning
+與大型 repository audit 本來就可能需要較長 wall-clock runtime。
+
+### Execution states
+
+| State | 意義 | 動作 |
+|---|---|---|
+| `ACTIVE` | 上次輪詢後有可觀察的進展 | 繼續等待 |
+| `QUIET` | session 仍存活，暫時沒有新輸出 | 繼續等待 |
+| `STALLED` | session 存活，且達到 stall threshold 仍無可觀察進展 | bounded intervention |
+| `COMPLETE` | process 結束且有可用結果 | 進 review / close |
+| `MAX_TURNS_REACHED` | execution budget 用盡而結束，非錯誤結果 | bounded continuation |
+| `PROCESS_EXIT_FAILURE` | process 結束但無可用結果 | 既有 repair / escalation 路徑 |
+| `HARD_EXECUTION_CEILING` | 達到安全上限而 session 仍活著 | human gate |
+| `PERMISSION_BLOCKED` | 所需操作超出 permission ceiling | 交回 human |
+| `ROUTING_UNAVAILABLE` | session 已不可達且未留下結束紀錄 | 交回 human 或重新路由 |
+
+**這些是觀察狀態，不是 blocked reason code。** 其中 `PERMISSION_BLOCKED` 與
+`ROUTING_UNAVAILABLE` 是唯二會交棒給 canonical blocked reason code 的出口，
+其語意由 [`MODEL_ROUTING_POLICY.md`](MODEL_ROUTING_POLICY.md) 的
+Blocked reason codes 章節定義，此處不重複。
+
+### ACTIVE：什麼算 observable progress
+
+以下任一項都是進展：terminal output cursor 前進、新的 stdout / stderr、
+新的 tool invocation、filesystem read、git inspection、tests 階段改變、
+agent/runtime 狀態改變、reviewer 進入下一個 audit section、有意義的進度訊息。
+
+只要出現進展就把 `last_progress_at` 更新為現在並繼續等待。
+**不得因為 total elapsed time 偏長而 BLOCK。**
+
+### QUIET：不是失敗
+
+Process / session 仍活著但暫時沒有新輸出。繼續輪詢即可。QUIET 不隨總執行時間
+延長而變成 STALLED——只有「距離上次進展的時間」會。
+
+### STALLED：只買到一次檢查，不是判決
+
+只有在 **session 仍活著 且 距離上次可觀察進展已達 stall threshold** 時才進入
+suspected stall。STALL **不得**映射為 `PERMISSION_BLOCKED`，也**不得**直接映射為
+`ROUTING_UNAVAILABLE`。
+
+Bounded intervention 依序為：
+
+1. 檢視目前 process / session 狀態；
+2. 讀取增量 terminal output（cursor read，不是畫面讀取）；
+3. optional 的非破壞性 status / nudge；
+4. 若執行環境支援，bounded resume / retry；
+5. 仍無法解除 → human gate 或明確的 execution failure 分類。
+
+### Timing guidance
+
+可調整的操作指引，**不是 parser hard limit**。重點是語意分離，不是特定數字。
+
+```yaml
+poll_interval:
+  normal: 60-120 seconds
+
+stall_threshold:
+  default: 10-20 minutes
+  deep_reasoning: 可以更長
+
+hard_execution_ceiling:
+  預設不設；需要時設得高，且到達時交人決定
+```
+
+Contract 可覆寫這些值。未載明時採預設區間的中值。
+
+### Hard execution ceiling
+
+到達 ceiling 而 worker 仍在活動時，**不得直接 FAIL**。高風險或 deep 任務一律回
+human gate，並附：
+
+```text
+total_elapsed:
+last_progress_at:
+current_state:
+current_activity:
+
+options:
+- continue waiting
+- terminate
+- reroute
+```
+
+### Max turns 與 bounded continuation
+
+`Reached max turns` 這類 execution-budget exhaustion 與 wall-clock timeout、
+stall、permission denial、routing failure **完全不同**：它表示回合數用完，
+不表示工作失敗。
+
+Operational router 先判斷 partial work / context 是否可恢復。可恢復時
+**優先在同一 task、同一 review chain 上續跑**，不重新開始整輪 discovery。
+**不得**把它分類成 `PERMISSION_BLOCKED` 或 `ROUTING_UNAVAILABLE`。
+
+Continuation 必須有界：
+
+```text
+initial attempt → continuation 1 → continuation 2 → escalate / human gate
+```
+
+`max_continuation_attempts` 預設為 2，可由 strategic contract 覆寫。
+**不得建立無限 continuation。**
+
+### Execution state machine
+
+```text
+dispatch
+  ↓
+ACTIVE
+  ↓
+poll
+  ├─ progress → ACTIVE → 繼續
+  │
+  ├─ 無輸出但 process 存活 → QUIET
+  │        └─ 達 stall threshold？ 否 → 繼續 ／ 是 → STALLED → bounded intervention
+  │
+  ├─ permission request
+  │        └─ 在 ceiling 內？ 是 → 依政策放行 ／ 否 → PERMISSION_BLOCKED
+  │
+  ├─ process exit
+  │        ├─ 有可用結果 → COMPLETE → review / close
+  │        ├─ max turns → MAX_TURNS_REACHED → bounded continuation
+  │        └─ 其他失敗 → PROCESS_EXIT_FAILURE → repair / escalation
+  │
+  └─ hard execution ceiling → HARD_EXECUTION_CEILING → human gate
+```
+
+輪詢命令與增量讀取的實作方式見
+[`references/OFFICIAL_COMMANDS.md`](../references/OFFICIAL_COMMANDS.md)，
+本節不記錄具體旗標。
+
 ## Bounded repair
 
 初次 implementation attempt 不計入 repair。失敗的修補累加 `failed_repair_count`，上限由 slot 的 `max_repair_attempts` 決定（預設 2）。達到上限時升級 slot 或進 human gate，不得無限重試。詳細條件見 `MODEL_ROUTING_POLICY.md`。
 
 Repair 必須交回**單一** implementation owner，不得同時派給多個 worker。
+
+**Repair 與 continuation 是兩件事。** Repair 修的是錯誤的結果；continuation 續的是沒有錯誤、只是 execution budget 用盡的執行（見上方 Execution lifecycle semantics）。把續跑算成 repair 會讓 turn budget 偏小的 slot 憑空耗盡 repair 預算。`failed_repair_count` 的計數規則由 [`MODEL_ROUTING_POLICY.md`](MODEL_ROUTING_POLICY.md) 的 Escalation 章節定義，此處不重複。
 
 ## Completion reporting
 

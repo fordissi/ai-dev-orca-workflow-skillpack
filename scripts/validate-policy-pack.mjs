@@ -673,6 +673,493 @@ export function validateRoutingCases(document, registry) {
 }
 
 /* ------------------------------------------------------------------------ *
+ * Operational execution lifecycle
+ *
+ * WORKFLOW_POLICY.md is the normative owner of these semantics; this section
+ * only makes them executable. The point of the split is that a slow model, a
+ * quiet terminal and an exhausted turn budget are three different facts, and
+ * none of them is a routing or permission failure.
+ * ------------------------------------------------------------------------ */
+
+// Observation states. PERMISSION_BLOCKED and ROUTING_UNAVAILABLE are the two
+// exits that hand off to a canonical blocked reason code; their meaning is
+// owned by MODEL_ROUTING_POLICY.md and is not redefined here.
+const EXECUTION_STATES = [
+  "ACTIVE",
+  "QUIET",
+  "STALLED",
+  "COMPLETE",
+  "MAX_TURNS_REACHED",
+  "PROCESS_EXIT_FAILURE",
+  "HARD_EXECUTION_CEILING",
+  "PERMISSION_BLOCKED",
+  "ROUTING_UNAVAILABLE",
+];
+
+const EXECUTION_ACTIONS = [
+  "CONTINUE",
+  "CLOSE",
+  "STALL_INTERVENTION",
+  "CONTINUATION",
+  "REPAIR_OR_ESCALATE",
+  "HUMAN_GATE",
+  "BLOCKED",
+];
+
+const PROCESS_EXIT_KINDS = ["clean", "max_turns", "failure"];
+
+// Operational guidance, not parser limits. WORKFLOW_POLICY.md states the
+// ranges; these are the midpoints used when a contract declares nothing.
+const EXECUTION_DEFAULTS = {
+  pollIntervalMs: 90_000, // 60-120s
+  stallThresholdMs: 15 * 60_000, // 10-20 min
+  hardCeilingMs: null, // opt-in; absent means no ceiling
+  maxContinuationAttempts: 2,
+};
+
+/**
+ * A read-only allowlist keyed on the actual invocation, never on the
+ * executable alone: `git` carries both `git log` and `git push`.
+ */
+const READ_ONLY_EXECUTABLES = new Set([
+  "cat", "type", "ls", "dir", "tree", "head", "tail", "wc", "stat", "file",
+  "pwd", "rg", "grep", "find", "diff", "sed", "awk", "nl", "sort", "uniq",
+  "get-content", "get-childitem", "get-item", "get-location", "select-string",
+  "test-path", "resolve-path", "measure-object",
+]);
+
+const GIT_READ_ONLY_SUBCOMMANDS = new Set([
+  "status", "rev-parse", "branch", "log", "show", "diff", "grep",
+  "ls-files", "ls-tree", "cat-file", "describe", "blame", "shortlog",
+]);
+
+// `git branch` reads; `git branch -d feature` does not.
+const GIT_MUTATING_FLAGS = new Set(["-d", "-D", "-m", "-M", "--delete", "--move", "--force", "-f"]);
+
+const GIT_COMMIT_SUBCOMMANDS = new Set(["commit", "merge", "rebase", "revert", "cherry-pick", "am"]);
+const GIT_PUSH_SUBCOMMANDS = new Set(["push"]);
+
+function commandTokens(command) {
+  if (!isNonEmptyString(command)) return [];
+
+  // Quotes are honoured so that a quoted Windows path does not split into
+  // fragments and make a known executable look unrecognised.
+  const tokens = [];
+  let current = "";
+  let quote = null;
+
+  for (const character of command.trim()) {
+    if (quote !== null) {
+      if (character === quote) quote = null;
+      else current += character;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (/\s/.test(character)) {
+      if (current.length > 0) tokens.push(current);
+      current = "";
+      continue;
+    }
+    current += character;
+  }
+  if (current.length > 0) tokens.push(current);
+
+  return tokens;
+}
+
+function executableName(rawToken) {
+  const withoutPath = rawToken.replace(/^.*[\\/]/, "");
+  return withoutPath.replace(/\.(exe|cmd|bat|ps1)$/i, "").toLowerCase();
+}
+
+/**
+ * Classifies an invocation as read-only, mutating, or unknown.
+ *
+ * Unknown is deliberately distinct from mutating: the caller fails closed on
+ * both, but an operator triaging a refusal needs to know whether the command
+ * was recognised and rejected, or simply not recognised.
+ */
+export function classifyCommand(command) {
+  const tokens = commandTokens(command);
+  if (tokens.length === 0) {
+    return { classification: "unknown", reason: "empty invocation" };
+  }
+
+  const executable = executableName(tokens[0]);
+  const args = tokens.slice(1);
+
+  if (executable === "git") {
+    const subcommand = args.find((argument) => !argument.startsWith("-"));
+    if (subcommand === undefined) {
+      return { classification: "read_only", reason: "git with no subcommand only prints usage" };
+    }
+    if (GIT_COMMIT_SUBCOMMANDS.has(subcommand)) {
+      return { classification: "mutating", reason: `git ${subcommand} writes git state`, git_subcommand: subcommand };
+    }
+    if (GIT_PUSH_SUBCOMMANDS.has(subcommand)) {
+      return { classification: "mutating", reason: "git push writes a remote", git_subcommand: subcommand };
+    }
+    if (GIT_READ_ONLY_SUBCOMMANDS.has(subcommand)) {
+      const mutatingFlag = args.find((argument) => GIT_MUTATING_FLAGS.has(argument));
+      if (mutatingFlag !== undefined) {
+        return {
+          classification: "mutating",
+          reason: `git ${subcommand} ${mutatingFlag} mutates despite a read-only subcommand`,
+          git_subcommand: subcommand,
+        };
+      }
+      return { classification: "read_only", reason: `git ${subcommand} inspects without writing`, git_subcommand: subcommand };
+    }
+    return { classification: "mutating", reason: `git ${subcommand} is not on the read-only subcommand list`, git_subcommand: subcommand };
+  }
+
+  if (READ_ONLY_EXECUTABLES.has(executable)) {
+    // A redirection turns any reader into a writer.
+    if (tokens.some((piece) => piece === ">" || piece === ">>" || piece.startsWith(">"))) {
+      return { classification: "mutating", reason: `${executable} redirects output to a file` };
+    }
+    return { classification: "read_only", reason: `${executable} inspects without writing` };
+  }
+
+  return { classification: "unknown", reason: `${executable} is not on the read-only list` };
+}
+
+/**
+ * Expands a permission ceiling into the decomposed capability model.
+ *
+ * v0.3 contracts wrote `sandbox: read-only`, which conflated three separate
+ * capabilities. Those contracts stay valid: the legacy shorthand is read as
+ * the decomposition it always meant, and any explicit decomposed field wins.
+ */
+export function normalizePermissionCeiling(ceiling) {
+  const source = isPlainObject(ceiling) ? ceiling : {};
+
+  const legacy = { filesystemRead: false, filesystemWrite: false, commandAllowed: false, commandMutation: false };
+  if (source.sandbox === "read-only") {
+    legacy.filesystemRead = true;
+    legacy.commandAllowed = true;
+  } else if (source.sandbox === "workspace-write") {
+    legacy.filesystemRead = true;
+    legacy.filesystemWrite = true;
+    legacy.commandAllowed = true;
+    legacy.commandMutation = true;
+  }
+
+  const filesystem = isPlainObject(source.filesystem) ? source.filesystem : {};
+  const command = isPlainObject(source.command_execution) ? source.command_execution : {};
+  const network = isPlainObject(source.network) ? source.network : {};
+  const database = isPlainObject(source.database) ? source.database : {};
+
+  const pick = (explicit, fallback) => (typeof explicit === "boolean" ? explicit : fallback);
+
+  return {
+    filesystem: {
+      read: pick(filesystem.read, legacy.filesystemRead),
+      write: pick(filesystem.write, legacy.filesystemWrite),
+    },
+    command_execution: {
+      allowed: pick(command.allowed, legacy.commandAllowed),
+      mutation: pick(command.mutation, legacy.commandMutation),
+      human_approval: isNonEmptyString(command.human_approval) ? command.human_approval : "as_required",
+    },
+    network: {
+      // Legacy wrote a string; `none` is the only value that denies.
+      allowed: pick(network.allowed, source.network !== undefined && source.network !== "none"),
+    },
+    database: {
+      read: pick(database.read, false),
+      write: pick(database.write, false),
+    },
+    production_access: pick(source.production_access, false),
+    may_commit: pick(source.may_commit, false),
+    may_push: pick(source.may_push, false),
+    legacy_sandbox: isNonEmptyString(source.sandbox) ? source.sandbox : null,
+  };
+}
+
+function denied(reason) {
+  return { allowed: false, code: "PERMISSION_BLOCKED", approval_required: false, reason };
+}
+
+function permitted(ceiling, reason) {
+  return {
+    allowed: true,
+    code: null,
+    // Approval is a gate in front of a permitted capability. It never widens
+    // one: an approved read is still not a write.
+    approval_required: ceiling.command_execution.human_approval === "as_required",
+    reason,
+  };
+}
+
+/**
+ * Decides one requested operation against a permission ceiling.
+ *
+ * `human_approved` on the request is deliberately never consulted. A human
+ * approving `Get-Content migration.sql` approves that read, not filesystem
+ * writes; letting approval flip a denial would make the ceiling advisory.
+ */
+export function classifyPermissionRequest(request, ceiling) {
+  const limits = normalizePermissionCeiling(ceiling);
+
+  if (!isPlainObject(request) || !isNonEmptyString(request.kind)) {
+    return denied("request kind is missing; an unreadable request is not an approved one");
+  }
+
+  switch (request.kind) {
+    case "filesystem_read":
+      return limits.filesystem.read
+        ? permitted(limits, "filesystem read is within the ceiling")
+        : denied("filesystem read is outside the ceiling");
+
+    case "filesystem_write":
+      return limits.filesystem.write
+        ? permitted(limits, "filesystem write is within the ceiling")
+        : denied("filesystem write is outside the ceiling");
+
+    case "network":
+      return limits.network.allowed
+        ? permitted(limits, "network access is within the ceiling")
+        : denied("network access is outside the ceiling");
+
+    case "database_read":
+      return limits.database.read ? permitted(limits, "database read is within the ceiling") : denied("database read is outside the ceiling");
+
+    case "database_write":
+      return limits.database.write ? permitted(limits, "database write is within the ceiling") : denied("database write is outside the ceiling");
+
+    case "commit":
+      return limits.may_commit ? permitted(limits, "commit is within the ceiling") : denied("commit is outside the ceiling");
+
+    case "push":
+      return limits.may_push ? permitted(limits, "push is within the ceiling") : denied("push is outside the ceiling");
+
+    case "production":
+      return limits.production_access
+        ? permitted(limits, "production access is within the ceiling")
+        : denied("production access is outside the ceiling");
+
+    case "command": {
+      if (!limits.command_execution.allowed) {
+        return denied("command execution is outside the ceiling");
+      }
+
+      const { classification, reason, git_subcommand: gitSubcommand } = classifyCommand(request.command);
+
+      // Commit and push are separately fenced, so a workspace-write worker
+      // that may not commit is still stopped here.
+      if (gitSubcommand !== undefined && GIT_COMMIT_SUBCOMMANDS.has(gitSubcommand) && !limits.may_commit) {
+        return denied(`${reason}; may_commit is false`);
+      }
+      if (gitSubcommand !== undefined && GIT_PUSH_SUBCOMMANDS.has(gitSubcommand) && !limits.may_push) {
+        return denied(`${reason}; may_push is false`);
+      }
+
+      if (classification === "read_only") {
+        return permitted(limits, `${reason}; read-only command execution is within the ceiling`);
+      }
+      if (!limits.command_execution.mutation) {
+        return denied(`${reason}; command mutation is outside the ceiling`);
+      }
+      return permitted(limits, `${reason}; command mutation is within the ceiling`);
+    }
+
+    default:
+      return denied(`unrecognised request kind ${JSON.stringify(request.kind)}`);
+  }
+}
+
+/**
+ * Classifies one poll of a dispatched worker or reviewer.
+ *
+ * The ordering is the whole point. A process fact (exit, permission request,
+ * unreachable session) outranks every clock reading, and no clock reading on
+ * its own may produce a failure: total elapsed time never blocks, only
+ * silence since the last observed progress does.
+ */
+export function classifyExecutionState(observation, options = {}) {
+  const {
+    stallThresholdMs = EXECUTION_DEFAULTS.stallThresholdMs,
+    hardCeilingMs = EXECUTION_DEFAULTS.hardCeilingMs,
+    maxContinuationAttempts = EXECUTION_DEFAULTS.maxContinuationAttempts,
+    permissionCeiling = {},
+  } = options;
+
+  if (!isPlainObject(observation)) {
+    // No reading is not evidence of failure, exactly as an absent resource
+    // entry is not evidence of exhaustion. The hard ceiling bounds this.
+    return { state: "QUIET", action: "CONTINUE", code: null, reason: "no observation available; absence of a reading is not failure" };
+  }
+
+  const elapsedMs = typeof observation.elapsed_ms === "number" ? observation.elapsed_ms : 0;
+  const sinceProgressMs = typeof observation.since_progress_ms === "number" ? observation.since_progress_ms : elapsedMs;
+  const continuationCount = typeof observation.continuation_count === "number" ? observation.continuation_count : 0;
+
+  // 1. The process exited. That is a fact; timing no longer matters.
+  if (isPlainObject(observation.exit)) {
+    const kind = observation.exit.kind;
+    if (kind === "clean") {
+      return { state: "COMPLETE", action: "CLOSE", code: null, reason: "process exited with a usable result" };
+    }
+    if (kind === "max_turns") {
+      if (continuationCount >= maxContinuationAttempts) {
+        return {
+          state: "MAX_TURNS_REACHED",
+          action: "HUMAN_GATE",
+          code: null,
+          reason: `continuation budget of ${maxContinuationAttempts} is exhausted`,
+        };
+      }
+      return {
+        state: "MAX_TURNS_REACHED",
+        action: "CONTINUATION",
+        code: null,
+        reason: "turn budget exhausted without an error result; resume the same chain",
+      };
+    }
+    return { state: "PROCESS_EXIT_FAILURE", action: "REPAIR_OR_ESCALATE", code: null, reason: "process exited without a usable result" };
+  }
+
+  // 2. A permission request is decided against the ceiling, not the clock.
+  if (isPlainObject(observation.permission_request)) {
+    const decision = classifyPermissionRequest(observation.permission_request, permissionCeiling);
+    if (decision.allowed) {
+      return { state: "ACTIVE", action: "CONTINUE", code: null, reason: decision.reason };
+    }
+    return { state: "PERMISSION_BLOCKED", action: "BLOCKED", code: "PERMISSION_BLOCKED", reason: decision.reason };
+  }
+
+  // 3. The session is gone and left no exit record: the runtime is unreachable.
+  if (observation.session_active === false) {
+    return { state: "ROUTING_UNAVAILABLE", action: "BLOCKED", code: "ROUTING_UNAVAILABLE", reason: "session is no longer reachable and left no exit record" };
+  }
+
+  // 4. A hard ceiling is a decision point, never an automatic failure.
+  if (typeof hardCeilingMs === "number" && elapsedMs >= hardCeilingMs) {
+    return { state: "HARD_EXECUTION_CEILING", action: "HUMAN_GATE", code: null, reason: "hard execution ceiling reached while the session is still active" };
+  }
+
+  // 5. Observable progress resets the stall clock, however long the run is.
+  if (observation.progress_observed === true) {
+    return { state: "ACTIVE", action: "CONTINUE", code: null, reason: "observable progress since the last poll" };
+  }
+
+  // 6. Silence long enough to be worth inspecting - inspection, not a verdict.
+  if (sinceProgressMs >= stallThresholdMs) {
+    return { state: "STALLED", action: "STALL_INTERVENTION", code: null, reason: "no observable progress for the stall threshold" };
+  }
+
+  // 7. Silent but alive.
+  return { state: "QUIET", action: "CONTINUE", code: null, reason: "session active with no new output yet" };
+}
+
+/* ------------------------------------------------------------------------ *
+ * Execution conformance cases
+ *
+ * tests/execution-cases.yaml is a conformance check on the execution
+ * lifecycle section of WORKFLOW_POLICY.md, which stays normative.
+ * ------------------------------------------------------------------------ */
+
+const EXECUTION_CASE_KINDS = ["waiting", "permission"];
+
+export function validateExecutionCases(document) {
+  const findings = [];
+
+  if (!isPlainObject(document) || !Array.isArray(document.cases) || document.cases.length === 0) {
+    return ["execution cases: expected a non-empty `cases` list"];
+  }
+
+  const seen = new Set();
+
+  for (const [index, testCase] of document.cases.entries()) {
+    const named = isNonEmptyString(testCase?.name) ? testCase.name : `cases[${index}]`;
+
+    if (!isPlainObject(testCase)) {
+      findings.push(`${named}: expected a mapping`);
+      continue;
+    }
+    if (!isNonEmptyString(testCase.name)) {
+      findings.push(`${named}: a case needs a name`);
+      continue;
+    }
+    if (seen.has(testCase.name)) findings.push(`${named}: duplicate case name`);
+    seen.add(testCase.name);
+
+    // Every case states why it exists; a case nobody can read is a case
+    // nobody will correct.
+    if (!isNonEmptyString(testCase.why)) findings.push(`${named}: a case needs a \`why\``);
+
+    if (!EXECUTION_CASE_KINDS.includes(testCase.kind)) {
+      findings.push(`${named}: kind ${JSON.stringify(testCase.kind)} is not one of ${EXECUTION_CASE_KINDS.join("|")}`);
+      continue;
+    }
+
+    if (!isPlainObject(testCase.expect)) {
+      findings.push(`${named}: expected an \`expect\` mapping`);
+      continue;
+    }
+
+    if (testCase.kind === "waiting") {
+      const options = isPlainObject(testCase.options) ? testCase.options : {};
+      const result = classifyExecutionState(testCase.observation, {
+        stallThresholdMs: options.stall_threshold_ms,
+        hardCeilingMs: options.hard_ceiling_ms ?? null,
+        maxContinuationAttempts: options.max_continuation_attempts,
+        permissionCeiling: testCase.ceiling,
+      });
+
+      if (!EXECUTION_STATES.includes(result.state)) {
+        findings.push(`${named}: produced unknown state ${JSON.stringify(result.state)}`);
+      }
+      if (!EXECUTION_ACTIONS.includes(result.action)) {
+        findings.push(`${named}: produced unknown action ${JSON.stringify(result.action)}`);
+      }
+      if (testCase.expect.state !== result.state) {
+        findings.push(`${named}: expected state ${JSON.stringify(testCase.expect.state)}, got ${JSON.stringify(result.state)}`);
+      }
+      if (testCase.expect.action !== result.action) {
+        findings.push(`${named}: expected action ${JSON.stringify(testCase.expect.action)}, got ${JSON.stringify(result.action)}`);
+      }
+      for (const forbidden of testCase.must_not ?? []) {
+        if (result.state === forbidden || result.code === forbidden) {
+          findings.push(`${named}: must not classify as ${forbidden}`);
+        }
+      }
+      if (isPlainObject(testCase.observation) && testCase.observation.exit !== undefined && testCase.observation.exit !== null) {
+        if (!PROCESS_EXIT_KINDS.includes(testCase.observation.exit?.kind)) {
+          findings.push(`${named}: exit.kind ${JSON.stringify(testCase.observation.exit?.kind)} is not one of ${PROCESS_EXIT_KINDS.join("|")}`);
+        }
+      }
+      continue;
+    }
+
+    const decision = classifyPermissionRequest(testCase.request, testCase.ceiling);
+    if (testCase.expect.allowed !== decision.allowed) {
+      findings.push(`${named}: expected allowed ${JSON.stringify(testCase.expect.allowed)}, got ${JSON.stringify(decision.allowed)}`);
+    }
+    if (testCase.expect.code !== undefined && testCase.expect.code !== decision.code) {
+      findings.push(`${named}: expected code ${JSON.stringify(testCase.expect.code)}, got ${JSON.stringify(decision.code)}`);
+    }
+    if (testCase.expect.approval_required !== undefined && testCase.expect.approval_required !== decision.approval_required) {
+      findings.push(
+        `${named}: expected approval_required ${JSON.stringify(testCase.expect.approval_required)}, got ${JSON.stringify(decision.approval_required)}`,
+      );
+    }
+    if (testCase.expect.classification !== undefined) {
+      const { classification } = classifyCommand(testCase.request?.command);
+      if (testCase.expect.classification !== classification) {
+        findings.push(`${named}: expected classification ${JSON.stringify(testCase.expect.classification)}, got ${JSON.stringify(classification)}`);
+      }
+    }
+  }
+
+  return findings;
+}
+
+/* ------------------------------------------------------------------------ *
  * Repository validation (direct-run entry point)
  * ------------------------------------------------------------------------ */
 
@@ -723,7 +1210,7 @@ function readInput(root, relativePath, parseAs, findings) {
 
 export function validateRepository(root = process.cwd()) {
   const findings = [];
-  const summary = { registry: 0, resourceExample: 0, routingCases: 0, filesScanned: 0, scanFindings: 0, markdownFilesLinkChecked: 0 };
+  const summary = { registry: 0, resourceExample: 0, routingCases: 0, executionCases: 0, filesScanned: 0, scanFindings: 0, markdownFilesLinkChecked: 0 };
 
   const registry = readInput(root, "policies/MODEL_REGISTRY.yaml", "yaml", findings);
   if (registry !== undefined) {
@@ -748,6 +1235,14 @@ export function validateRepository(root = process.cwd()) {
       findings.push(`tests/routing-cases.yaml: ${finding}`);
     }
     summary.routingCases = Array.isArray(cases?.cases) ? cases.cases.length : 0;
+  }
+
+  const executionCases = readInput(root, "tests/execution-cases.yaml", "yaml", findings);
+  if (executionCases !== undefined) {
+    for (const finding of validateExecutionCases(executionCases)) {
+      findings.push(`tests/execution-cases.yaml: ${finding}`);
+    }
+    summary.executionCases = Array.isArray(executionCases?.cases) ? executionCases.cases.length : 0;
   }
 
   const invalidFixturePath = join(root, "tests", "fixtures", "invalid-model-registry.yaml");
@@ -899,7 +1394,8 @@ if (process.argv[1] !== undefined && pathToFileURL(process.argv[1]).href === imp
 
   console.log(
     `slots: ${summary.registry} | resource examples: ${summary.resourceExample} | ` +
-      `routing cases: ${summary.routingCases} | files scanned: ${summary.filesScanned} | ` +
+      `routing cases: ${summary.routingCases} | execution cases: ${summary.executionCases} | ` +
+      `files scanned: ${summary.filesScanned} | ` +
       `markdown link-checked: ${summary.markdownFilesLinkChecked}`,
   );
 

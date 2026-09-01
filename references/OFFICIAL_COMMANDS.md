@@ -47,6 +47,25 @@ orca terminal wait --terminal <handle> --for tui-idle --timeout-ms 60000 --json
 orca terminal send --terminal <handle> --text "<prompt>" --enter --json
 ```
 
+### `--timeout-ms` 是輪詢窗口，不是 worker 的完成期限
+
+`orca terminal wait --timeout-ms 60000` 逾時**只表示「醒來重新觀察一次」**。
+它不表示 worker 只有 60 秒可以完成，逾時本身也不是錯誤。Router 收到逾時後應
+讀取增量輸出、判斷是否有進展，再決定繼續等待或介入。語意見
+[`policies/WORKFLOW_POLICY.md`](../policies/WORKFLOW_POLICY.md) 的
+Execution lifecycle semantics。
+
+判斷進展一律用 **cursor read**，因為只有它有歷史；畫面讀取看不到已捲離的輸出，
+會把有進展的 session 誤判成安靜：
+
+```bash
+orca terminal read --terminal <handle> --cursor <n> --limit 1000 --json
+```
+
+cursor 前進、出現新的 stdout/stderr、新的 tool invocation、tests 階段改變，
+都是 observable progress。**總執行時間長不是進展的反面**——只有「距離上次進展的
+時間」才是 stall 訊號。
+
 非互動式派工（`codex exec` 會自行結束，用 `--for exit`）：
 
 ```bash
@@ -141,6 +160,12 @@ codex --sandbox read-only --ask-for-approval on-request        # discovery / rev
 codex --sandbox workspace-write --ask-for-approval on-request  # implementation
 ```
 
+**`--sandbox read-only` 不是「不得執行命令」。** 它允許執行命令但禁止寫入檔案系統，
+這正是 reviewer 需要的組合：`git status`、`git diff`、`rg`、`cat` 都要執行命令才能完成。
+`--ask-for-approval on-request` 會讓部分命令逐條要求人工核准；**核准一條唯讀命令
+不會提高 permission ceiling**，能力分解見
+[`policies/WORKFLOW_POLICY.md`](../policies/WORKFLOW_POLICY.md)。
+
 PROHIBITED: `approval_policy = "untrusted"` 已不再是有效值，不要出現在任何範例中。
 PROHIBITED: 不要使用 `--dangerously-bypass-approvals-and-sandbox`，除非外層已有獨立沙箱且經人核准。
 
@@ -175,6 +200,15 @@ claude -p --max-turns 3 "query"
 `manual`、`dontAsk`、`plan`。
 
 Discovery 與 review 用 `plan`；需要人確認每一步時用 `manual`。
+
+`--max-turns` 設的是**回合預算**。用盡時 session 以 `Reached max turns` 結束，
+這是 execution budget exhaustion，**不是錯誤結果、不是 timeout、不是 permission
+denial、也不是 routing failure**。可恢復時在同一條 chain 上 bounded continuation，
+不重跑整輪 discovery；分類與續跑上限見
+[`policies/WORKFLOW_POLICY.md`](../policies/WORKFLOW_POLICY.md) 的
+Execution lifecycle semantics。
+
+`--permission-mode plan` 同樣不等於禁止執行唯讀命令；它限制的是變更，不是檢查。
 
 PROHIBITED: 不要把 `--dangerously-skip-permissions` 或 `--permission-mode bypassPermissions`
 當成預設；兩者都會關閉權限檢查。

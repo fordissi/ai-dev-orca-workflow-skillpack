@@ -145,6 +145,27 @@ verification_need=independent`
 不得為了繞過阻塞而降低 `minimum_tier`、放棄 independent review 的 disjointness、
 或提高權限。
 
+**慢不是阻塞。** 輪詢逾時、總執行時間長、terminal 安靜、還沒給結論、
+`Reached max turns`——都不是 `BLOCKED`：
+
+```text
+poll timeout != task timeout
+total runtime != stall duration
+slow != blocked
+```
+
+只有「session 仍活著且距上次可觀察進展超過 stall threshold」才進 stall 處理，
+而 stall 處理買到的是一次檢查，不是判決。turn budget 用盡走 bounded continuation，
+不算一次失敗的 repair。到達 hard ceiling 而 worker 仍在跑時交人決定，不自動 FAIL。
+
+同樣地，`sandbox: read-only` **不等於**不准執行任何命令：`filesystem read`、
+`command execution` 與 `filesystem write` 是三種能力。Reviewer 要能跑
+`git diff`、`rg`、`cat` 才做得了獨立複核；它不能做的是寫入、commit、push、
+動 database 與碰 production。人核准一條唯讀命令**不會提高 permission ceiling**。
+
+兩者的完整語意見 [`policies/WORKFLOW_POLICY.md`](policies/WORKFLOW_POLICY.md) 的
+Execution lifecycle semantics 與 Permission ceiling 的能力分解。
+
 ## 隱私與安全邊界
 
 這個 repository 不存放 project secrets、個人資料、客戶資料、credential、
@@ -184,6 +205,6 @@ public repository commit policy。
 | `templates/` | contract、strategic return、handoff、session、benchmark、decision note |
 | `runtime/RESOURCE_STATE.example.json` | 安全的 resource snapshot 範例 |
 | `scripts/validate-policy-pack.mjs` | conformance checker |
-| `tests/` | 政策一致性測試與 routing cases |
+| `tests/` | 政策一致性測試、routing cases 與 execution cases |
 | `docs/superpowers/` | 刻意公開的設計規格與實作計畫 |
 | `experiments/` | optional、non-authoritative |

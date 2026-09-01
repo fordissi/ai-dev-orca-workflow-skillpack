@@ -128,6 +128,28 @@ Resource overlay **只能在達到相同 `minimum_tier` 的候選之間重排**�
 
 **不得為了把 `BLOCKED` 變成 `SELECTED` 而降低 `minimum_tier`、放棄 disjointness 或提高權限。**
 
+### Execution state 不是 blocked reason code
+
+執行過程的觀察狀態（`ACTIVE` / `QUIET` / `STALLED` / `MAX_TURNS_REACHED` 等）由
+[`WORKFLOW_POLICY.md`](WORKFLOW_POLICY.md) 的 Execution lifecycle semantics 定義，
+**它們不是 reason code，也不會自動變成 reason code。**
+
+以下一律**不得**標為 `PERMISSION_BLOCKED`：
+
+- 模型執行時間長；
+- polling window 逾時；
+- 尚未產出最終結論；
+- terminal 暫時沒有輸出；
+- 長時間推理；
+- `Reached max turns` 等 execution budget 用盡。
+
+`PERMISSION_BLOCKED` 只在**完成任務所需的操作超出 permission ceiling** 時使用，
+例如：reviewer 必須讀 repo 但 ceiling 不允許任何讀取路徑、implementation 必須寫入
+但 ceiling 為唯讀、task 明確需要 network 但 network 已關閉。
+
+同理，`ROUTING_UNAVAILABLE` 指的是候選**只差可用性**；session 仍在執行、只是慢或安靜，
+不屬於此碼。execution budget 用盡也不屬於此碼——它走 bounded continuation。
+
 ## Independent review 的 disjointness
 
 當 `verification_need` 為 `independent` 或 `adversarial` 時，reviewer 的 provider 與 model family **都必須**與 implementer 不同。
@@ -145,6 +167,8 @@ Resource overlay **只能在達到相同 `minimum_tier` 的候選之間重排**�
 - 不可逆風險。
 
 **初次 implementation attempt 不計入 `failed_repair_count`。** 達到上限時升級 slot 或進 human gate，不得無限重試。Repair 必須交回單一 implementation owner。
+
+**Continuation 也不計入 `failed_repair_count`。** 因 execution budget 用盡（例如 `Reached max turns`）而續跑同一條 chain，並不是一次失敗的修補；它由自己的 `max_continuation_attempts` 限制，定義見 [`WORKFLOW_POLICY.md`](WORKFLOW_POLICY.md) 的 Execution lifecycle semantics。只有產生錯誤結果後的修補才累加 `failed_repair_count`。
 
 ## 新模型
 

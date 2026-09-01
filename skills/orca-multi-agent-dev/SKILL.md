@@ -59,7 +59,58 @@ model family 都必須**與 implementer 不同。找不到 disjoint 候選就回
 
 Reviewer 直接看 filesystem、`git diff` 與測試輸出，不採信 worker 摘要。
 
-## 5. 停止
+## 5. 執行中：等待、權限、max turns
+
+**慢不是壞。** 輪詢逾時、總執行時間長、terminal 安靜、還沒給結論——四者都不是失敗，
+不得回 `BLOCKED`。
+
+```text
+poll timeout != task timeout
+total runtime != stall duration
+slow != blocked
+```
+
+`orca terminal wait --timeout-ms 60000` 的逾時只表示「醒來再看一次」，
+不表示 worker 只有 60 秒。用 cursor read 看增量輸出判斷有無進展。
+
+| 觀察到 | 狀態 | 做什麼 |
+|---|---|---|
+| 有新輸出／新 tool call／tests 階段變了 | `ACTIVE` | 繼續等 |
+| session 活著但暫時沒輸出 | `QUIET` | 繼續等 |
+| 活著且距上次進展達 stall threshold（預設 10-20 分） | `STALLED` | 檢查狀態、讀增量輸出、bounded resume；仍無解才 human gate |
+| exit 且有可用結果 | `COMPLETE` | 進 review |
+| exit 且 `Reached max turns` | `MAX_TURNS_REACHED` | 在同一條 chain 上 bounded continuation（預設上限 2） |
+| exit 但無可用結果 | `PROCESS_EXIT_FAILURE` | 走既有 repair / escalation |
+| 到達 hard ceiling 但還活著 | `HARD_EXECUTION_CEILING` | **human gate，不自動 FAIL** |
+| session 不可達且無 exit 紀錄 | `ROUTING_UNAVAILABLE` | 交回 human |
+
+**Continuation 不是 repair。** turn budget 用盡不是錯誤結果，不累加
+`failed_repair_count`。
+
+### 權限：讀、執行、寫是三件事
+
+`sandbox: read-only` **不等於**「不准執行任何命令」。Reviewer 要跑
+`git status`、`git diff`、`git log`、`rg`、`cat`、`Get-Content` 才能做事。
+
+```text
+CAN    檢視 repo、執行唯讀命令、看 git history/diff/status、讀 tests/source/docs
+CANNOT 改檔案、改 git 狀態、commit、push、動 database、碰 production、改設定
+```
+
+命令是否唯讀看**這次實際 invocation**，不看 executable 名稱——`git` 同時有
+`git log` 與 `git push`，`git branch` 與 `git branch -d` 也不同。無法判定就 fail closed。
+
+Human 核准一條唯讀命令**不提高 permission ceiling**：核准
+`Get-Content migration.sql` 不等於核准寫入。
+
+`PERMISSION_BLOCKED` 只用在**所需操作超出 ceiling** 時。慢、安靜、還沒結論、
+max turns 都不是 `PERMISSION_BLOCKED`。
+
+完整語意見 [`WORKFLOW_POLICY.md`](../../policies/WORKFLOW_POLICY.md) 的
+Permission ceiling 的能力分解與 Execution lifecycle semantics；命令細節見
+[`OFFICIAL_COMMANDS.md`](../../references/OFFICIAL_COMMANDS.md)。
+
+## 6. 停止
 
 `BLOCKED` 必須附 reason code：`CONFIG_INVALID`、`ROUTING_UNAVAILABLE`、
 `POLICY_BLOCKED`、`RESOURCE_BLOCKED`、`PERMISSION_BLOCKED`。
@@ -71,7 +122,7 @@ auth/RBAC/RLS、privileged boundary、production deploy、secrets/security confi
 
 `failed_repair_count >= max_repair_attempts` 時升級或停止。初次 attempt 不算 repair。
 
-## 6. 回報（Worker → Operational Router）
+## 7. 回報（Worker → Operational Router）
 
 ```text
 TASK_RESULT
@@ -96,7 +147,7 @@ source_summary:
 `actual_provider` / `actual_model` / `reasoning_effort` 由 router 寫定，worker 只回填。
 讀不到 quota 就整段 `UNKNOWN`——**禁止為了填滿欄位而猜測**。
 
-## 7. Handback（Operational Router → Strategic Router）
+## 8. Handback（Operational Router → Strategic Router）
 
 回報鏈固定為：
 
@@ -155,7 +206,7 @@ provider conversation ID。
 current project handoff。改到 durable state 時先更新 handoff，再用 `HANDOFF_UPDATE`
 指出改了哪裡。
 
-## 8. 改動這個 pack 之前
+## 9. 改動這個 pack 之前
 
 命令範例以本機 `--help` 為準，見
 [`OFFICIAL_COMMANDS.md`](../../references/OFFICIAL_COMMANDS.md)。
