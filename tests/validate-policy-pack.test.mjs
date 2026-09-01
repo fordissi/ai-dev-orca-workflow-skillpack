@@ -180,3 +180,43 @@ test("handoff and session templates carry their required sections", async () => 
   assert.match(session, /do not guess quota/);
   assert.ok(session.includes("production_access: false"));
 });
+
+test("benchmark record template captures comparable run data", async () => {
+  const record = await readFile("templates/BENCHMARK_RECORD_TEMPLATE.md", "utf8");
+  const required = [
+    "task_class", "slot", "provider", "model", "reasoning", "correctness",
+    "wall_clock_latency", "repair_count", "review_findings", "review_catch_rate",
+    "quota_efficiency", "confounders",
+  ];
+  assert.deepEqual(required.filter((field) => !record.includes(field)), []);
+  assert.match(record, /UNKNOWN/);
+});
+
+test("benchmark registry decision note records evidence and rollback", async () => {
+  const note = await readFile("templates/REGISTRY_DECISION_NOTE_TEMPLATE.md", "utf8");
+  const required = [
+    "evidence_sample_size", "old_mapping", "new_mapping", "rollback_condition",
+    "reviewer", "approval", "effective_date",
+  ];
+  assert.deepEqual(required.filter((field) => !note.includes(field)), []);
+  // A single run must never be enough to move a stable mapping.
+  assert.match(note, /single/i);
+});
+
+test("benchmark evidence reference records scope, limits and expiry", async () => {
+  const evidence = await readFile("references/MODEL_EVIDENCE.md", "utf8");
+  const required = [
+    "source_url", "accessed_at", "scope", "methodology_limitation",
+    "confidence", "expires_at", "evidence_status",
+  ];
+  assert.deepEqual(required.filter((field) => !evidence.includes(field)), []);
+  assert.match(evidence, /provisional/);
+});
+
+test("project and experiment readmes forbid real operational data", async () => {
+  const handoffs = await readFile("project-handoffs/README.md", "utf8");
+  const experiment = await readFile("experiments/openusage-windows/README.md", "utf8");
+  assert.match(handoffs, /sanitized/i);
+  assert.match(experiment, /optional/i);
+  assert.match(experiment, /UNKNOWN|not authoritative|non-authoritative/i);
+});
