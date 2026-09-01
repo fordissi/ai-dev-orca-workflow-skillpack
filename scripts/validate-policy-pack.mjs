@@ -194,6 +194,43 @@ export function validateResourceState(state, options = {}) {
       findings.push(`${at}: source UNKNOWN cannot carry state ${JSON.stringify(entry.state)}`);
     }
 
+    for (const windowName of RESOURCE_WINDOWS) {
+      if (!(windowName in entry)) continue;
+      const window = entry[windowName];
+
+      if (!isPlainObject(window)) {
+        findings.push(`${at}.${windowName}: expected a mapping`);
+        continue;
+      }
+
+      if ("reset_at" in window && window.reset_at !== null && !isNonEmptyString(window.reset_at)) {
+        findings.push(`${at}.${windowName}.reset_at: expected an ISO timestamp string or null`);
+      }
+
+      if ("remaining_ratio" in window && window.remaining_ratio !== null) {
+        const ratio = window.remaining_ratio;
+        if (typeof ratio !== "number" || !Number.isFinite(ratio) || ratio < 0 || ratio > 1) {
+          findings.push(`${at}.${windowName}.remaining_ratio: expected a ratio between 0 and 1, or null`);
+        }
+      }
+    }
+
+    if ("remaining_confidence" in entry) {
+      if (!CONFIDENCE_VALUES.includes(entry.remaining_confidence)) {
+        findings.push(
+          `${at}.remaining_confidence: expected one of ${CONFIDENCE_VALUES.join("|")}`,
+        );
+      } else if (
+        RESOURCE_SOURCES.includes(entry.source) &&
+        confidenceRank(entry.remaining_confidence) > confidenceRank(SOURCE_TRUST[entry.source])
+      ) {
+        // A reading cannot be more confident than where it came from.
+        findings.push(
+          `${at}.remaining_confidence: ${entry.remaining_confidence} exceeds the trust of source ${entry.source}`,
+        );
+      }
+    }
+
     if (typeof entry.available === "boolean") {
       return;
     }
@@ -252,6 +289,167 @@ function resolveResourceEntry(resourceStates, resourceStateKey) {
   return isPlainObject(cursor) ? cursor : undefined;
 }
 
+/* ------------------------------------------------------------------------ *
+ * Reset proximity / stranded capacity
+ *
+ * Quota opportunity cost is a routing signal, not capability authority.
+ * RESOURCE_AWARE_ROUTING.md owns these thresholds; this section only makes
+ * them executable. Nothing here can change which candidates are eligible - it
+ * only reorders candidates that already passed every eligibility check.
+ * ------------------------------------------------------------------------ */
+
+const RESET_PROXIMITY_VALUES = ["NEAR", "MEDIUM", "FAR", "UNKNOWN"];
+const STRANDED_RISK_VALUES = ["HIGH", "MEDIUM", "LOW", "UNKNOWN"];
+const CONFIDENCE_VALUES = ["HIGH", "MEDIUM", "LOW", "UNKNOWN"];
+
+// A reading can never be more confident than the source it came from.
+const SOURCE_TRUST = { ORCA_RUNTIME: "HIGH", USER_STATEMENT: "MEDIUM", UNKNOWN: "UNKNOWN" };
+
+const RESET_NEAR_MS = 6 * 60 * 60 * 1000;
+const RESET_MEDIUM_MS = 48 * 60 * 60 * 1000;
+const REMAINING_HIGH = 0.5;
+const REMAINING_MODERATE = 0.2;
+
+// The freshness rule already stated in RESOURCE_AWARE_ROUTING.md. A decayed
+// remaining ratio is worse than no ratio, because it looks authoritative.
+const SNAPSHOT_FRESH_MS = 5 * 60 * 1000;
+
+const RESOURCE_WINDOWS = ["short_window", "weekly_window"];
+
+function confidenceRank(value) {
+  const index = CONFIDENCE_VALUES.indexOf(value);
+  return index === -1 ? 0 : CONFIDENCE_VALUES.length - index;
+}
+
+function riskRank(value) {
+  const index = STRANDED_RISK_VALUES.indexOf(value);
+  return index === -1 ? 0 : STRANDED_RISK_VALUES.length - index;
+}
+
+function proximityRank(value) {
+  const index = RESET_PROXIMITY_VALUES.indexOf(value);
+  return index === -1 ? 0 : RESET_PROXIMITY_VALUES.length - index;
+}
+
+function toMillis(value) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : Number.NaN;
+  if (isNonEmptyString(value)) return Date.parse(value);
+  if (value instanceof Date) return value.getTime();
+  return Number.NaN;
+}
+
+/**
+ * How close a window is to refilling.
+ *
+ * A reset time already in the past describes a window that no longer exists,
+ * so it reads UNKNOWN rather than NEAR: the honest answer is that this
+ * snapshot no longer says anything about the current window.
+ */
+export function resetProximity(resetAt, now) {
+  const at = toMillis(resetAt);
+  const evaluatedAt = toMillis(now);
+  if (!Number.isFinite(at) || !Number.isFinite(evaluatedAt)) return "UNKNOWN";
+
+  const remainingMs = at - evaluatedAt;
+  if (remainingMs <= 0) return "UNKNOWN";
+  if (remainingMs <= RESET_NEAR_MS) return "NEAR";
+  if (remainingMs <= RESET_MEDIUM_MS) return "MEDIUM";
+  return "FAR";
+}
+
+/**
+ * How much of this pool's remaining capacity would be lost to the reset.
+ *
+ * Stranding needs both halves: a lot left AND little time to spend it. Plenty
+ * of capacity with a distant reset is not stranded, and an almost-spent pool
+ * strands nothing however soon it refills.
+ */
+export function strandedCapacityRisk(remainingRatio, proximity) {
+  if (typeof remainingRatio !== "number" || !Number.isFinite(remainingRatio)) return "UNKNOWN";
+  if (remainingRatio < 0 || remainingRatio > 1) return "UNKNOWN";
+  if (!RESET_PROXIMITY_VALUES.includes(proximity) || proximity === "UNKNOWN") return "UNKNOWN";
+
+  if (remainingRatio >= REMAINING_HIGH) {
+    if (proximity === "NEAR") return "HIGH";
+    return proximity === "MEDIUM" ? "MEDIUM" : "LOW";
+  }
+
+  if (remainingRatio >= REMAINING_MODERATE) {
+    return proximity === "NEAR" ? "MEDIUM" : "LOW";
+  }
+
+  return "LOW";
+}
+
+const UNKNOWN_SIGNAL = Object.freeze({
+  state: "UNKNOWN",
+  reset_proximity: "UNKNOWN",
+  stranded_capacity_risk: "UNKNOWN",
+  confidence: "UNKNOWN",
+  stale: false,
+});
+
+/**
+ * Resolves one snapshot entry into the opportunity signal used for ordering.
+ *
+ * The returned view carries labels only - never a ratio, a reset timestamp or
+ * any other raw quota value - so it can be written into routing evidence
+ * without putting account data into an artifact.
+ *
+ * It returns UNKNOWN, which is neutral, whenever the reading cannot carry the
+ * weight: an untrusted or malformed entry, an UNKNOWN state, a snapshot too
+ * old for its ratio to still be true, or a confidence below MEDIUM.
+ */
+export function resolveStrandedCapacity(entry, options = {}) {
+  const { now = Date.now() } = options;
+
+  if (!isPlainObject(entry)) return { ...UNKNOWN_SIGNAL };
+  if (resourceEntryTrust(entry) !== null) return { ...UNKNOWN_SIGNAL };
+
+  const state = RESOURCE_STATES.includes(entry.state) ? entry.state : "UNKNOWN";
+
+  // An UNKNOWN state cannot carry a confident opportunity signal. This is what
+  // keeps YELLOW and UNKNOWN from acquiring a precedence between them.
+  if (state === "UNKNOWN") return { ...UNKNOWN_SIGNAL };
+
+  const sourceTrust = SOURCE_TRUST[entry.source] ?? "UNKNOWN";
+  const declared = CONFIDENCE_VALUES.includes(entry.remaining_confidence) ? entry.remaining_confidence : null;
+  // A declared confidence may lower the source's trust but never raise it.
+  const confidence =
+    declared === null || confidenceRank(declared) > confidenceRank(sourceTrust) ? sourceTrust : declared;
+
+  const evaluatedAt = toMillis(now);
+  const checkedAt = toMillis(entry.checked_at);
+  const stale = !Number.isFinite(checkedAt) || !Number.isFinite(evaluatedAt) || evaluatedAt - checkedAt > SNAPSHOT_FRESH_MS;
+
+  const base = { state, reset_proximity: "UNKNOWN", stranded_capacity_risk: "UNKNOWN", confidence, stale };
+
+  if (stale) return base;
+  if (confidenceRank(confidence) < confidenceRank("MEDIUM")) return base;
+
+  // Each independently limited window is evaluated on its own reset. The pool
+  // is as stranded as its most stranded window: a five-hour window about to
+  // refill strands capacity even when the weekly window is far away.
+  let best = { proximity: "UNKNOWN", risk: "UNKNOWN" };
+
+  for (const windowName of RESOURCE_WINDOWS) {
+    const window = entry[windowName];
+    if (!isPlainObject(window)) continue;
+
+    const proximity = resetProximity(window.reset_at, now);
+    const risk = strandedCapacityRisk(window.remaining_ratio, proximity);
+
+    if (
+      riskRank(risk) > riskRank(best.risk) ||
+      (riskRank(risk) === riskRank(best.risk) && proximityRank(proximity) > proximityRank(best.proximity))
+    ) {
+      best = { proximity, risk };
+    }
+  }
+
+  return { ...base, reset_proximity: best.proximity, stranded_capacity_risk: best.risk };
+}
+
 /**
  * Selects one candidate from a slot's ordered candidates.
  *
@@ -259,6 +457,12 @@ function resolveResourceEntry(resourceStates, resourceStateKey) {
  * `minimum_tier`; it can never move work down to a weaker candidate. YELLOW and
  * UNKNOWN are treated neutrally so a missing reading is neither punished nor
  * rewarded, and registry order breaks the tie.
+ *
+ * Stranded-capacity preference is the last layer and the weakest. It reorders
+ * only inside the group that shares the resource state of the candidate
+ * registry order would already have chosen, so it can never move work across
+ * the GREEN / YELLOW / UNKNOWN / RED bands, and can never put a YELLOW ahead of
+ * an UNKNOWN or the reverse.
  */
 export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
   const {
@@ -267,6 +471,8 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
     excludeProvider = null,
     excludeModelFamily = null,
     allowRed = false,
+    preferStrandedCapacity = true,
+    now = Date.now(),
   } = options;
 
   if (!isPlainObject(slot) || !Array.isArray(slot.candidates) || slot.candidates.length === 0) {
@@ -334,7 +540,7 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
     }
 
     if (failures.length === 0) {
-      qualified.push({ candidate, resourceState });
+      qualified.push({ candidate, label, resourceState, stranded: resolveStrandedCapacity(entry, { now }) });
       continue;
     }
 
@@ -346,13 +552,43 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
     });
   }
 
-  const pick =
-    qualified.find(({ resourceState }) => resourceState === "GREEN") ??
-    qualified.find(({ resourceState }) => resourceState === "YELLOW" || resourceState === "UNKNOWN") ??
-    (allowRed ? qualified.find(({ resourceState }) => resourceState === "RED") : undefined);
+  // Registry order picks the head of the band. Stranded capacity may then
+  // promote a candidate from within the head's own resource state - and only
+  // on HIGH, so a merely-known-mediocre reading never displaces an UNKNOWN one.
+  const pickFromBand = (band) => {
+    const head = band[0];
+    if (head === undefined) return undefined;
+    if (!preferStrandedCapacity) return { pick: head, head };
 
-  if (pick !== undefined) {
-    return { status: "SELECTED", candidate: pick.candidate };
+    const sameState = band.filter(({ resourceState }) => resourceState === head.resourceState);
+    const promoted = sameState.find(({ stranded }) => stranded.stranded_capacity_risk === "HIGH");
+    return { pick: promoted ?? head, head };
+  };
+
+  const selection =
+    pickFromBand(qualified.filter(({ resourceState }) => resourceState === "GREEN")) ??
+    pickFromBand(qualified.filter(({ resourceState }) => resourceState === "YELLOW" || resourceState === "UNKNOWN")) ??
+    (allowRed ? pickFromBand(qualified.filter(({ resourceState }) => resourceState === "RED")) : undefined);
+
+  if (selection !== undefined) {
+    const { pick, head } = selection;
+    return {
+      status: "SELECTED",
+      candidate: pick.candidate,
+      resource_state: pick.resourceState,
+      reset_proximity: pick.stranded.reset_proximity,
+      stranded_capacity_risk: pick.stranded.stranded_capacity_risk,
+      // Non-null only when the opportunity signal actually moved the choice.
+      // Recording it is what keeps the layer auditable rather than invisible.
+      stranded_promotion:
+        pick === head
+          ? null
+          : {
+              over: head.label,
+              reset_proximity: pick.stranded.reset_proximity,
+              stranded_capacity_risk: pick.stranded.stranded_capacity_risk,
+            },
+    };
   }
 
   // Qualified candidates exist but every one of them is RED, and this task did
@@ -605,6 +841,25 @@ export function validateRoutingCases(document, registry) {
 
       if ("model" in testCase.expect && result.candidate.model !== testCase.expect.model) {
         findings.push(`${named}: expected model ${testCase.expect.model}, got ${result.candidate.model}`);
+      }
+
+      if ("stranded_capacity_risk" in testCase.expect && result.stranded_capacity_risk !== testCase.expect.stranded_capacity_risk) {
+        findings.push(
+          `${named}: expected stranded_capacity_risk ${testCase.expect.stranded_capacity_risk}, got ${result.stranded_capacity_risk}`,
+        );
+      }
+
+      // A promotion that is not recorded is a promotion nobody can audit.
+      if ("stranded_promotion" in testCase.expect) {
+        const promoted = result.stranded_promotion !== null;
+        if (promoted !== testCase.expect.stranded_promotion) {
+          findings.push(
+            `${named}: expected stranded_promotion ${testCase.expect.stranded_promotion}, got ${promoted}`,
+          );
+        }
+        if (promoted && !isNonEmptyString(result.stranded_promotion.over)) {
+          findings.push(`${named}: a stranded promotion must record the candidate it moved ahead of`);
+        }
       }
 
       const disjoint = testCase.expect.disjoint_from;

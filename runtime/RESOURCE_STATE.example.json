@@ -1,22 +1,24 @@
 {
   "schema_version": "0.3",
-  "_comment": "Public example only. Every value is null because this file must never carry real account data. Freshness is evaluated from each provider's or pool's own checked_at, never from a shared timestamp. A real runtime/RESOURCE_STATE.json is gitignored and must use boolean availability.",
+  "_comment": "Public example only. Every value is null because this file must never carry real account data. Freshness is evaluated from each provider's or pool's own checked_at, never from a shared timestamp. remaining_ratio and reset_at are the facts a reset-proximity reading is derived from; the derived NEAR/MEDIUM/FAR and HIGH/MEDIUM/LOW labels are never stored here. remaining_confidence may lower the confidence implied by source, never raise it. A real runtime/RESOURCE_STATE.json is gitignored and must use boolean availability.",
   "providers": {
     "codex": {
       "checked_at": null,
       "available": null,
       "state": "UNKNOWN",
-      "short_window": { "used": null, "reset_at": null },
-      "weekly_window": { "used": null, "reset_at": null },
-      "source": "UNKNOWN"
+      "short_window": { "used": null, "remaining_ratio": null, "reset_at": null },
+      "weekly_window": { "used": null, "remaining_ratio": null, "reset_at": null },
+      "source": "UNKNOWN",
+      "remaining_confidence": "UNKNOWN"
     },
     "claude": {
       "checked_at": null,
       "available": null,
       "state": "UNKNOWN",
-      "short_window": { "used": null, "reset_at": null },
-      "weekly_window": { "used": null, "reset_at": null },
-      "source": "UNKNOWN"
+      "short_window": { "used": null, "remaining_ratio": null, "reset_at": null },
+      "weekly_window": { "used": null, "remaining_ratio": null, "reset_at": null },
+      "source": "UNKNOWN",
+      "remaining_confidence": "UNKNOWN"
     },
     "antigravity": {
       "pools": {
@@ -24,17 +26,19 @@
           "checked_at": null,
           "available": null,
           "state": "UNKNOWN",
-          "short_window": { "used": null, "reset_at": null },
-          "weekly_window": { "used": null, "reset_at": null },
-          "source": "UNKNOWN"
+          "short_window": { "used": null, "remaining_ratio": null, "reset_at": null },
+          "weekly_window": { "used": null, "remaining_ratio": null, "reset_at": null },
+          "source": "UNKNOWN",
+          "remaining_confidence": "UNKNOWN"
         },
         "non_gemini": {
           "checked_at": null,
           "available": null,
           "state": "UNKNOWN",
-          "short_window": { "used": null, "reset_at": null },
-          "weekly_window": { "used": null, "reset_at": null },
-          "source": "UNKNOWN"
+          "short_window": { "used": null, "remaining_ratio": null, "reset_at": null },
+          "weekly_window": { "used": null, "remaining_ratio": null, "reset_at": null },
+          "source": "UNKNOWN",
+          "remaining_confidence": "UNKNOWN"
         }
       }
     }

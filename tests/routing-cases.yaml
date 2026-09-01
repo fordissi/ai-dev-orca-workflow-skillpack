@@ -319,3 +319,242 @@ cases:
       status: SELECTED
       provider: antigravity
       model: AUTO_GEMINI
+
+  # ------------------------------------------------------------------- #
+  # Reset proximity / stranded capacity.
+  #
+  # The sixth ordering layer. Every case here starts from candidates that
+  # already passed eligibility, capability, security and disjointness, so a
+  # case can only ever change WHICH equally-qualified candidate wins.
+  # `now` is fixed in each case so the derivation is deterministic.
+  # ------------------------------------------------------------------- #
+
+  - name: stranded_capacity_promotes_a_near_reset_pool
+    kind: selection
+    why: >-
+      The case this layer exists for. Codex is GREEN with most of a five-hour
+      window left and under four hours before it refills; Claude is GREEN with
+      plenty left and a day and a half to spend it. Both are already qualified,
+      so spending the capacity that is about to vanish costs nothing.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        short_window: { remaining_ratio: 0.59, reset_at: "2026-09-01T15:45:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.64, reset_at: "2026-09-03T00:00:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-01T12:01:00Z" }
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-sol
+      stranded_capacity_risk: HIGH
+
+  - name: stranded_capacity_promotes_over_registry_order
+    kind: selection
+    why: >-
+      The same signal has to be able to move the pick, not merely confirm it.
+      Here the registry-preferred Codex has a distant reset and the second
+      candidate is the one about to strand capacity, so the promotion is
+      recorded rather than silently applied.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.80, reset_at: "2026-09-06T00:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        short_window: { remaining_ratio: 0.70, reset_at: "2026-09-01T14:30:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-01T12:01:00Z" }
+    expect:
+      status: SELECTED
+      provider: claude
+      model: sonnet
+      stranded_capacity_risk: HIGH
+      stranded_promotion: true
+
+  - name: stranded_capacity_never_admits_an_excluded_candidate
+    kind: selection
+    why: >-
+      A DEEP slot whose second candidate is experimental and sits on a pool
+      about to strand most of its capacity. Opportunity cost is a routing
+      signal, never an authorisation: an excluded candidate stays excluded
+      however much quota is about to expire behind it.
+    slot: DEEP_REASONER
+    resource_states:
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.20, reset_at: "2026-09-08T00:00:00Z" }
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        short_window: { remaining_ratio: 0.95, reset_at: "2026-09-01T13:00:00Z" }
+    options: { allowExperimental: false, taskRisk: critical, now: "2026-09-01T12:01:00Z" }
+    expect:
+      status: SELECTED
+      provider: claude
+      model: sonnet
+
+  - name: stranded_capacity_never_overrides_disjointness
+    kind: selection
+    why: >-
+      A provider that already implemented the change is still the implementer
+      provider, however soon its quota refills. Independent review outranks
+      quota economics, so the reviewer stays disjoint even though the
+      cheaper-to-use pool is the excluded one.
+    slot: STRONG_IMPLEMENTER
+    classification:
+      risk: high
+      complexity: high
+      context_size: medium
+      ambiguity: medium
+      change_intensity: structural
+      verification_need: independent
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        short_window: { remaining_ratio: 0.90, reset_at: "2026-09-01T13:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.30, reset_at: "2026-09-07T00:00:00Z" }
+    options:
+      allowExperimental: false
+      taskRisk: high
+      excludeProvider: codex
+      excludeModelFamily: gpt-5.6
+      now: "2026-09-01T12:01:00Z"
+    expect:
+      status: SELECTED
+      provider: claude
+      model: sonnet
+      disjoint_from: { provider: codex, model_family: gpt-5.6 }
+
+  - name: stranded_capacity_never_reorders_yellow_against_unknown
+    kind: selection
+    why: >-
+      A YELLOW pool with capacity about to strand must not jump ahead of an
+      UNKNOWN one. YELLOW and UNKNOWN carry no precedence between them, and
+      letting an opportunity reading break that tie would punish the pool
+      nobody could read.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: UNKNOWN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+      claude:
+        state: YELLOW
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        short_window: { remaining_ratio: 0.85, reset_at: "2026-09-01T13:00:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-01T12:01:00Z" }
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-sol
+      stranded_capacity_risk: UNKNOWN
+
+  - name: stranded_capacity_never_promotes_across_bands
+    kind: selection
+    why: >-
+      A YELLOW pool about to reset does not outrank a GREEN one. The
+      opportunity layer sits below resource state, so it reorders inside a
+      band and never between bands.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: YELLOW
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        short_window: { remaining_ratio: 0.95, reset_at: "2026-09-01T13:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.10, reset_at: "2026-09-09T00:00:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-01T12:01:00Z" }
+    expect:
+      status: SELECTED
+      provider: claude
+      model: sonnet
+
+  - name: stale_snapshot_yields_no_opportunity_signal
+    kind: selection
+    why: >-
+      A remaining ratio read an hour ago is worse than no ratio, because it
+      still looks authoritative. Past the five-minute freshness window the
+      opportunity signal goes UNKNOWN and registry order decides again.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.80, reset_at: "2026-09-06T00:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        short_window: { remaining_ratio: 0.70, reset_at: "2026-09-01T14:30:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-01T13:00:00Z" }
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-sol
+      stranded_capacity_risk: UNKNOWN
+
+  - name: untrusted_source_confers_no_opportunity_signal
+    kind: selection
+    why: >-
+      The source trust invariant reaches the opportunity layer too. An entry
+      that cannot back up its state cannot back up its remaining ratio either,
+      so it fails closed rather than winning on an unverifiable urgency claim.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.80, reset_at: "2026-09-06T00:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: UNKNOWN
+        checked_at: "2026-09-01T12:00:00Z"
+        short_window: { remaining_ratio: 0.99, reset_at: "2026-09-01T12:30:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-01T12:01:00Z" }
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-sol

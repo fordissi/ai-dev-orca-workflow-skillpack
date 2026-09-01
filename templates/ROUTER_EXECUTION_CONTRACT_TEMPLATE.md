@@ -135,6 +135,15 @@ review_disjointness_verified: # unresolved — provider 與 model family 都必�
 
 resource_checked_at:          # unresolved — 每個 pool 各自的時間，或 UNKNOWN
 resource_overlay_applied:     # unresolved — true | false
+
+# Reset proximity / stranded capacity。只記標籤，不記數值：
+# remaining_ratio、reset_at 與任何原始 quota 讀數都不得寫進 artifact。
+# 語意見 policies/RESOURCE_AWARE_ROUTING.md。
+resource_opportunity:
+  reset_proximity:            # unresolved — NEAR | MEDIUM | FAR | UNKNOWN
+  stranded_capacity_risk:     # unresolved — HIGH | MEDIUM | LOW | UNKNOWN
+  stranded_promotion:         # none，或被此訊號跳過的候選；提前必須記錄
+
 fallback_used:                # unresolved — none，或被跳過的候選及原因
 selection_reason:             # unresolved — 為何選它、為何跳過前面的候選
 
@@ -163,6 +172,10 @@ dispatch_command:             # unresolved
 **不得寫入 execution artifact**：原始 quota payload、provider credential、
 帳號識別資料、cookie、session identifier、provider conversation ID。
 讀不到可靠數值時填 `UNKNOWN`，不猜測。
+
+`resource_opportunity` 同樣受此限制：只寫 `NEAR` / `HIGH` 這類**標籤**，
+**不寫 `remaining_ratio` 的數值或 `reset_at` 的時間戳**。標籤足以稽核一次提前，
+數值則是帳號用量資料。
 
 ---
 
