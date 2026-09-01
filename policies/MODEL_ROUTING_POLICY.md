@@ -71,6 +71,8 @@ Role 與 slot 名稱**永遠不得**被當成 capability tier 來比較。Execut
 
 ## Candidate 選擇演算法
 
+**此演算法由 operational router 執行**，因為它需要讀取 `MODEL_REGISTRY.yaml` 與即時 resource state。Strategic router 只負責指定 `role`、`slot` 與 `minimum_tier`（能力需求），不指名具體模型——它可能沒有檔案系統存取權，直接指名模型即是猜測。詳見 [`WORKFLOW_POLICY.md`](WORKFLOW_POLICY.md) 的角色切分。
+
 輸入：slot、`minimum_tier`、registry 的 ordered candidates、resource state snapshot、task context。
 
 1. 從指定 slot 讀取 registry 的 ordered `candidates`（順序具有意義）。

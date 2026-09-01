@@ -34,8 +34,8 @@ SKILL → WORKFLOW_POLICY → CONCURRENCY_POLICY → MODEL_ROUTING_POLICY
 
 | Role | 權限 | 禁止 |
 |---|---|---|
-| Strategic router | 需求拆解、task classification、slot 選擇、gate 判定 | 代替 human 通過 human gate |
-| Operational router (Orca) | 建立/重用 worktree 與 terminal、下發 contract、收斂結果 | 重新解讀需求、改寫 contract、降低 permission ceiling |
+| Strategic router | 需求拆解、task classification、role/slot/`minimum_tier` 指定、concurrency mode、gate 判定 | 代替 human 通過 human gate；宣稱已驗證它讀不到的檔案狀態 |
+| Operational router (Orca) | 驗證 repo/HEAD/working tree、讀 registry、套 resource overlay、執行 candidate 演算法、組出 dispatch command、建立/重用 worktree 與 terminal、收斂結果 | 重新解讀需求、改寫 contract、降低 permission ceiling |
 | Worker | 在 allowed changes 範圍內實作與驗證 | 擴大範圍、修改驗收標準、commit/push（除非 contract 明示） |
 | Reviewer | 獨立檢查 filesystem、git diff 與 tests | 只讀 worker 摘要就判定通過 |
 | Human (authoritative owner) | 架構決策、gate 放行、風險承擔 | — |
@@ -43,6 +43,28 @@ SKILL → WORKFLOW_POLICY → CONCURRENCY_POLICY → MODEL_ROUTING_POLICY
 每個 task 必須有且只有一個 **authoritative owner**。owner 不明確時停止並回 human gate。
 
 Reviewer 預設 read-only，並且**必須直接檢查 filesystem、`git diff` 與測試輸出**，不得僅依 worker 的完成摘要作結論。
+
+### Strategic router 不假設有檔案系統存取權
+
+Strategic router 可能是**沒有檔案系統、無法執行命令的介面**（例如網頁版對話）。整條流程必須在這個前提下仍然成立。
+
+因此職責如此切分：
+
+| 由 strategic router 產出（純文字，可貼上） | 由 operational router 執行（需檔案系統） |
+|---|---|
+| 需求拆解與 task 邊界 | 驗證 repo、HEAD、working tree、handoff |
+| 六維 task classification | 讀 `MODEL_REGISTRY.yaml` 取 ordered candidates |
+| `role`、`slot`、`minimum_tier` | 讀 resource state 並評估 freshness |
+| concurrency mode | 執行 candidate 選擇演算法 |
+| allowed / prohibited changes | 解析 dynamic model resolver |
+| validation commands 與 acceptance criteria | 組出逐字 dispatch command 與 permission 旗標 |
+| human gate 判定與停止條件 | 建立/重用 worktree 與 terminal、收斂結果 |
+
+**Candidate 選擇屬於 operational router，不屬於 strategic router。** Strategic router 指定的是能力需求（slot 與 `minimum_tier`），不是具體模型；它讀不到 registry 與即時 resource state，任何由它直接指名模型的行為都是猜測。
+
+Operational router 回傳 `BLOCKED` 時，交還給 strategic router 或 human 重新決策，不得自行放寬 `minimum_tier` 或 independent review 的 disjointness。
+
+Strategic router 也不執行 lifecycle 的 `verify` 階段——它無法確認 HEAD 或 working tree。該階段一律由 operational router 執行並回報。
 
 ## Lifecycle
 
