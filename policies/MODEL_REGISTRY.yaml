@@ -1,0 +1,26 @@
+version: "2026-09-01-draft"
+capability_slots:
+  ROUTER:
+    primary: {provider: codex, model: gpt-5.6-luna, reasoning: low}
+  CHEAP_GENERALIST:
+    primary: {provider: codex, model: gpt-5.6-luna, reasoning: low}
+  DEFAULT_IMPLEMENTER:
+    primary: {provider: codex, model: gpt-5.6-luna, reasoning: medium}
+  STRONG_IMPLEMENTER:
+    primary: {provider: codex, model: gpt-5.6-sol, reasoning: medium}
+  DEEP_REASONER:
+    primary: {provider: claude, model: sonnet, reasoning: provider_default}
+    fallback: {provider: codex, model: gpt-5.6-terra, reasoning: high}
+  LONG_CONTEXT_DISCOVERY:
+    primary: {provider: antigravity, model: AUTO_GEMINI, reasoning: medium}
+  INDEPENDENT_REVIEWER:
+    primary: {provider: antigravity, model: AUTO_GEMINI, reasoning: medium}
+    fallback: {provider: claude, model: sonnet, reasoning: provider_default}
+  REGRESSION_HUNTER:
+    primary: {provider: antigravity, model: AUTO_GEMINI, reasoning: medium}
+    fallback: {provider: codex, model: gpt-5.6-luna, reasoning: medium}
+  ESCALATION_MODEL:
+    primary: {provider: claude, model: opus, reasoning: provider_default}
+notes:
+  - AUTO_* means query currently available provider models instead of hard-coding stale display names.
+  - Revalidate IDs and availability periodically.

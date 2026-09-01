@@ -1,0 +1,4 @@
+請依序載入 Skill/Workflow、Model Routing、Resource Routing、Current Project Handoff。
+第一輪只 verify repo/HEAD/working tree、閱讀 authoritative docs、回 Current State / Next Gate / Blockers / Contracts，並提出 Orca execution plan。
+不要直接 implementation。
+Execution plan 必須包含 capability slot、concurrency mode、Router/worker、reasoning、quota consideration、permissions、worktree、allowed/prohibited changes、acceptance criteria、reviewer、stop conditions。

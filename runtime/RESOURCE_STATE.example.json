@@ -1,0 +1,25 @@
+{
+  "checked_at": null,
+  "providers": {
+    "codex": {
+      "short_window_used": null,
+      "weekly_used": null,
+      "state": "UNKNOWN",
+      "source": "UNKNOWN"
+    },
+    "claude": {
+      "short_window_used": null,
+      "weekly_used": null,
+      "state": "UNKNOWN",
+      "source": "UNKNOWN"
+    },
+    "antigravity": {
+      "gemini_pool_short_used": null,
+      "gemini_pool_weekly_used": null,
+      "non_gemini_pool_short_used": null,
+      "non_gemini_pool_weekly_used": null,
+      "state": "UNKNOWN",
+      "source": "UNKNOWN"
+    }
+  }
+}
