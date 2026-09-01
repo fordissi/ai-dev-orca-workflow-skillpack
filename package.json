@@ -1,0 +1,16 @@
+{
+  "name": "ai-dev-orca-workflow-skillpack",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test",
+    "validate": "node scripts/validate-policy-pack.mjs"
+  },
+  "devDependencies": {
+    "yaml": "^2.8.1"
+  }
+}

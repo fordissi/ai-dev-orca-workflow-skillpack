@@ -1,0 +1,6 @@
+node_modules/
+runtime/RESOURCE_STATE.json
+*.log
+.env
+.env.*
+!.env.example
