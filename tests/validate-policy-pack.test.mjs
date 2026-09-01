@@ -1,11 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { parse } from "yaml";
 import {
   scanText,
   selectCandidate,
   validateRegistry,
   validateResourceState,
+  validateRoutingCases,
 } from "../scripts/validate-policy-pack.mjs";
 
 const registry = {
@@ -108,4 +110,29 @@ test("stable policies expose required executable enums", async () => {
   assert.ok(routing.includes("failed_repair_count >= max_repair_attempts"));
   assert.match(workflow, new RegExp("normative"));
   assert.match(workflow, new RegExp("conformance checker"));
+});
+
+test("repository registry satisfies the executable schema", async () => {
+  const registry = parse(await readFile("policies/MODEL_REGISTRY.yaml", "utf8"));
+  assert.deepEqual(validateRegistry(registry), []);
+});
+
+test("resource example satisfies the safe snapshot schema", async () => {
+  const state = JSON.parse(await readFile("runtime/RESOURCE_STATE.example.json", "utf8"));
+  assert.deepEqual(validateResourceState(state, { allowExampleNulls: true }), []);
+  assert.equal(state.providers.codex.checked_at, null);
+  assert.equal(state.providers.antigravity.pools.gemini.checked_at, null);
+  assert.equal(state.providers.antigravity.pools.non_gemini.checked_at, null);
+});
+
+test("repository rejects a fixture whose candidate is below the slot minimum", async () => {
+  const fixture = parse(await readFile("tests/fixtures/invalid-model-registry.yaml", "utf8"));
+  assert.match(validateRegistry(fixture).join("\n"), /below minimum tier/);
+});
+
+test("repository routing cases all conform to the registry", async () => {
+  const registry = parse(await readFile("policies/MODEL_REGISTRY.yaml", "utf8"));
+  const cases = parse(await readFile("tests/routing-cases.yaml", "utf8"));
+  assert.equal(cases.cases.length, 10);
+  assert.deepEqual(validateRoutingCases(cases, registry), []);
 });

@@ -1,0 +1,33 @@
+# Deliberately invalid fixture.
+#
+# The single STRONG_IMPLEMENTER candidate declares capability_tier: DEFAULT,
+# which sits below the slot's minimum_tier: STRONG. validateRegistry must
+# reject it with a finding containing "below minimum tier".
+#
+# This file is expected to be invalid. The repository scanner skips it where
+# its intentional invalidity would otherwise be reported as a finding.
+
+version: "0.3-invalid-fixture"
+verified_at: "2026-09-01"
+
+capability_tier_order: [CHEAP, DEFAULT, STRONG, DEEP]
+
+capability_slots:
+  STRONG_IMPLEMENTER:
+    role: IMPLEMENTATION
+    minimum_tier: STRONG
+    max_repair_attempts: 2
+    candidates:
+      - provider: codex
+        resource_state_key: codex
+        model: gpt-5.6-luna
+        model_family: gpt-5.6
+        reasoning: medium
+        capability_tier: DEFAULT
+        status: stable
+        evidence_status: provisional
+        evidence_scope: bounded_repo_implementation
+        confidence: low
+        source: "invalid fixture; not a routing input"
+        verified_at: null
+        expires_at: null

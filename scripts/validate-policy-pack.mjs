@@ -6,9 +6,15 @@
  * the code is what gets corrected.
  *
  * It never reads environment variables, contacts a provider, or dispatches
- * work. At this stage it is a library only: the direct-run repository entry
- * point arrives once the registry migration and routing cases exist.
+ * work. Run directly (`npm run validate`) it checks the repository; imported,
+ * it is a library of pure conformance functions.
  */
+
+import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { extname, join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { parse as parseYaml } from "yaml";
 
 const RESOURCE_STATES = ["GREEN", "YELLOW", "RED", "UNKNOWN"];
 const CANDIDATE_STATUSES = ["stable", "experimental"];
@@ -392,4 +398,290 @@ export function scanText(text, options = {}) {
   });
 
   return findings;
+}
+
+/* ------------------------------------------------------------------------ *
+ * Routing conformance cases
+ *
+ * tests/routing-cases.yaml is a conformance check on MODEL_ROUTING_POLICY.md,
+ * which stays normative. If a case and the Markdown policy disagree, correct
+ * the case, not the policy.
+ * ------------------------------------------------------------------------ */
+
+const CASE_KINDS = ["selection", "multi_stage"];
+
+const CONCURRENCY_MODES = [
+  "SEQUENTIAL",
+  "PARALLEL_INDEPENDENT",
+  "COMPETITIVE_DESIGN",
+  "PARALLEL_SAME_CORE_IMPLEMENTATION",
+];
+
+const CLASSIFICATION_VALUES = {
+  risk: ["low", "medium", "high", "critical"],
+  complexity: ["low", "medium", "high"],
+  context_size: ["small", "medium", "large"],
+  ambiguity: ["low", "medium", "high"],
+  change_intensity: ["none", "localized", "structural"],
+  verification_need: ["standard", "independent", "adversarial"],
+};
+
+function validateClassification(classification, at, findings) {
+  if (!isPlainObject(classification)) {
+    findings.push(`${at}.classification: expected a mapping of the six dimensions`);
+    return;
+  }
+  for (const [field, allowed] of Object.entries(CLASSIFICATION_VALUES)) {
+    if (!allowed.includes(classification[field])) {
+      findings.push(
+        `${at}.classification.${field}: ${JSON.stringify(classification[field])} is not one of ${allowed.join("|")}`,
+      );
+    }
+  }
+}
+
+export function validateRoutingCases(document, registry) {
+  const findings = [];
+
+  if (!isPlainObject(document) || !Array.isArray(document.cases) || document.cases.length === 0) {
+    return ["routing cases: expected a non-empty `cases` list"];
+  }
+
+  const slots = isPlainObject(registry?.capability_slots) ? registry.capability_slots : {};
+  const tierOrder = Array.isArray(registry?.capability_tier_order) ? registry.capability_tier_order : [];
+  const seen = new Set();
+
+  for (const [index, testCase] of document.cases.entries()) {
+    const at = `cases[${index}]`;
+
+    if (!isPlainObject(testCase) || !isNonEmptyString(testCase.name)) {
+      findings.push(`${at}.name: expected a non-empty case name`);
+      continue;
+    }
+
+    const named = `case ${testCase.name}`;
+
+    if (seen.has(testCase.name)) findings.push(`${named}: duplicate case name`);
+    seen.add(testCase.name);
+
+    if (!CASE_KINDS.includes(testCase.kind)) {
+      findings.push(`${named}: kind ${JSON.stringify(testCase.kind)} is not one of ${CASE_KINDS.join("|")}`);
+      continue;
+    }
+
+    if (!isPlainObject(testCase.expect)) {
+      findings.push(`${named}: expected an \`expect\` mapping`);
+      continue;
+    }
+
+    if ("classification" in testCase) validateClassification(testCase.classification, named, findings);
+
+    if (testCase.kind === "selection") {
+      const slot = slots[testCase.slot];
+      if (slot === undefined) {
+        findings.push(`${named}: slot ${JSON.stringify(testCase.slot)} is not defined in the registry`);
+        continue;
+      }
+
+      const result = selectCandidate(
+        slot,
+        isPlainObject(testCase.resource_states) ? testCase.resource_states : {},
+        tierOrder,
+        isPlainObject(testCase.options) ? testCase.options : {},
+      );
+
+      if (result.status !== testCase.expect.status) {
+        findings.push(`${named}: expected status ${testCase.expect.status}, got ${result.status}`);
+        continue;
+      }
+
+      if (result.status === "BLOCKED") {
+        if (!isNonEmptyString(result.reason)) findings.push(`${named}: BLOCKED result must carry a reason`);
+        continue;
+      }
+
+      if ("provider" in testCase.expect && result.candidate.provider !== testCase.expect.provider) {
+        findings.push(`${named}: expected provider ${testCase.expect.provider}, got ${result.candidate.provider}`);
+      }
+
+      if ("model" in testCase.expect && result.candidate.model !== testCase.expect.model) {
+        findings.push(`${named}: expected model ${testCase.expect.model}, got ${result.candidate.model}`);
+      }
+
+      const disjoint = testCase.expect.disjoint_from;
+      if (isPlainObject(disjoint)) {
+        if (result.candidate.provider === disjoint.provider) {
+          findings.push(`${named}: reviewer shares the implementer provider ${disjoint.provider}`);
+        }
+        if (result.candidate.model_family === disjoint.model_family) {
+          findings.push(`${named}: reviewer shares the implementer model family ${disjoint.model_family}`);
+        }
+      }
+
+      continue;
+    }
+
+    // multi_stage
+    const stages = testCase.expect.stages;
+    if (!Array.isArray(stages) || stages.length === 0) {
+      findings.push(`${named}: expected a non-empty \`expect.stages\` list`);
+    } else {
+      for (const [stageIndex, stage] of stages.entries()) {
+        const stageAt = `${named} stage[${stageIndex}]`;
+        const slot = slots[stage?.slot];
+        if (slot === undefined) {
+          findings.push(`${stageAt}: slot ${JSON.stringify(stage?.slot)} is not defined in the registry`);
+          continue;
+        }
+        if (slot.role !== stage.role) {
+          findings.push(`${stageAt}: declared role ${stage.role} does not match registry role ${slot.role}`);
+        }
+        if (slot.minimum_tier !== stage.minimum_tier) {
+          findings.push(
+            `${stageAt}: declared minimum_tier ${stage.minimum_tier} does not match registry ${slot.minimum_tier}`,
+          );
+        }
+      }
+    }
+
+    if (!CONCURRENCY_MODES.includes(testCase.expect.concurrency_mode)) {
+      findings.push(
+        `${named}: concurrency_mode ${JSON.stringify(testCase.expect.concurrency_mode)} is not a defined mode`,
+      );
+    }
+
+    if (typeof testCase.expect.human_gate !== "boolean") {
+      findings.push(`${named}: expect.human_gate must be a boolean`);
+    } else if (testCase.expect.human_gate && !isNonEmptyString(testCase.expect.human_gate_reason)) {
+      findings.push(`${named}: a required human gate must state human_gate_reason`);
+    }
+
+    if (isPlainObject(testCase.repair)) {
+      const slot = slots[testCase.repair.slot];
+      if (slot === undefined) {
+        findings.push(`${named}: repair.slot ${JSON.stringify(testCase.repair.slot)} is not defined in the registry`);
+      } else if (testCase.repair.initial_attempt_counts_as_repair !== false) {
+        findings.push(`${named}: the initial implementation attempt must not count as a repair`);
+      } else if (!(testCase.repair.failed_repair_count >= slot.max_repair_attempts)) {
+        findings.push(
+          `${named}: failed_repair_count ${testCase.repair.failed_repair_count} does not reach max_repair_attempts ${slot.max_repair_attempts}`,
+        );
+      }
+    }
+  }
+
+  return findings;
+}
+
+/* ------------------------------------------------------------------------ *
+ * Repository validation (direct-run entry point)
+ * ------------------------------------------------------------------------ */
+
+const BINARY_EXTENSIONS = new Set([
+  ".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp", ".bmp", ".pdf",
+  ".zip", ".gz", ".tar", ".7z", ".woff", ".woff2", ".ttf", ".otf",
+  ".eot", ".mp4", ".mp3", ".wav", ".exe", ".dll", ".node",
+]);
+
+// Files whose intentional invalidity would otherwise be reported. Kept
+// explicit and minimal so nothing is silently exempted from the scan.
+const SCAN_EXEMPT_PATHS = new Set([]);
+
+function publishableFiles(root) {
+  // tracked plus untracked-but-not-ignored is exactly what a publish would
+  // carry. Ignored files and .git are therefore never scanned.
+  const output = execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard"], {
+    cwd: root,
+    encoding: "utf8",
+    maxBuffer: 32 * 1024 * 1024,
+  });
+
+  return output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .filter((file) => !file.startsWith("node_modules/"))
+    .filter((file) => !BINARY_EXTENSIONS.has(extname(file).toLowerCase()));
+}
+
+export function validateRepository(root = process.cwd()) {
+  const findings = [];
+  const summary = { registry: 0, resourceExample: 0, routingCases: 0, filesScanned: 0, scanFindings: 0 };
+
+  const registryPath = join(root, "policies", "MODEL_REGISTRY.yaml");
+  const registry = parseYaml(readFileSync(registryPath, "utf8"));
+  for (const finding of validateRegistry(registry)) {
+    findings.push(`policies/MODEL_REGISTRY.yaml: ${finding}`);
+  }
+  summary.registry = Object.keys(registry?.capability_slots ?? {}).length;
+
+  const examplePath = join(root, "runtime", "RESOURCE_STATE.example.json");
+  const example = JSON.parse(readFileSync(examplePath, "utf8"));
+  // The example-only null affordance is granted here and nowhere else.
+  for (const finding of validateResourceState(example, { allowExampleNulls: true })) {
+    findings.push(`runtime/RESOURCE_STATE.example.json: ${finding}`);
+  }
+  summary.resourceExample = 1;
+
+  const casesPath = join(root, "tests", "routing-cases.yaml");
+  const cases = parseYaml(readFileSync(casesPath, "utf8"));
+  for (const finding of validateRoutingCases(cases, registry)) {
+    findings.push(`tests/routing-cases.yaml: ${finding}`);
+  }
+  summary.routingCases = Array.isArray(cases?.cases) ? cases.cases.length : 0;
+
+  const invalidFixturePath = join(root, "tests", "fixtures", "invalid-model-registry.yaml");
+  if (existsSync(invalidFixturePath)) {
+    const fixture = parseYaml(readFileSync(invalidFixturePath, "utf8"));
+    const fixtureFindings = validateRegistry(fixture).join("\n");
+    if (!/below minimum tier/.test(fixtureFindings)) {
+      findings.push("tests/fixtures/invalid-model-registry.yaml: expected a 'below minimum tier' rejection");
+    }
+  }
+
+  for (const file of publishableFiles(root)) {
+    if (SCAN_EXEMPT_PATHS.has(file)) continue;
+
+    let text;
+    try {
+      text = readFileSync(join(root, file), "utf8");
+    } catch {
+      continue;
+    }
+
+    if (text.includes("\0")) continue;
+    summary.filesScanned += 1;
+
+    // Historical or deliberately prohibited command examples are marked with a
+    // leading PROHIBITED: so they can be documented without being flagged.
+    const scannable = text
+      .split(/\r?\n/)
+      .map((line) => (line.trimStart().startsWith("PROHIBITED:") ? "" : line))
+      .join("\n");
+
+    for (const finding of scanText(scannable, { path: file })) {
+      // Location metadata only. The matched text is never printed.
+      findings.push(`${finding.path}:${finding.line}:${finding.column}: ${finding.pattern}`);
+      summary.scanFindings += 1;
+    }
+  }
+
+  return { findings, summary };
+}
+
+if (process.argv[1] !== undefined && pathToFileURL(process.argv[1]).href === import.meta.url) {
+  const { findings, summary } = validateRepository(process.cwd());
+
+  console.log(
+    `slots: ${summary.registry} | resource examples: ${summary.resourceExample} | ` +
+      `routing cases: ${summary.routingCases} | files scanned: ${summary.filesScanned}`,
+  );
+
+  if (findings.length > 0) {
+    console.error(`\n${findings.length} finding(s):`);
+    for (const finding of findings) console.error(`  - ${finding}`);
+    process.exit(1);
+  }
+
+  console.log("Policy pack validation passed");
 }

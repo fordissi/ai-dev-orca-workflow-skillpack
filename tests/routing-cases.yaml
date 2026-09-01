@@ -1,0 +1,213 @@
+# Deterministic routing conformance cases.
+#
+# These cases are executed by scripts/validate-policy-pack.mjs against the real
+# policies/MODEL_REGISTRY.yaml. They are a conformance check on
+# MODEL_ROUTING_POLICY.md, which stays normative: if a case and the Markdown
+# policy disagree, the case is what gets corrected.
+#
+# kind: selection    -> executed through selectCandidate(); expects a concrete
+#                       SELECTED candidate or a BLOCKED result.
+# kind: multi_stage  -> a declared multi-slot plan; the validator checks the
+#                       declared slots exist, carry the declared role and
+#                       minimum_tier, and that gate/concurrency declarations
+#                       are well formed. Model choice is left to the overlay at
+#                       dispatch time.
+
+version: "0.3"
+
+cases:
+
+  - name: bounded_implementation_all_unknown
+    kind: selection
+    why: >-
+      With no trustworthy reading anywhere, registry order alone decides.
+      UNKNOWN must be neither punished nor rewarded.
+    slot: DEFAULT_IMPLEMENTER
+    resource_states:
+      codex: { state: UNKNOWN, available: true }
+    options: { allowExperimental: false, taskRisk: low }
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-luna
+
+  - name: yellow_primary_unknown_fallback
+    kind: selection
+    why: >-
+      A YELLOW primary is not demoted below an UNKNOWN fallback. Registry
+      order wins because neither state outranks the other.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex: { state: YELLOW, available: true }
+      claude: { state: UNKNOWN, available: true }
+    options: { allowExperimental: false, taskRisk: medium }
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-sol
+
+  - name: unknown_primary_yellow_fallback
+    kind: selection
+    why: >-
+      The mirror of the previous case. An UNKNOWN primary is not demoted below
+      a YELLOW fallback either; the result must be identical.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex: { state: UNKNOWN, available: true }
+      claude: { state: YELLOW, available: true }
+    options: { allowExperimental: false, taskRisk: medium }
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-sol
+
+  - name: green_fallback_over_red_primary
+    kind: selection
+    why: >-
+      GREEN is preferred over RED, but only among candidates that already meet
+      the slot minimum. The overlay reorders; it never lowers the floor.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex: { state: RED, available: true }
+      claude: { state: GREEN, available: true }
+    options: { allowExperimental: false, taskRisk: medium }
+    expect:
+      status: SELECTED
+      provider: claude
+      model: sonnet
+
+  - name: independent_reviewer_is_disjoint
+    kind: selection
+    why: >-
+      The reviewer must differ from the implementer in BOTH provider and model
+      family. Here the implementer is codex/gpt-5.6, so every codex candidate
+      is removed and the experimental antigravity candidate is not permitted.
+    slot: INDEPENDENT_REVIEWER
+    resource_states:
+      antigravity: { pools: { gemini: { state: GREEN, available: true } } }
+      claude: { state: UNKNOWN, available: true }
+      codex: { state: GREEN, available: true }
+    options:
+      allowExperimental: false
+      taskRisk: high
+      excludeProvider: codex
+      excludeModelFamily: gpt-5.6
+    expect:
+      status: SELECTED
+      provider: claude
+      model: sonnet
+      disjoint_from:
+        provider: codex
+        model_family: gpt-5.6
+
+  - name: experimental_high_risk_is_blocked
+    kind: selection
+    why: >-
+      Experimental candidates may not take high-risk work unless a human
+      explicitly allows the experiment. With the stable fallback unavailable,
+      the correct answer is BLOCKED, not a downgrade.
+    slot: LONG_CONTEXT_DISCOVERY
+    resource_states:
+      antigravity: { pools: { gemini: { state: GREEN, available: true } } }
+      claude: { state: GREEN, available: false }
+    options: { allowExperimental: false, taskRisk: high }
+    expect:
+      status: BLOCKED
+
+  - name: no_candidate_meets_minimum
+    kind: selection
+    why: >-
+      No qualified candidate must return BLOCKED with a reason rather than
+      crossing the capability floor. Note that a candidate literally below its
+      slot minimum cannot exist in a valid registry - validateRegistry rejects
+      that, and tests/fixtures/invalid-model-registry.yaml covers it - so this
+      case exercises the unavailable and experimental exclusion paths.
+    slot: DEEP_REASONER
+    resource_states:
+      claude: { state: GREEN, available: false }
+      codex: { state: GREEN, available: true }
+    options: { allowExperimental: false, taskRisk: critical }
+    expect:
+      status: BLOCKED
+
+  - name: auth_contract_requires_deep_reasoner
+    kind: multi_stage
+    why: >-
+      Auth/RBAC/RLS work is an architecture contract decision. It routes to the
+      DEEP tier and reaches a human gate that quota pressure cannot bypass.
+    classification:
+      risk: critical
+      complexity: high
+      context_size: medium
+      ambiguity: high
+      change_intensity: structural
+      verification_need: independent
+    expect:
+      stages:
+        - stage: decision
+          role: ROUTER
+          slot: DEEP_REASONER
+          minimum_tier: DEEP
+        - stage: review
+          role: INDEPENDENT_REVIEWER
+          slot: INDEPENDENT_REVIEWER
+          minimum_tier: DEFAULT
+      concurrency_mode: SEQUENTIAL
+      human_gate: true
+      human_gate_reason: auth / RBAC / RLS is a non-bypassable gate
+
+  - name: large_cross_repo_with_independent_review
+    kind: multi_stage
+    why: >-
+      Discovery, implementation and review are recorded as separate slots. The
+      discovery model must not become the implementation owner by default.
+    classification:
+      risk: high
+      complexity: high
+      context_size: large
+      ambiguity: medium
+      change_intensity: structural
+      verification_need: independent
+    expect:
+      stages:
+        - stage: discovery
+          role: LONG_CONTEXT_DISCOVERY
+          slot: LONG_CONTEXT_DISCOVERY
+          minimum_tier: DEFAULT
+        - stage: implementation
+          role: IMPLEMENTATION
+          slot: STRONG_IMPLEMENTER
+          minimum_tier: STRONG
+        - stage: review
+          role: INDEPENDENT_REVIEWER
+          slot: INDEPENDENT_REVIEWER
+          minimum_tier: DEFAULT
+      concurrency_mode: SEQUENTIAL
+      human_gate: false
+
+  - name: repair_budget_exhausted
+    kind: multi_stage
+    why: >-
+      The initial implementation attempt is not a repair. Once
+      failed_repair_count reaches the slot's max_repair_attempts, the router
+      escalates or stops; it never retries indefinitely.
+    classification:
+      risk: medium
+      complexity: high
+      context_size: medium
+      ambiguity: medium
+      change_intensity: structural
+      verification_need: standard
+    repair:
+      slot: STRONG_IMPLEMENTER
+      initial_attempt_counts_as_repair: false
+      failed_repair_count: 2
+    expect:
+      stages:
+        - stage: escalation
+          role: ESCALATION
+          slot: ESCALATION_MODEL
+          minimum_tier: DEEP
+      concurrency_mode: SEQUENTIAL
+      human_gate: true
+      human_gate_reason: repair budget exhausted without convergence

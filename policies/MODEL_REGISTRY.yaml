@@ -1,26 +1,327 @@
-version: "2026-09-01-draft"
+# Model Registry — the single owner of dynamic provider/model mapping.
+#
+# Stable workflow rules live in the Markdown policies and do NOT change when a
+# model changes. Only this file changes when mapping changes.
+#
+# The candidate order inside each slot is meaningful: it is the registry order
+# that MODEL_ROUTING_POLICY.md preserves when resource states are YELLOW or
+# UNKNOWN. Resource overlay may only reorder candidates that already meet the
+# slot's minimum_tier; it may never lower the capability floor.
+#
+# Evidence honesty rules (see MODEL_ROUTING_POLICY.md and references/):
+#   status: stable        -> the provider/CLI/model mapping has been exercised
+#                            locally and may take production work.
+#   status: experimental  -> not yet exercised locally; excluded from routing
+#                            unless the task context explicitly allows it.
+#   evidence_status: provisional -> capability claim rests on external
+#                            benchmarks or a small number of local cases. No
+#                            candidate is 'verified' until the local smoke
+#                            cases required by references/MODEL_EVIDENCE.md pass.
+
+version: "0.3"
+verified_at: "2026-09-01"
+
+capability_tier_order: [CHEAP, DEFAULT, STRONG, DEEP]
+
+# Dynamic display names must be resolved at use time, never frozen from one
+# machine. See references/OFFICIAL_COMMANDS.md for the verified invocation.
+resolvers:
+  antigravity_models:
+    command: "agy models"
+    resolves: ["AUTO_GEMINI"]
+    note: >-
+      AUTO_GEMINI is a placeholder. Resolve it against the live model list
+      before dispatch. Do not hard-code a display name observed on one host.
+
 capability_slots:
+
   ROUTER:
-    primary: {provider: codex, model: gpt-5.6-luna, reasoning: low}
+    role: ROUTER
+    minimum_tier: DEFAULT
+    max_repair_attempts: 2
+    candidates:
+      - provider: codex
+        resource_state_key: codex
+        model: gpt-5.6-luna
+        model_family: gpt-5.6
+        reasoning: low
+        capability_tier: DEFAULT
+        status: stable
+        evidence_status: provisional
+        evidence_scope: bounded_repo_implementation
+        confidence: medium
+        source: "local CLI global state, codex-cli 0.151.0"
+        verified_at: "2026-09-01"
+        expires_at: "2026-12-01"
+      - provider: claude
+        resource_state_key: claude
+        model: sonnet
+        model_family: claude-sonnet
+        reasoning: provider_default
+        capability_tier: DEEP
+        status: stable
+        evidence_status: provisional
+        evidence_scope: architecture_and_contract_reasoning
+        confidence: medium
+        source: "local CLI, Claude Code 2.1.252"
+        verified_at: "2026-09-01"
+        expires_at: "2026-12-01"
+
   CHEAP_GENERALIST:
-    primary: {provider: codex, model: gpt-5.6-luna, reasoning: low}
+    role: IMPLEMENTATION
+    minimum_tier: CHEAP
+    max_repair_attempts: 2
+    candidates:
+      - provider: codex
+        resource_state_key: codex
+        model: gpt-5.6-luna
+        model_family: gpt-5.6
+        reasoning: low
+        capability_tier: DEFAULT
+        status: stable
+        evidence_status: provisional
+        evidence_scope: bounded_repo_implementation
+        confidence: medium
+        source: "local CLI global state, codex-cli 0.151.0"
+        verified_at: "2026-09-01"
+        expires_at: "2026-12-01"
+
   DEFAULT_IMPLEMENTER:
-    primary: {provider: codex, model: gpt-5.6-luna, reasoning: medium}
+    role: IMPLEMENTATION
+    minimum_tier: DEFAULT
+    max_repair_attempts: 2
+    candidates:
+      # Luna-first for bounded work with a clear contract and test-backed
+      # acceptance. Exercised locally on 2026-09-01 (contract T2S1): PASS on
+      # the first attempt, zero repairs.
+      - provider: codex
+        resource_state_key: codex
+        model: gpt-5.6-luna
+        model_family: gpt-5.6
+        reasoning: medium
+        capability_tier: DEFAULT
+        status: stable
+        evidence_status: provisional
+        evidence_scope: bounded_repo_implementation
+        confidence: medium
+        source: "local smoke case T2S1 2026-09-01; 1 of the 3-5 cases required"
+        verified_at: "2026-09-01"
+        expires_at: "2026-12-01"
+      - provider: codex
+        resource_state_key: codex
+        model: gpt-5.6-sol
+        model_family: gpt-5.6
+        reasoning: medium
+        capability_tier: STRONG
+        status: stable
+        evidence_status: provisional
+        evidence_scope: structural_implementation
+        confidence: medium
+        source: "local CLI default model, codex-cli 0.151.0 config"
+        verified_at: "2026-09-01"
+        expires_at: "2026-12-01"
+
   STRONG_IMPLEMENTER:
-    primary: {provider: codex, model: gpt-5.6-sol, reasoning: medium}
+    role: IMPLEMENTATION
+    minimum_tier: STRONG
+    max_repair_attempts: 2
+    candidates:
+      # Sol for structural repair, complex migration, and work that needs
+      # several rounds of interaction.
+      - provider: codex
+        resource_state_key: codex
+        model: gpt-5.6-sol
+        model_family: gpt-5.6
+        reasoning: medium
+        capability_tier: STRONG
+        status: stable
+        evidence_status: provisional
+        evidence_scope: structural_implementation
+        confidence: medium
+        source: "local CLI default model, codex-cli 0.151.0 config"
+        verified_at: "2026-09-01"
+        expires_at: "2026-12-01"
+      - provider: claude
+        resource_state_key: claude
+        model: sonnet
+        model_family: claude-sonnet
+        reasoning: provider_default
+        capability_tier: DEEP
+        status: stable
+        evidence_status: provisional
+        evidence_scope: architecture_and_contract_reasoning
+        confidence: medium
+        source: "local CLI, Claude Code 2.1.252"
+        verified_at: "2026-09-01"
+        expires_at: "2026-12-01"
+
   DEEP_REASONER:
-    primary: {provider: claude, model: sonnet, reasoning: provider_default}
-    fallback: {provider: codex, model: gpt-5.6-terra, reasoning: high}
+    role: ROUTER
+    minimum_tier: DEEP
+    max_repair_attempts: 2
+    candidates:
+      # Architecture, contract ambiguity, auth/RBAC/RLS, irreversible decisions.
+      - provider: claude
+        resource_state_key: claude
+        model: sonnet
+        model_family: claude-sonnet
+        reasoning: provider_default
+        capability_tier: DEEP
+        status: stable
+        evidence_status: provisional
+        evidence_scope: architecture_and_contract_reasoning
+        confidence: medium
+        source: "local CLI, Claude Code 2.1.252"
+        verified_at: "2026-09-01"
+        expires_at: "2026-12-01"
+      - provider: codex
+        resource_state_key: codex
+        model: gpt-5.6-terra
+        model_family: gpt-5.6
+        reasoning: high
+        capability_tier: DEEP
+        status: experimental
+        evidence_status: provisional
+        evidence_scope: UNKNOWN
+        confidence: low
+        source: "model ID present in local CLI global state; never exercised here"
+        verified_at: null
+        expires_at: null
+
   LONG_CONTEXT_DISCOVERY:
-    primary: {provider: antigravity, model: AUTO_GEMINI, reasoning: medium}
+    role: LONG_CONTEXT_DISCOVERY
+    minimum_tier: DEFAULT
+    max_repair_attempts: 2
+    candidates:
+      # Large repository inventory, cross-repo comparison, schema/API sweeps.
+      # Gemini is preferred on long-context evidence but has not passed the
+      # local smoke cases, so it stays experimental and is excluded from
+      # routing unless the task explicitly allows experimental candidates.
+      - provider: antigravity
+        resource_state_key: antigravity.gemini
+        model: AUTO_GEMINI
+        model_family: gemini
+        reasoning: medium
+        capability_tier: STRONG
+        status: experimental
+        evidence_status: provisional
+        evidence_scope: long_context_reasoning
+        confidence: low
+        source: "external long-context benchmarks; local smoke cases pending"
+        verified_at: null
+        expires_at: null
+      - provider: claude
+        resource_state_key: claude
+        model: sonnet
+        model_family: claude-sonnet
+        reasoning: provider_default
+        capability_tier: DEEP
+        status: stable
+        evidence_status: provisional
+        evidence_scope: architecture_and_contract_reasoning
+        confidence: medium
+        source: "local CLI, Claude Code 2.1.252"
+        verified_at: "2026-09-01"
+        expires_at: "2026-12-01"
+
   INDEPENDENT_REVIEWER:
-    primary: {provider: antigravity, model: AUTO_GEMINI, reasoning: medium}
-    fallback: {provider: claude, model: sonnet, reasoning: provider_default}
+    role: INDEPENDENT_REVIEWER
+    minimum_tier: DEFAULT
+    max_repair_attempts: 1
+    candidates:
+      # The selection algorithm removes any candidate sharing the implementer's
+      # provider or model family, so this list deliberately spans three
+      # providers. With only one provider available, independent review is
+      # BLOCKED rather than faked.
+      - provider: antigravity
+        resource_state_key: antigravity.gemini
+        model: AUTO_GEMINI
+        model_family: gemini
+        reasoning: medium
+        capability_tier: STRONG
+        status: experimental
+        evidence_status: provisional
+        evidence_scope: long_context_reasoning
+        confidence: low
+        source: "external long-context benchmarks; local smoke cases pending"
+        verified_at: null
+        expires_at: null
+      - provider: claude
+        resource_state_key: claude
+        model: sonnet
+        model_family: claude-sonnet
+        reasoning: provider_default
+        capability_tier: DEEP
+        status: stable
+        evidence_status: provisional
+        evidence_scope: independent_review
+        confidence: medium
+        source: "local CLI, Claude Code 2.1.252"
+        verified_at: "2026-09-01"
+        expires_at: "2026-12-01"
+      - provider: codex
+        resource_state_key: codex
+        model: gpt-5.6-sol
+        model_family: gpt-5.6
+        reasoning: medium
+        capability_tier: STRONG
+        status: stable
+        evidence_status: provisional
+        evidence_scope: structural_implementation
+        confidence: low
+        source: "local CLI default model, codex-cli 0.151.0 config"
+        verified_at: "2026-09-01"
+        expires_at: "2026-12-01"
+
   REGRESSION_HUNTER:
-    primary: {provider: antigravity, model: AUTO_GEMINI, reasoning: medium}
-    fallback: {provider: codex, model: gpt-5.6-luna, reasoning: medium}
+    role: REGRESSION_HUNTER
+    minimum_tier: DEFAULT
+    max_repair_attempts: 2
+    candidates:
+      - provider: antigravity
+        resource_state_key: antigravity.gemini
+        model: AUTO_GEMINI
+        model_family: gemini
+        reasoning: medium
+        capability_tier: STRONG
+        status: experimental
+        evidence_status: provisional
+        evidence_scope: long_context_reasoning
+        confidence: low
+        source: "external long-context benchmarks; local smoke cases pending"
+        verified_at: null
+        expires_at: null
+      - provider: codex
+        resource_state_key: codex
+        model: gpt-5.6-luna
+        model_family: gpt-5.6
+        reasoning: medium
+        capability_tier: DEFAULT
+        status: stable
+        evidence_status: provisional
+        evidence_scope: bounded_repo_implementation
+        confidence: low
+        source: "local smoke case T2S1 2026-09-01; 1 of the 3-5 cases required"
+        verified_at: "2026-09-01"
+        expires_at: "2026-12-01"
+
   ESCALATION_MODEL:
-    primary: {provider: claude, model: opus, reasoning: provider_default}
-notes:
-  - AUTO_* means query currently available provider models instead of hard-coding stale display names.
-  - Revalidate IDs and availability periodically.
+    role: ESCALATION
+    minimum_tier: DEEP
+    max_repair_attempts: 1
+    candidates:
+      # Exceptional escalation only: qualified candidates failed to converge,
+      # reviewers disagree, or the risk is exceptional.
+      - provider: claude
+        resource_state_key: claude
+        model: opus
+        model_family: claude-opus
+        reasoning: provider_default
+        capability_tier: DEEP
+        status: stable
+        evidence_status: provisional
+        evidence_scope: escalation_reasoning
+        confidence: medium
+        source: "local CLI, Claude Code 2.1.252"
+        verified_at: "2026-09-01"
+        expires_at: "2026-12-01"
