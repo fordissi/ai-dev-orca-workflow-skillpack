@@ -5,6 +5,7 @@ import { parse } from "yaml";
 import {
   scanText,
   selectCandidate,
+  validateMarkdownLinks,
   validateRegistry,
   validateResourceState,
   validateRoutingCases,
@@ -240,4 +241,40 @@ test("official commands avoid stale or dangerous defaults", async () => {
     });
   }
   assert.deepEqual(offending, []);
+});
+
+const ROUTING_EXAMPLE = "classify -> slot -> overlay -> candidate -> contract -> dispatch";
+
+test("entry points expose the read order, routing example and gates", async () => {
+  const readme = await readFile("README.md", "utf8");
+  const skill = await readFile("skills/orca-multi-agent-dev/SKILL.md", "utf8");
+
+  for (const [name, text] of [["README.md", readme], ["SKILL.md", skill]]) {
+    for (const chain of ["WORKFLOW_POLICY", "MODEL_ROUTING_POLICY", "MODEL_REGISTRY", "RESOURCE_AWARE_ROUTING", "OFFICIAL_COMMANDS"]) {
+      assert.ok(text.includes(chain), `${name} is missing ${chain} from the authoritative read order`);
+    }
+    assert.ok(text.includes(ROUTING_EXAMPLE), `${name} is missing the six-stage routing example`);
+    assert.ok(text.includes("UNKNOWN"), `${name} does not state UNKNOWN behaviour`);
+    assert.match(text, /human gate/i, `${name} does not mention the human gate`);
+    assert.ok(text.includes("npm run validate"), `${name} is missing the validation command`);
+    assert.ok(
+      text.includes("templates/ROUTER_EXECUTION_CONTRACT_TEMPLATE.md"),
+      `${name} does not link the execution contract template`,
+    );
+  }
+
+  // The README must keep the five layers distinguishable.
+  for (const layer of ["stable workflow", "dynamic mapping", "runtime snapshot", "project handoff", "experimental"]) {
+    assert.match(readme, new RegExp(layer, "i"), `README.md does not distinguish "${layer}"`);
+  }
+});
+
+test("entry point link checker rejects broken repository links", async () => {
+  const good = "see [the contract](templates/ROUTER_EXECUTION_CONTRACT_TEMPLATE.md)";
+  assert.deepEqual(validateMarkdownLinks(good, { path: "README.md", root: process.cwd() }), []);
+
+  const bad = await readFile("tests/fixtures/broken-links.md", "utf8");
+  const findings = validateMarkdownLinks(bad, { path: "tests/fixtures/broken-links.md", root: process.cwd() });
+  assert.ok(findings.length > 0, "a broken repository-relative link must be reported");
+  assert.match(findings.join("\n"), /broken link/);
 });

@@ -12,7 +12,7 @@
 
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { extname, join } from "node:path";
+import { dirname, extname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parse as parseYaml } from "yaml";
 
@@ -587,6 +587,9 @@ const BINARY_EXTENSIONS = new Set([
 // explicit and minimal so nothing is silently exempted from the scan.
 const SCAN_EXEMPT_PATHS = new Set([]);
 
+// The broken-link fixture exists precisely to be broken.
+const LINK_CHECK_EXEMPT_PATHS = new Set(["tests/fixtures/broken-links.md"]);
+
 function publishableFiles(root) {
   // tracked plus untracked-but-not-ignored is exactly what a publish would
   // carry. Ignored files and .git are therefore never scanned.
@@ -606,7 +609,7 @@ function publishableFiles(root) {
 
 export function validateRepository(root = process.cwd()) {
   const findings = [];
-  const summary = { registry: 0, resourceExample: 0, routingCases: 0, filesScanned: 0, scanFindings: 0 };
+  const summary = { registry: 0, resourceExample: 0, routingCases: 0, filesScanned: 0, scanFindings: 0, markdownFilesLinkChecked: 0 };
 
   const registryPath = join(root, "policies", "MODEL_REGISTRY.yaml");
   const registry = parseYaml(readFileSync(registryPath, "utf8"));
@@ -664,9 +667,45 @@ export function validateRepository(root = process.cwd()) {
       findings.push(`${finding.path}:${finding.line}:${finding.column}: ${finding.pattern}`);
       summary.scanFindings += 1;
     }
+
+    if (extname(file).toLowerCase() === ".md" && !LINK_CHECK_EXEMPT_PATHS.has(file)) {
+      summary.markdownFilesLinkChecked += 1;
+      for (const finding of validateMarkdownLinks(text, { path: file, root })) {
+        findings.push(finding);
+      }
+    }
   }
 
   return { findings, summary };
+}
+
+/**
+ * Checks that repository-relative Markdown links resolve to real files.
+ * External URLs, bare anchors and mail links are out of scope.
+ */
+export function validateMarkdownLinks(text, options = {}) {
+  const { path = "", root = process.cwd() } = options;
+  const findings = [];
+
+  if (typeof text !== "string") return findings;
+
+  text.split(/\r?\n/).forEach((line, index) => {
+    for (const match of line.matchAll(/\[[^\]]*\]\(([^)]+)\)/g)) {
+      const target = match[1].trim();
+
+      // Skip absolute schemes (https:, mailto:, ...) and pure anchors.
+      if (target === "" || target.startsWith("#") || /^[a-z][a-z0-9+.-]*:/i.test(target)) continue;
+
+      const [filePart] = target.split("#");
+      if (filePart === "") continue;
+
+      if (!existsSync(resolve(root, dirname(path), filePart))) {
+        findings.push(`${path}:${index + 1}: broken link to ${filePart}`);
+      }
+    }
+  });
+
+  return findings;
 }
 
 if (process.argv[1] !== undefined && pathToFileURL(process.argv[1]).href === import.meta.url) {
@@ -674,7 +713,8 @@ if (process.argv[1] !== undefined && pathToFileURL(process.argv[1]).href === imp
 
   console.log(
     `slots: ${summary.registry} | resource examples: ${summary.resourceExample} | ` +
-      `routing cases: ${summary.routingCases} | files scanned: ${summary.filesScanned}`,
+      `routing cases: ${summary.routingCases} | files scanned: ${summary.filesScanned} | ` +
+      `markdown link-checked: ${summary.markdownFilesLinkChecked}`,
   );
 
   if (findings.length > 0) {
