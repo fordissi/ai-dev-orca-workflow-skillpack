@@ -5,6 +5,17 @@ Version: `0.3`
 Handoff 記錄**單一專案的當前狀態**，不重複 contract 內容，也不放跨專案通用政策。
 Active contract 用指向的方式引用，避免產生第二份會分歧的副本。
 
+Handoff 與 `STRATEGIC_RETURN` 角色不同，不得互相取代：
+
+| | 範圍 | 生命週期 |
+|---|---|---|
+| **CURRENT_PROJECT_HANDOFF** | 跨 session 的 durable project state | 專案存續期間 |
+| [**STRATEGIC_RETURN**](STRATEGIC_RETURN_TEMPLATE.md) | 單次 task / cycle 的 decision delta | 一次 routing/execute/review cycle |
+
+本輪工作改變 durable project state 時，operational router 先更新這份 handoff，
+再於 `STRATEGIC_RETURN` 的 `HANDOFF_UPDATE` 指出哪些部分被更新。
+Handoff 不累積歷次 `STRATEGIC_RETURN` 的全文。
+
 不得放入客戶資料、個人資料、credential、原始 quota payload 或 provider
 conversation ID。讀不到的值填 `UNKNOWN`。
 

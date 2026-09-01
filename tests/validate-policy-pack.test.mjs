@@ -104,7 +104,7 @@ test("stable policies expose required executable enums", async () => {
   const workflow = await readFile("policies/WORKFLOW_POLICY.md", "utf8");
   const concurrency = await readFile("policies/CONCURRENCY_POLICY.md", "utf8");
   const routing = await readFile("policies/MODEL_ROUTING_POLICY.md", "utf8");
-  for (const phrase of ["verify → classify → route → contract → execute → review → repair or escalate → close", "permission ceiling", "authoritative owner"]) assert.match(workflow, new RegExp(phrase));
+  for (const phrase of ["verify → classify → route → contract → execute → review → repair or escalate → close", "→ handback", "permission ceiling", "authoritative owner"]) assert.match(workflow, new RegExp(phrase));
   for (const mode of ["SEQUENTIAL", "PARALLEL_INDEPENDENT", "COMPETITIVE_DESIGN", "PARALLEL_SAME_CORE_IMPLEMENTATION"]) assert.match(concurrency, new RegExp(mode));
   for (const dimension of ["risk", "complexity", "context_size", "ambiguity", "change_intensity", "verification_need"]) assert.match(routing, new RegExp(dimension));
   for (const tier of ["CHEAP", "DEFAULT", "STRONG", "DEEP"]) assert.match(routing, new RegExp(tier));
@@ -504,4 +504,175 @@ test("release hygiene: host-specific registry warning and line-ending policy", a
   const registryText = await readFile("policies/MODEL_REGISTRY.yaml", "utf8");
   assert.match(registryText, /AUTHORING HOST/);
   assert.match(registryText, /re-resolve/i);
+});
+
+/* ------------------------------------------------------------------------ *
+ * Operational -> Strategic handback
+ *
+ * The return leg is what a strategic router without a filesystem actually
+ * receives, so its shape, its direction and what it must never carry are all
+ * conformance concerns.
+ * ------------------------------------------------------------------------ */
+
+const requiredReturnFields = [
+  "STRATEGIC_RETURN", "task_id", "status", "CURRENT_STATE", "repo", "branch",
+  "base_head", "result_head", "working_tree", "WHAT_WAS_DONE", "KEY_FINDINGS",
+  "DECISIONS_MADE_BY_AGENT", "HUMAN_DECISIONS_REQUIRED", "CONTRACT_DRIFT",
+  "ARTIFACTS", "commit", "VERIFICATION", "REMAINING_RISKS",
+  "NEXT_RECOMMENDED_GATE", "BLOCKED_REASON", "RESOURCE_SUMMARY",
+  "HANDOFF_UPDATE",
+];
+
+test("strategic return template exposes every required field and status", async () => {
+  const ret = await readFile("templates/STRATEGIC_RETURN_TEMPLATE.md", "utf8");
+  assert.deepEqual(requiredReturnFields.filter((field) => !ret.includes(field)), []);
+
+  // All four outcomes must be expressible; a return that cannot say HUMAN_GATE
+  // silently degrades into a PASS/FAIL guess.
+  for (const status of ["PASS", "FAIL", "BLOCKED", "HUMAN_GATE"]) {
+    assert.ok(ret.includes(status), `strategic return template cannot express ${status}`);
+  }
+  assert.ok(ret.includes("NONE"), "empty list fields must have an explicit NONE");
+  assert.ok(ret.includes("UNKNOWN"), "unreadable values must stay UNKNOWN rather than be guessed");
+});
+
+test("handback direction is stated and never reversed", async () => {
+  const ret = await readFile("templates/STRATEGIC_RETURN_TEMPLATE.md", "utf8");
+  const contract = await readFile("templates/ROUTER_EXECUTION_CONTRACT_TEMPLATE.md", "utf8");
+  const skill = await readFile("skills/orca-multi-agent-dev/SKILL.md", "utf8");
+  const workflow = await readFile("policies/WORKFLOW_POLICY.md", "utf8");
+
+  // TASK_RESULT stops at the operational router; STRATEGIC_RETURN starts there.
+  for (const [name, text] of [["strategic return", ret], ["contract", contract], ["SKILL.md", skill]]) {
+    assert.match(text, /TASK_RESULT[^\n]*Worker → Operational router/i, `${name} does not state the worker-side direction`);
+    assert.match(text, /STRATEGIC_RETURN[^\n]*Operational router → Strategic router/i, `${name} does not state the handback direction`);
+  }
+
+  // Echoing the worker footer upward would make the strategic layer depend on
+  // a self-summary it cannot verify.
+  for (const [name, text] of [["strategic return", ret], ["contract", contract], ["SKILL.md", skill], ["workflow policy", workflow]]) {
+    assert.match(text, /原樣 echo/, `${name} does not forbid echoing TASK_RESULT upward`);
+  }
+
+  // The reverse direction must appear nowhere.
+  for (const [name, text] of [["strategic return", ret], ["contract", contract], ["SKILL.md", skill], ["workflow policy", workflow]]) {
+    assert.ok(!/STRATEGIC_RETURN[^\n]*Worker →/.test(text), `${name} points STRATEGIC_RETURN in the wrong direction`);
+    assert.ok(!/TASK_RESULT[^\n]*→ Strategic router/.test(text), `${name} points TASK_RESULT in the wrong direction`);
+  }
+});
+
+test("workflow policy owns the handback lifecycle rule", async () => {
+  const workflow = await readFile("policies/WORKFLOW_POLICY.md", "utf8");
+
+  assert.match(workflow, /## Operational → Strategic handback/);
+  assert.match(workflow, /9\. \*\*handback\*\*/, "handback must be a lifecycle step, not an aside");
+  assert.ok(
+    workflow.includes("templates/STRATEGIC_RETURN_TEMPLATE.md"),
+    "the handback rule must point at the field specification",
+  );
+  assert.match(workflow, /本節是這條 handback lifecycle 規則的 normative owner/);
+
+  // The four things the return leg exists to protect.
+  assert.match(workflow, /不得依賴 worker transcript/);
+  assert.match(workflow, /decision packet/);
+  assert.match(workflow, /HUMAN_GATE/);
+  assert.match(workflow, /contract drift 時不得靜默/);
+
+  // The owner table must name handback so no second owner can claim it.
+  assert.match(workflow, /\| `WORKFLOW_POLICY\.md` \|[^|]*handback/);
+});
+
+test("entry points route the return leg through the strategic return template", async () => {
+  const skill = await readFile("skills/orca-multi-agent-dev/SKILL.md", "utf8");
+  const readme = await readFile("README.md", "utf8");
+
+  for (const [name, path, text, link] of [
+    ["SKILL.md", "skills/orca-multi-agent-dev/SKILL.md", skill, "../../templates/STRATEGIC_RETURN_TEMPLATE.md"],
+    ["README.md", "README.md", readme, "templates/STRATEGIC_RETURN_TEMPLATE.md"],
+  ]) {
+    assert.ok(text.includes(link), `${name} does not link the strategic return template`);
+    assert.deepEqual(validateMarkdownLinks(text, { path, root: process.cwd() }), []);
+  }
+
+  // Synthesis is what separates a handback from a relay.
+  for (const input of ["repo state", "git diff", "reviewer findings", "contract drift", "routing evidence"]) {
+    assert.ok(skill.toLowerCase().includes(input.toLowerCase()), `SKILL.md does not require synthesising ${input}`);
+  }
+});
+
+test("strategic return stays compact and expands only by reference", async () => {
+  const ret = await readFile("templates/STRATEGIC_RETURN_TEMPLATE.md", "utf8");
+
+  assert.match(ret, /500-1500 tokens/);
+  assert.match(ret, /不是 hard parser limit/);
+
+  // Over budget, the answer is a pointer, not a bigger paste.
+  assert.match(ret, /commit SHA/);
+  assert.match(ret, /artifact path/);
+  assert.match(ret, /不要把完整 design document、完整 report 或完整 diff inline 回傳/);
+
+  // Every escalation trigger must be listed, and escalation must not become a
+  // way around the gate it usually accompanies.
+  for (const trigger of [
+    "architecture contract ambiguity", "privileged boundary", "auth / RBAC / RLS",
+    "destructive", "reviewer 判斷不一致", "測試失敗", "design alternatives",
+    "contract drift", "production-state",
+  ]) {
+    assert.ok(ret.includes(trigger), `evidence escalation is missing ${trigger}`);
+  }
+  assert.match(ret, /不是\*\*繞過 gate 的理由/);
+});
+
+test("strategic return forbids carrying anything that must not leave the machine", async () => {
+  const ret = await readFile("templates/STRATEGIC_RETURN_TEMPLATE.md", "utf8");
+
+  for (const prohibited of [
+    "完整 terminal transcript", "原始 quota payload", "credential",
+    "session identifier", "provider conversation ID", "個人資料",
+  ]) {
+    assert.ok(ret.includes(prohibited), `strategic return template does not forbid ${prohibited}`);
+  }
+
+  // The template itself must be clean under the publishable-file scanner.
+  assert.deepEqual(scanText(ret, { path: "templates/STRATEGIC_RETURN_TEMPLATE.md" }), []);
+});
+
+test("strategic return defers reason-code and resource-state semantics to their owners", async () => {
+  const ret = await readFile("templates/STRATEGIC_RETURN_TEMPLATE.md", "utf8");
+
+  // Names may be enumerated here; meanings have exactly one owner each.
+  for (const code of ["CONFIG_INVALID", "ROUTING_UNAVAILABLE", "POLICY_BLOCKED", "RESOURCE_BLOCKED", "PERMISSION_BLOCKED"]) {
+    assert.ok(ret.includes(code), `strategic return template is missing blocked reason code ${code}`);
+  }
+  assert.ok(ret.includes("MODEL_ROUTING_POLICY.md"), "the return must point at the reason-code owner");
+  assert.ok(ret.includes("RESOURCE_AWARE_ROUTING.md"), "the return must point at the resource-state owner");
+
+  const codeRowsInReturn = (ret.match(/^\| `(CONFIG_INVALID|ROUTING_UNAVAILABLE|POLICY_BLOCKED|RESOURCE_BLOCKED|PERMISSION_BLOCKED)`/gm) ?? []).length;
+  assert.equal(codeRowsInReturn, 0, "strategic return must not redefine reason-code semantics");
+
+  const stateRowsInReturn = (ret.match(/^\| `(GREEN|YELLOW|RED)`/gm) ?? []).length;
+  assert.equal(stateRowsInReturn, 0, "strategic return must not redefine resource-state semantics");
+
+  // Only a resolved state label travels; the payload that produced it does not.
+  assert.match(ret, /GREEN \| YELLOW \| RED \| UNKNOWN/);
+
+  // A handback change must not have moved the model mapping.
+  const registryText = await readFile("policies/MODEL_REGISTRY.yaml", "utf8");
+  assert.ok(!registryText.includes("STRATEGIC_RETURN"), "the model registry must stay out of the handback layer");
+});
+
+test("per-cycle return and durable handoff stay distinguishable", async () => {
+  const ret = await readFile("templates/STRATEGIC_RETURN_TEMPLATE.md", "utf8");
+  const handoff = await readFile("templates/CURRENT_PROJECT_HANDOFF_TEMPLATE.md", "utf8");
+  const workflow = await readFile("policies/WORKFLOW_POLICY.md", "utf8");
+
+  for (const [name, text] of [["strategic return", ret], ["handoff", handoff], ["workflow policy", workflow]]) {
+    assert.match(text, /decision delta/, `${name} does not scope the per-cycle return`);
+    assert.match(text, /durable project state/, `${name} does not scope the durable handoff`);
+  }
+
+  // A durable change updates the handoff first, then says so in the return.
+  assert.ok(ret.includes("HANDOFF_UPDATE"), "the return has no field for naming the updated handoff sections");
+  assert.ok(handoff.includes("HANDOFF_UPDATE"), "the handoff does not explain how updates are reported back");
+  assert.match(handoff, /不得互相取代/);
 });

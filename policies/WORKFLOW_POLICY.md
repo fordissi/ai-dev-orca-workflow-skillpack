@@ -19,7 +19,7 @@ SKILL → WORKFLOW_POLICY → CONCURRENCY_POLICY → MODEL_ROUTING_POLICY
 
 | Owner | 負責 | 不負責 |
 |---|---|---|
-| `WORKFLOW_POLICY.md` | 角色、precedence、lifecycle、gate、permission、cross-repo | 具體模型名稱 |
+| `WORKFLOW_POLICY.md` | 角色、precedence、lifecycle、handback、gate、permission、cross-repo | 具體模型名稱 |
 | `CONCURRENCY_POLICY.md` | concurrency mode 與啟用條件 | provider 選擇 |
 | `MODEL_ROUTING_POLICY.md` | task classification、slot 選擇、candidate 演算法、escalation | 即時 quota 數值 |
 | `MODEL_REGISTRY.yaml` | slot 的 ordered candidates、能力下限、repair budget | stable workflow 規則 |
@@ -76,6 +76,7 @@ Strategic router 也不執行 lifecycle 的 `verify` 階段——它不得依賴
 
 ```text
 verify → classify → route → contract → execute → review → repair or escalate → close
+      → handback
 ```
 
 1. **verify** — 確認 repo、HEAD、working tree 乾淨度、current handoff 與既有 authoritative contract。
@@ -86,6 +87,7 @@ verify → classify → route → contract → execute → review → repair or 
 6. **review** — 依 `verification_need` 決定一般驗證、independent review 或 adversarial validation。
 7. **repair or escalate** — 在 repair budget 內修補；超出則升級或進 human gate。
 8. **close** — 回傳完成 footer，更新 handoff 與 worktree metadata。
+9. **handback** — operational router 產出 `STRATEGIC_RETURN`，把本輪的 decision delta 交還 strategic router 或 human（見下方 *Operational → Strategic handback*）。
 
 ## New session verification
 
@@ -121,6 +123,47 @@ Worker 結束時回傳 `TASK_RESULT` 與 `RESOURCE_STATUS` 兩段結構化 foote
 **Provider、model、model family 與 reasoning effort 由 router 記錄，不由 worker 自行判定。** Worker 通常無法可靠地內省自己正在以哪個模型執行；要求它自報等於誘導它猜測。這些欄位必須由 router 在 contract 中寫定，worker 只能原樣回填；contract 未載明時填 `UNKNOWN`。
 
 `RESOURCE_STATUS` 可以整段為 `UNKNOWN`。Worker 不得為了填滿 footer 而猜測 quota 數值。
+
+## Operational → Strategic handback
+
+Worker 的 `TASK_RESULT` 只到 operational router 為止。**一個 routing / execute /
+review cycle 結束後，operational router 必須產出一份 `STRATEGIC_RETURN`**，交還
+strategic router 或 human。欄位規格見
+[`templates/STRATEGIC_RETURN_TEMPLATE.md`](../templates/STRATEGIC_RETURN_TEMPLATE.md)；
+本節是這條 handback lifecycle 規則的 normative owner。
+
+證據分層固定為：
+
+```text
+Worker            → 完整技術輸出
+Operational router → 檢視 filesystem / git diff / tests / review
+STRATEGIC_RETURN   → compact decision-relevant delta
+Human 複製貼上     → Strategic router
+```
+
+規則：
+
+- **Operational router 不得把 worker 的 `TASK_RESULT` 原樣 echo 成 `STRATEGIC_RETURN`。**
+  它必須先整合實際 repo state、`git diff` 與 changed files、測試輸出、reviewer
+  findings、contract drift、routing evidence 與 remaining risks，再自行產出回報。
+- **Strategic router 不得依賴 worker transcript 才能理解本輪結果。** 這與「strategic
+  router 不得依賴檔案系統」是同一條依賴限制的延伸。
+- **完整 technical evidence 留在 repo / worktree / tests / review artifact**，
+  由 `STRATEGIC_RETURN` 以 repo、path、commit SHA 指向，而非複製回傳。
+- `STRATEGIC_RETURN` 是 **decision packet，不是完整執行紀錄**。預設 compact；
+  超出時改用 artifact reference，不 inline 完整 design、report 或 diff。
+- `status: HUMAN_GATE` 時**必須清楚說明 human 要決定什麼**，不得只標記需要決策。
+- `status: BLOCKED` 時必須使用既有的 canonical blocked reason code；其語意由
+  `MODEL_ROUTING_POLICY.md` 的 Blocked reason codes 章節定義，此處不重複。
+- **發生 contract drift 時不得靜默進入下一個 implementation task。** drift 必須在
+  `STRATEGIC_RETURN` 中明列，並由 strategic router 或 human 重新確認 contract。
+- Fresh strategic decision 的依據是 **`STRATEGIC_RETURN` 加上它所引用的
+  authoritative artifact**，不是 worker self-summary。
+
+`STRATEGIC_RETURN` 與 current project handoff 不互相取代：前者是**單次 cycle 的
+decision delta**，後者是**跨 session 的 durable project state**。本輪工作若改變
+durable state，operational router 先更新 handoff，再於 `STRATEGIC_RETURN` 指出
+handoff 的哪些部分被更新。
 
 ## Human gates
 

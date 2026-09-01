@@ -85,11 +85,17 @@ SKILL → WORKFLOW_POLICY → CONCURRENCY_POLICY → MODEL_ROUTING_POLICY
 Orca Operational Router（有檔案系統）
         ↓  讀 registry、套 overlay、選 candidate、組 dispatch command
 Worker
-        ↓
+        ↓  TASK_RESULT：完整技術輸出
 Independent Review
         ↓
-Human Gate
+Orca Operational Router（整合 repo state、diff、tests、review findings）
+        ↓  STRATEGIC_RETURN：compact decision delta，由人複製貼回
+Strategic Router / Human Gate
 ```
+
+回程刻意收斂：完整 evidence 留在 Git 與 review artifact，
+[`templates/STRATEGIC_RETURN_TEMPLATE.md`](templates/STRATEGIC_RETURN_TEMPLATE.md)
+只回傳足以做下一個決策的 delta，並以 repo / path / commit SHA 指向原文。
 
 **Strategic router MUST NOT DEPEND ON direct filesystem access, local registry
 visibility, or live quota visibility.** 因此它指定**能力需求**，不指名模型。
@@ -175,7 +181,7 @@ public repository commit policy。
 | `references/OFFICIAL_COMMANDS.md` | 已驗證的 CLI 命令 |
 | `references/SOURCE_NOTES.md` | 查核方式與日期 |
 | `references/MODEL_EVIDENCE.md` | 外部證據及其限制 |
-| `templates/` | contract、handoff、session、benchmark、decision note |
+| `templates/` | contract、strategic return、handoff、session、benchmark、decision note |
 | `runtime/RESOURCE_STATE.example.json` | 安全的 resource snapshot 範例 |
 | `scripts/validate-policy-pack.mjs` | conformance checker |
 | `tests/` | 政策一致性測試與 routing cases |

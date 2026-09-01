@@ -150,9 +150,9 @@ RESOURCE_BLOCKED | PERMISSION_BLOCKED
 
 ---
 
-## Completion footers
+## Completion footers（Worker → Operational router）
 
-Worker 結束時原樣回傳這兩段。
+Worker 結束時原樣回傳這兩段。它們的收件人是 operational router，不是 strategic router。
 
 ```text
 TASK_RESULT
@@ -180,3 +180,21 @@ Worker 通常無法可靠內省自己以哪個模型執行；要求它自報等�
 Contract 未載明時填 `UNKNOWN`。
 
 `RESOURCE_STATUS` 可整段為 `UNKNOWN`。Worker 不得為了填滿 footer 而猜測 quota 數值。
+
+## Operational cycle 的結束（Operational router → Strategic router）
+
+Completion of an operational cycle MUST produce a
+`STRATEGIC_RETURN` following
+[`templates/STRATEGIC_RETURN_TEMPLATE.md`](STRATEGIC_RETURN_TEMPLATE.md).
+
+方向不可顛倒：
+
+| 回報 | 方向 |
+|---|---|
+| `TASK_RESULT` / `RESOURCE_STATUS` | Worker → Operational router |
+| `STRATEGIC_RETURN` | Operational router → Strategic router / Human |
+
+本範本不重複定義 `STRATEGIC_RETURN` 的欄位；欄位規格屬於上述範本，
+handback lifecycle 規則屬於
+[`policies/WORKFLOW_POLICY.md`](../policies/WORKFLOW_POLICY.md)。
+Operational router 不得把 worker 的 `TASK_RESULT` 原樣 echo 成 `STRATEGIC_RETURN`。
