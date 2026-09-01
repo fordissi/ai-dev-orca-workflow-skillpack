@@ -194,13 +194,27 @@ export function validateResourceState(state, options = {}) {
       findings.push(`${at}: source UNKNOWN cannot carry state ${JSON.stringify(entry.state)}`);
     }
 
-    for (const windowName of RESOURCE_WINDOWS) {
-      if (!(windowName in entry)) continue;
-      const window = entry[windowName];
+    const namedWindows = LEGACY_WINDOW_ROLES.filter(([key]) => key in entry).map(([key]) => [key, entry[key]]);
+    const listedWindows = Array.isArray(entry.windows)
+      ? entry.windows.map((window, index) => [`windows[${index}]`, window])
+      : [];
 
+    if ("windows" in entry && !Array.isArray(entry.windows)) {
+      findings.push(`${at}.windows: expected a list of window entries`);
+    }
+
+    for (const [windowName, window] of [...namedWindows, ...listedWindows]) {
       if (!isPlainObject(window)) {
         findings.push(`${at}.${windowName}: expected a mapping`);
         continue;
+      }
+
+      // A named window may override its default role; a listed one must
+      // declare it, because nothing else says which horizon it describes.
+      if ("role" in window && !WINDOW_ROLES.includes(window.role)) {
+        findings.push(`${at}.${windowName}.role: expected one of ${WINDOW_ROLES.join("|")}`);
+      } else if (windowName.startsWith("windows[") && !("role" in window)) {
+        findings.push(`${at}.${windowName}.role: a listed window must declare BURST or BUDGET`);
       }
 
       if ("reset_at" in window && window.reset_at !== null && !isNonEmptyString(window.reset_at)) {
@@ -290,52 +304,106 @@ function resolveResourceEntry(resourceStates, resourceStateKey) {
 }
 
 /* ------------------------------------------------------------------------ *
- * Reset proximity / stranded capacity
+ * Hierarchical resource windows
  *
- * Quota opportunity cost is a routing signal, not capability authority.
- * RESOURCE_AWARE_ROUTING.md owns these thresholds; this section only makes
- * them executable. Nothing here can change which candidates are eligible - it
- * only reorders candidates that already passed every eligibility check.
+ * Quota opportunity cost is a routing signal, not capability authority, and
+ * short-window opportunity must not override long-horizon scarcity.
+ * RESOURCE_AWARE_ROUTING.md owns these roles and thresholds; this section only
+ * makes them executable. Nothing here can change which candidates are
+ * eligible - it only reorders candidates that already passed every check.
+ *
+ * A quota window has a role, not a name:
+ *   BURST  - a short rolling window. Its capacity is use-it-or-lose-it, so it
+ *            supplies the utilization signal (stranded capacity).
+ *   BUDGET - a long-horizon cap. Its capacity is what runs out for the rest of
+ *            the week or month, so it supplies the scarcity signal
+ *            (conservation pressure) and outranks the burst signal.
  * ------------------------------------------------------------------------ */
 
+const WINDOW_ROLES = ["BURST", "BUDGET"];
 const RESET_PROXIMITY_VALUES = ["NEAR", "MEDIUM", "FAR", "UNKNOWN"];
 const STRANDED_RISK_VALUES = ["HIGH", "MEDIUM", "LOW", "UNKNOWN"];
+const CONSERVATION_VALUES = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "NONE", "UNKNOWN"];
 const CONFIDENCE_VALUES = ["HIGH", "MEDIUM", "LOW", "UNKNOWN"];
 
 // A reading can never be more confident than the source it came from.
 const SOURCE_TRUST = { ORCA_RUNTIME: "HIGH", USER_STATEMENT: "MEDIUM", UNKNOWN: "UNKNOWN" };
 
+// Legacy v0.3 snapshots named their windows instead of typing them. The names
+// keep working and mean what they always meant; an explicit `role` wins, so a
+// provider whose short window really is its budget can say so.
+const LEGACY_WINDOW_ROLES = [
+  ["short_window", "BURST"],
+  ["weekly_window", "BUDGET"],
+];
+
 const RESET_NEAR_MS = 6 * 60 * 60 * 1000;
 const RESET_MEDIUM_MS = 48 * 60 * 60 * 1000;
+
 const REMAINING_HIGH = 0.5;
 const REMAINING_MODERATE = 0.2;
+
+const BUDGET_AMPLE = 0.5;
+const BUDGET_COMFORTABLE = 0.25;
+const BUDGET_LOW = 0.1;
 
 // The freshness rule already stated in RESOURCE_AWARE_ROUTING.md. A decayed
 // remaining ratio is worse than no ratio, because it looks authoritative.
 const SNAPSHOT_FRESH_MS = 5 * 60 * 1000;
 
-const RESOURCE_WINDOWS = ["short_window", "weekly_window"];
-
-function confidenceRank(value) {
-  const index = CONFIDENCE_VALUES.indexOf(value);
-  return index === -1 ? 0 : CONFIDENCE_VALUES.length - index;
+function rankIn(values, value) {
+  const index = values.indexOf(value);
+  return index === -1 ? 0 : values.length - index;
 }
 
-function riskRank(value) {
-  const index = STRANDED_RISK_VALUES.indexOf(value);
-  return index === -1 ? 0 : STRANDED_RISK_VALUES.length - index;
-}
+const confidenceRank = (value) => rankIn(CONFIDENCE_VALUES, value);
+const riskRank = (value) => rankIn(STRANDED_RISK_VALUES, value);
+const proximityRank = (value) => rankIn(RESET_PROXIMITY_VALUES, value);
 
-function proximityRank(value) {
-  const index = RESET_PROXIMITY_VALUES.indexOf(value);
-  return index === -1 ? 0 : RESET_PROXIMITY_VALUES.length - index;
-}
+// UNKNOWN ranks below every stated pressure, so "take the most restrictive"
+// never lets a missing reading outrank one somebody actually took.
+const conservationRank = (value) => rankIn(CONSERVATION_VALUES, value) - 1;
 
 function toMillis(value) {
   if (typeof value === "number") return Number.isFinite(value) ? value : Number.NaN;
   if (isNonEmptyString(value)) return Date.parse(value);
   if (value instanceof Date) return value.getTime();
   return Number.NaN;
+}
+
+/**
+ * Every window on an entry, in a single shape, whatever schema it was written
+ * in. A window whose role cannot be established is dropped rather than
+ * guessed: an unclassified window is not evidence about either horizon.
+ */
+export function resourceWindows(entry) {
+  if (!isPlainObject(entry)) return [];
+
+  const windows = [];
+  const push = (key, role, window) => {
+    if (!WINDOW_ROLES.includes(role)) return;
+    windows.push({
+      key,
+      role,
+      remaining_ratio: window.remaining_ratio,
+      reset_at: window.reset_at,
+    });
+  };
+
+  if (Array.isArray(entry.windows)) {
+    for (const [index, window] of entry.windows.entries()) {
+      if (!isPlainObject(window)) continue;
+      push(isNonEmptyString(window.key) ? window.key : `windows[${index}]`, window.role, window);
+    }
+  }
+
+  for (const [key, defaultRole] of LEGACY_WINDOW_ROLES) {
+    const window = entry[key];
+    if (!isPlainObject(window)) continue;
+    push(key, WINDOW_ROLES.includes(window.role) ? window.role : defaultRole, window);
+  }
+
+  return windows;
 }
 
 /**
@@ -358,10 +426,10 @@ export function resetProximity(resetAt, now) {
 }
 
 /**
- * How much of this pool's remaining capacity would be lost to the reset.
+ * How much of a BURST window's capacity would be lost to its reset.
  *
  * Stranding needs both halves: a lot left AND little time to spend it. Plenty
- * of capacity with a distant reset is not stranded, and an almost-spent pool
+ * of capacity with a distant reset is not stranded, and an almost-spent window
  * strands nothing however soon it refills.
  */
 export function strandedCapacityRisk(remainingRatio, proximity) {
@@ -381,36 +449,48 @@ export function strandedCapacityRisk(remainingRatio, proximity) {
   return "LOW";
 }
 
-const UNKNOWN_SIGNAL = Object.freeze({
-  state: "UNKNOWN",
-  reset_proximity: "UNKNOWN",
-  stranded_capacity_risk: "UNKNOWN",
-  confidence: "UNKNOWN",
-  stale: false,
-});
+/**
+ * How hard a BUDGET window argues for conserving this provider.
+ *
+ * Proximity reduces pressure here, the opposite of its effect on a burst
+ * window. Ten percent of a weekly cap left with five days to run is a real
+ * constraint on everything scheduled this week; the same ten percent an hour
+ * before the cap refills constrains almost nothing, because the scarcity
+ * resolves itself inside the horizon of the work being routed.
+ */
+export function conservationPressure(remainingRatio, proximity) {
+  if (typeof remainingRatio !== "number" || !Number.isFinite(remainingRatio)) return "UNKNOWN";
+  if (remainingRatio < 0 || remainingRatio > 1) return "UNKNOWN";
+  if (!RESET_PROXIMITY_VALUES.includes(proximity) || proximity === "UNKNOWN") return "UNKNOWN";
+
+  if (remainingRatio >= BUDGET_AMPLE) return proximity === "FAR" ? "LOW" : "NONE";
+  if (remainingRatio >= BUDGET_COMFORTABLE) return proximity === "FAR" ? "MEDIUM" : "LOW";
+  if (remainingRatio >= BUDGET_LOW) {
+    if (proximity === "NEAR") return "LOW";
+    return proximity === "MEDIUM" ? "MEDIUM" : "HIGH";
+  }
+  if (proximity === "NEAR") return "MEDIUM";
+  return proximity === "MEDIUM" ? "HIGH" : "CRITICAL";
+}
 
 /**
- * Resolves one snapshot entry into the opportunity signal used for ordering.
+ * The part of a reading that is common to both signals: whether the entry can
+ * carry any weight at all.
  *
- * The returned view carries labels only - never a ratio, a reset timestamp or
- * any other raw quota value - so it can be written into routing evidence
- * without putting account data into an artifact.
- *
- * It returns UNKNOWN, which is neutral, whenever the reading cannot carry the
- * weight: an untrusted or malformed entry, an UNKNOWN state, a snapshot too
- * old for its ratio to still be true, or a confidence below MEDIUM.
+ * Returns null when it cannot - an untrusted or malformed entry, an UNKNOWN
+ * state, a snapshot too old for its ratios to still be true, or a confidence
+ * below MEDIUM. Every one of those yields UNKNOWN on both signals, which is
+ * neutral: it neither promotes nor demotes.
  */
-export function resolveStrandedCapacity(entry, options = {}) {
-  const { now = Date.now() } = options;
-
-  if (!isPlainObject(entry)) return { ...UNKNOWN_SIGNAL };
-  if (resourceEntryTrust(entry) !== null) return { ...UNKNOWN_SIGNAL };
+function readableEntry(entry, now) {
+  if (!isPlainObject(entry)) return null;
+  if (resourceEntryTrust(entry) !== null) return null;
 
   const state = RESOURCE_STATES.includes(entry.state) ? entry.state : "UNKNOWN";
 
-  // An UNKNOWN state cannot carry a confident opportunity signal. This is what
-  // keeps YELLOW and UNKNOWN from acquiring a precedence between them.
-  if (state === "UNKNOWN") return { ...UNKNOWN_SIGNAL };
+  // An UNKNOWN state cannot carry a confident opportunity or scarcity reading.
+  // This is what keeps YELLOW and UNKNOWN from acquiring a precedence.
+  if (state === "UNKNOWN") return null;
 
   const sourceTrust = SOURCE_TRUST[entry.source] ?? "UNKNOWN";
   const declared = CONFIDENCE_VALUES.includes(entry.remaining_confidence) ? entry.remaining_confidence : null;
@@ -422,19 +502,44 @@ export function resolveStrandedCapacity(entry, options = {}) {
   const checkedAt = toMillis(entry.checked_at);
   const stale = !Number.isFinite(checkedAt) || !Number.isFinite(evaluatedAt) || evaluatedAt - checkedAt > SNAPSHOT_FRESH_MS;
 
-  const base = { state, reset_proximity: "UNKNOWN", stranded_capacity_risk: "UNKNOWN", confidence, stale };
+  if (stale) return { state, confidence, stale: true, usable: false };
+  if (confidenceRank(confidence) < confidenceRank("MEDIUM")) return { state, confidence, stale: false, usable: false };
 
-  if (stale) return base;
-  if (confidenceRank(confidence) < confidenceRank("MEDIUM")) return base;
+  return { state, confidence, stale: false, usable: true };
+}
 
-  // Each independently limited window is evaluated on its own reset. The pool
-  // is as stranded as its most stranded window: a five-hour window about to
-  // refill strands capacity even when the weekly window is far away.
+const UNKNOWN_BASE = Object.freeze({ state: "UNKNOWN", confidence: "UNKNOWN", stale: false });
+
+/**
+ * Resolves the BURST half of an entry: the utilization signal.
+ *
+ * The returned view carries labels only - never a ratio, a reset timestamp or
+ * any other raw quota value - so it can be written into routing evidence
+ * without putting account data into an artifact.
+ */
+export function resolveStrandedCapacity(entry, options = {}) {
+  const { now = Date.now() } = options;
+  const readable = readableEntry(entry, now);
+
+  if (readable === null) {
+    return { ...UNKNOWN_BASE, reset_proximity: "UNKNOWN", stranded_capacity_risk: "UNKNOWN" };
+  }
+
+  const base = {
+    state: readable.state,
+    confidence: readable.confidence,
+    stale: readable.stale,
+    reset_proximity: "UNKNOWN",
+    stranded_capacity_risk: "UNKNOWN",
+  };
+  if (!readable.usable) return base;
+
+  // A provider is as stranded as its most stranded burst window: a five-hour
+  // window about to refill strands capacity even when another one is quiet.
   let best = { proximity: "UNKNOWN", risk: "UNKNOWN" };
 
-  for (const windowName of RESOURCE_WINDOWS) {
-    const window = entry[windowName];
-    if (!isPlainObject(window)) continue;
+  for (const window of resourceWindows(entry)) {
+    if (window.role !== "BURST") continue;
 
     const proximity = resetProximity(window.reset_at, now);
     const risk = strandedCapacityRisk(window.remaining_ratio, proximity);
@@ -451,6 +556,56 @@ export function resolveStrandedCapacity(entry, options = {}) {
 }
 
 /**
+ * Resolves the BUDGET half of an entry: the scarcity signal.
+ *
+ * With several long-horizon caps the most restrictive one wins, because any of
+ * them can be the cap that actually runs out first. A weekly allowance that is
+ * fine says nothing about a monthly one that is nearly spent.
+ */
+export function resolveConservationPressure(entry, options = {}) {
+  const { now = Date.now() } = options;
+  const readable = readableEntry(entry, now);
+
+  if (readable === null) {
+    return { ...UNKNOWN_BASE, budget_reset_proximity: "UNKNOWN", conservation_pressure: "UNKNOWN" };
+  }
+
+  const base = {
+    state: readable.state,
+    confidence: readable.confidence,
+    stale: readable.stale,
+    budget_reset_proximity: "UNKNOWN",
+    conservation_pressure: "UNKNOWN",
+  };
+  if (!readable.usable) return base;
+
+  let tightest = { proximity: "UNKNOWN", pressure: "UNKNOWN" };
+
+  for (const window of resourceWindows(entry)) {
+    if (window.role !== "BUDGET") continue;
+
+    const proximity = resetProximity(window.reset_at, now);
+    const pressure = conservationPressure(window.remaining_ratio, proximity);
+
+    if (conservationRank(pressure) > conservationRank(tightest.pressure)) {
+      tightest = { proximity, pressure };
+    }
+  }
+
+  return { ...base, budget_reset_proximity: tightest.proximity, conservation_pressure: tightest.pressure };
+}
+
+// A provider argues for conservation only once its long-horizon budget is
+// genuinely tight. Everything softer is neutral, so a merely-measured provider
+// is never worse off than an unmeasured one.
+const CONSERVE_PRESSURES = new Set(["HIGH", "CRITICAL"]);
+
+// Burst opportunity is spendable only against a budget somebody has read and
+// found healthy. UNKNOWN is deliberately not in this set: not checking must
+// not buy a promotion, just as it must not buy a penalty.
+const SUSTAINABLE_PRESSURES = new Set(["NONE", "LOW"]);
+
+/**
  * Selects one candidate from a slot's ordered candidates.
  *
  * The resource overlay only reorders candidates that already meet the slot's
@@ -458,11 +613,15 @@ export function resolveStrandedCapacity(entry, options = {}) {
  * UNKNOWN are treated neutrally so a missing reading is neither punished nor
  * rewarded, and registry order breaks the tie.
  *
- * Stranded-capacity preference is the last layer and the weakest. It reorders
- * only inside the group that shares the resource state of the candidate
- * registry order would already have chosen, so it can never move work across
- * the GREEN / YELLOW / UNKNOWN / RED bands, and can never put a YELLOW ahead of
- * an UNKNOWN or the reverse.
+ * Below all of that sit two resource signals, in this order: long-horizon
+ * conservation, then short-horizon opportunity. Scarcity first, utilization
+ * second - a burst window about to refill must never talk a provider into
+ * spending a budget that is nearly gone.
+ *
+ * Both reorder only inside the group that shares the resource state of the
+ * candidate registry order would already have chosen, so neither can move work
+ * across the GREEN / YELLOW / UNKNOWN / RED bands, and neither can put a
+ * YELLOW ahead of an UNKNOWN or the reverse.
  */
 export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
   const {
@@ -540,7 +699,13 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
     }
 
     if (failures.length === 0) {
-      qualified.push({ candidate, label, resourceState, stranded: resolveStrandedCapacity(entry, { now }) });
+      qualified.push({
+        candidate,
+        label,
+        resourceState,
+        stranded: resolveStrandedCapacity(entry, { now }),
+        conservation: resolveConservationPressure(entry, { now }),
+      });
       continue;
     }
 
@@ -552,17 +717,35 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
     });
   }
 
-  // Registry order picks the head of the band. Stranded capacity may then
-  // promote a candidate from within the head's own resource state - and only
-  // on HIGH, so a merely-known-mediocre reading never displaces an UNKNOWN one.
+  // Registry order picks the head of the band. The two resource signals may
+  // then reorder inside the head's own resource state, and only there.
+  //
+  // Conservation runs first and only demotes, on HIGH or CRITICAL: a provider
+  // whose long-horizon budget is nearly spent goes behind the ones that are
+  // not, and everything softer is neutral. Burst opportunity runs second and
+  // only promotes, on HIGH stranded risk - and only for a candidate whose own
+  // budget somebody has read and found sustainable. UNKNOWN is in neither set,
+  // so not checking buys neither a promotion nor a penalty.
   const pickFromBand = (band) => {
     const head = band[0];
     if (head === undefined) return undefined;
     if (!preferStrandedCapacity) return { pick: head, head };
 
     const sameState = band.filter(({ resourceState }) => resourceState === head.resourceState);
-    const promoted = sameState.find(({ stranded }) => stranded.stranded_capacity_risk === "HIGH");
-    return { pick: promoted ?? head, head };
+
+    const conserve = sameState.filter(({ conservation }) => CONSERVE_PRESSURES.has(conservation.conservation_pressure));
+    const sustainable = sameState.filter(({ conservation }) => !CONSERVE_PRESSURES.has(conservation.conservation_pressure));
+
+    // Conservation expresses a preference, never a refusal: with every
+    // candidate under pressure the band still routes, in registry order.
+    const ordered = [...sustainable, ...conserve];
+
+    const promoted = ordered.find(
+      ({ stranded, conservation }) =>
+        stranded.stranded_capacity_risk === "HIGH" && SUSTAINABLE_PRESSURES.has(conservation.conservation_pressure),
+    );
+
+    return { pick: promoted ?? ordered[0], head };
   };
 
   const selection =
@@ -572,22 +755,34 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
 
   if (selection !== undefined) {
     const { pick, head } = selection;
+    // Non-null only when a resource signal actually moved the choice.
+    // Recording it is what keeps these layers auditable rather than invisible.
+    const moved = pick !== head;
+    const demoted = moved && CONSERVE_PRESSURES.has(head.conservation.conservation_pressure);
+
     return {
       status: "SELECTED",
       candidate: pick.candidate,
       resource_state: pick.resourceState,
       reset_proximity: pick.stranded.reset_proximity,
       stranded_capacity_risk: pick.stranded.stranded_capacity_risk,
-      // Non-null only when the opportunity signal actually moved the choice.
-      // Recording it is what keeps the layer auditable rather than invisible.
+      budget_reset_proximity: pick.conservation.budget_reset_proximity,
+      conservation_pressure: pick.conservation.conservation_pressure,
+      conservation_demotion: demoted
+        ? {
+            over: head.label,
+            budget_reset_proximity: head.conservation.budget_reset_proximity,
+            conservation_pressure: head.conservation.conservation_pressure,
+          }
+        : null,
       stranded_promotion:
-        pick === head
-          ? null
-          : {
+        moved && !demoted
+          ? {
               over: head.label,
               reset_proximity: pick.stranded.reset_proximity,
               stranded_capacity_risk: pick.stranded.stranded_capacity_risk,
-            },
+            }
+          : null,
     };
   }
 
@@ -847,6 +1042,24 @@ export function validateRoutingCases(document, registry) {
         findings.push(
           `${named}: expected stranded_capacity_risk ${testCase.expect.stranded_capacity_risk}, got ${result.stranded_capacity_risk}`,
         );
+      }
+
+      if ("conservation_pressure" in testCase.expect && result.conservation_pressure !== testCase.expect.conservation_pressure) {
+        findings.push(
+          `${named}: expected conservation_pressure ${testCase.expect.conservation_pressure}, got ${result.conservation_pressure}`,
+        );
+      }
+
+      if ("conservation_demotion" in testCase.expect) {
+        const demoted = result.conservation_demotion !== null;
+        if (demoted !== testCase.expect.conservation_demotion) {
+          findings.push(
+            `${named}: expected conservation_demotion ${testCase.expect.conservation_demotion}, got ${demoted}`,
+          );
+        }
+        if (demoted && !isNonEmptyString(result.conservation_demotion.over)) {
+          findings.push(`${named}: a conservation demotion must record the candidate it moved ahead of`);
+        }
       }
 
       // A promotion that is not recorded is a promotion nobody can audit.

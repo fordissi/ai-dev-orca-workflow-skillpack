@@ -35,10 +35,16 @@ classify -> slot -> overlay -> candidate -> contract -> dispatch
    的 slot 決策表，得出 `role`、`slot`、`minimum_tier`。高風險規則優先於成本規則。
 3. **overlay** — 讀 resource state。**讀不到就是 `UNKNOWN`，不准估算。**
    `YELLOW` 與 `UNKNOWN` 同權，依 registry 順序。
-   同一 band、同一 state 之內，可再看 **stranded capacity**：剩得多又快 reset
-   （`stranded_capacity_risk: HIGH`）的候選可以提前，並須記錄被跳過的是誰。
-   它只重排已合格的候選——**不降 `minimum_tier`、不換掉 disjoint reviewer、
-   不繞 human gate**。見 [`RESOURCE_AWARE_ROUTING.md`](../../policies/RESOURCE_AWARE_ROUTING.md)。
+   同一 band、同一 state 之內再看兩個資源訊號，**順序固定：先稀缺，後利用率**。
+   - **BUDGET**（weekly / monthly 等長期上限）→ `conservation_pressure`。
+     `HIGH` / `CRITICAL` 的候選**降級**。
+   - **BURST**（5h / hourly 等短窗）→ `stranded_capacity_risk`。
+     `HIGH` **且自身 conservation 為 `NONE`/`LOW`** 才能**提前**。
+   **短窗機會不得推翻長期稀缺**：週預算只剩 8% 時，5h 窗剩再多也不提前。
+   BUDGET 讀不到就兩邊都不動（不當 healthy，也不當 scarce）。
+   任何重排都要記錄被跳過的是誰。它只重排已合格的候選——**不降 `minimum_tier`、
+   不換掉 disjoint reviewer、不繞 human gate、不改 slot membership**。
+   見 [`RESOURCE_AWARE_ROUTING.md`](../../policies/RESOURCE_AWARE_ROUTING.md)。
 4. **candidate** — 依 [`MODEL_REGISTRY.yaml`](../../policies/MODEL_REGISTRY.yaml)
    的 ordered candidates 選出。不得跨越 `minimum_tier`。
 5. **contract** — 填

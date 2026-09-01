@@ -137,17 +137,25 @@ verification_need=independent`
 
 `UNKNOWN` 既不被懲罰也不被獎勵——否則系統會獎勵「不去查」或「亂猜」。
 
-### D. 額度快 reset，用掉才不浪費
+### D. 先看長期預算，再決定要不要趁短窗 reset 前用掉
 
-Codex 五小時窗剩約六成、不到四小時就 reset；Claude 週窗剩約六成、還有一天半。
-兩者都 GREEN、都已通過能力與 disjointness 檢查
-→ 這是 **stranded capacity**：不用掉，剩餘額度的機會價值就歸零
-→ 在**同一 band、同一 state** 之內把 `stranded_capacity_risk: HIGH` 的候選提前
-→ 記錄被跳過的候選與 `NEAR` / `HIGH` 標籤，**不記 quota 數值**。
+Quota window 分兩種角色：**BURST**（5h、hourly）管利用率，
+**BUDGET**（weekly、monthly）管稀缺。
 
-`quota opportunity cost is a routing signal, not capability authority`——
-它排在能力、安全、disjointness、resource state 之後，只能在已合格的候選之間重排。
-沒有可信讀數時整層退回 `UNKNOWN`，選擇結果與這層不存在時完全相同。
+Codex 五小時窗剩八成、兩小時後 reset——單看這一項是最強的「趁現在用掉」訊號。
+但它的週預算只剩 8%、還要撐五天
+→ `conservation_pressure: CRITICAL`，**保留 Codex**，工作交給預算健康的候選。
+
+同樣的五小時窗，週預算剩 75% 時
+→ 那八成才是真正的免費容量，burst opportunity 可以生效。
+
+`short-window opportunity MUST NOT override long-horizon scarcity`
+
+排序固定為 **scarcity first, utilization second**，兩者都排在能力、安全、
+disjointness、resource state 之後，且只能在**同一 band、同一 state** 內重排。
+BUDGET 讀不到時兩邊都不動——不當 healthy，也不當 scarce。
+沒有可信讀數時，選擇結果與這兩層不存在時完全相同。
+記錄只寫 `CRITICAL` / `NEAR` 這類標籤，**不寫 quota 數值**。
 
 ## 停止條件
 

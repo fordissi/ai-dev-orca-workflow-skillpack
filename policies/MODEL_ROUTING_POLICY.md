@@ -83,15 +83,18 @@ Role 與 slot 名稱**永遠不得**被當成 capability tier 來比較。Execut
 3. security / permission constraints
 4. independent-review disjointness
 5. availability / resource state
-6. reset proximity / stranded-capacity opportunity
-7. registry preference
+6. long-horizon conservation（BUDGET scarcity）
+7. short-horizon opportunity（BURST stranded capacity）
+8. registry preference
 ```
 
-第 6 層只在前五層都已滿足的候選之間比較。它是 routing signal，不是 capability
-authority：它無法讓不合格的候選變得合格，也無法改變 architecture authority 或
-human gate。其推導規則、門檻與可重排的範圍由
+第 6、7 層只在前五層都已滿足的候選之間比較，且**第 6 層優先於第 7 層**——
+scarcity first, utilization second。它們是 routing signal，不是 capability
+authority：無法讓不合格的候選變得合格，也無法改變 architecture authority 或
+human gate。window role、conservation pressure、stranded capacity 的推導規則、
+門檻與可重排的範圍由
 [`RESOURCE_AWARE_ROUTING.md`](RESOURCE_AWARE_ROUTING.md) 的
-Reset proximity 與 stranded capacity 章節定義，此處不重複。
+Hierarchical quota windows 章節定義，此處不重複。
 
 1. 從指定 slot 讀取 registry 的 ordered `candidates`（順序具有意義）。
 2. 檢查每個候選的 resource entry 是否通過 **source trust invariant**（見
@@ -108,12 +111,12 @@ Reset proximity 與 stranded capacity 章節定義，此處不重複。
    - 進行 independent review 時，與 implementer **相同 provider 或相同 model family** 的候選。
 4. 若存在合格的 `GREEN` 候選，依 registry 順序取第一個。
 5. 否則在 `YELLOW` 與 `UNKNOWN` 之間**維持 registry 順序**取第一個合格候選。`YELLOW` 與 `UNKNOWN` 之間不建立優先級；`UNKNOWN` 不因缺少資料而被懲罰或獎勵。
-6. 上述任一 band 內部的先後，先由 registry 順序決定 head；`RESOURCE_AWARE_ROUTING.md` 的 stranded-capacity 重排**只能在與 head 相同 resource state 的候選之間**，把 `stranded_capacity_risk` 為 `HIGH` 的候選提前。沒有這類候選時維持 registry 順序。提前必須記入 routing evidence。
+6. 上述任一 band 內部的先後，先由 registry 順序決定 head。`RESOURCE_AWARE_ROUTING.md` 的兩個資源訊號**只能在與 head 相同 resource state 的候選之間**作用，且順序固定為先 conservation、後 opportunity：長期預算吃緊的候選先被降級，之後才輪到短窗機會把候選提前。沒有可用訊號時維持 registry 順序。任何重排都必須記入 routing evidence。
 7. `RED` 只在沒有任何非 `RED` 合格候選、且 `allow_red` 為 true 時使用，並在 contract 中記錄理由。
 8. 沒有合格候選時，**不得跨越 `minimum_tier`，也不得放棄 independent review 的 disjointness**。回傳 `{status: BLOCKED, code, reason}` 並進 human gate。
 9. 成功時回傳 `{status: SELECTED, candidate}`。Router 保存此次決策快照與理由，但不保存原始 quota payload。
 
-Resource overlay **只能在達到相同 `minimum_tier` 的候選之間重排**。它不能把需要 `DEEP` 的任務改派給 `CHEAP` 候選，也不能改變 architecture authority。 這對 resource state 與 stranded-capacity 兩個訊號一體適用：**quota opportunity cost 是 routing signal，不是 capability authority。**
+Resource overlay **只能在達到相同 `minimum_tier` 的候選之間重排**。它不能把需要 `DEEP` 的任務改派給 `CHEAP` 候選，也不能改變 architecture authority。 這對 resource state、conservation pressure 與 stranded capacity 一體適用：**quota opportunity cost 是 routing signal，不是 capability authority**，且 **short-window opportunity 不得推翻 long-horizon scarcity。**
 
 ### 授權旗標歸屬
 

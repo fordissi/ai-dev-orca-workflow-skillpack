@@ -7,8 +7,11 @@ import {
   classifyExecutionState,
   classifyPermissionRequest,
   normalizePermissionCeiling,
+  conservationPressure,
   resetProximity,
+  resolveConservationPressure,
   resolveStrandedCapacity,
+  resourceWindows,
   scanText,
   selectCandidate,
   strandedCapacityRisk,
@@ -1124,7 +1127,7 @@ const NOW = "2026-09-01T12:00:00Z";
 const at = (offsetMs) => new Date(Date.parse(NOW) + offsetMs).toISOString();
 const HOUR = 60 * 60 * 1000;
 
-// A pool whose reading is trustworthy and fresh, so the signal is in play.
+// A pool whose reading is trustworthy and fresh, so the signals are in play.
 const pool = (overrides = {}) => ({
   state: "GREEN",
   available: true,
@@ -1132,6 +1135,13 @@ const pool = (overrides = {}) => ({
   checked_at: NOW,
   ...overrides,
 });
+
+const burst = (remaining, resetAt) => ({ short_window: { remaining_ratio: remaining, reset_at: resetAt } });
+const budget = (remaining, resetAt) => ({ weekly_window: { remaining_ratio: remaining, reset_at: resetAt } });
+
+// A budget somebody read and found healthy: the precondition for spending a
+// burst window at all.
+const healthyBudget = () => budget(0.8, at(120 * HOUR));
 
 test("reset proximity buckets a window by how long it has left", () => {
   assert.equal(resetProximity(at(3 * HOUR), NOW), "NEAR");
@@ -1199,20 +1209,28 @@ test("a pool is as stranded as its most stranded window", () => {
   // left, behind a weekly window that is nowhere near resetting.
   const signal = resolveStrandedCapacity(
     pool({
-      short_window: { remaining_ratio: 0.59, reset_at: at(3.75 * HOUR) },
-      weekly_window: { remaining_ratio: 0.9, reset_at: at(120 * HOUR) },
+      windows: [
+        { key: "hourly", role: "BURST", remaining_ratio: 0.55, reset_at: at(7 * HOUR) },
+        { key: "five_hour", role: "BURST", remaining_ratio: 0.59, reset_at: at(3.75 * HOUR) },
+      ],
+      ...healthyBudget(),
     }),
     { now: NOW },
   );
   assert.equal(signal.stranded_capacity_risk, "HIGH");
   assert.equal(signal.reset_proximity, "NEAR");
 
+  // A BUDGET window never supplies the utilization signal, however urgent it
+  // looks: that is the confusion this refinement exists to remove.
+  const budgetOnly = resolveStrandedCapacity(pool(budget(0.9, at(2 * HOUR))), { now: NOW });
+  assert.equal(budgetOnly.stranded_capacity_risk, "UNKNOWN");
+
   // With no window in play at all the signal stays neutral.
   assert.equal(resolveStrandedCapacity(pool(), { now: NOW }).stranded_capacity_risk, "UNKNOWN");
 });
 
 test("the signal goes neutral wherever the reading cannot carry weight", () => {
-  const window = { short_window: { remaining_ratio: 0.9, reset_at: at(HOUR) } };
+  const window = burst(0.9, at(HOUR));
 
   // Stale: a ratio read an hour ago is worse than no ratio at all.
   const stale = resolveStrandedCapacity(pool({ ...window, checked_at: at(-60 * 60 * 1000) }), { now: NOW });
@@ -1246,7 +1264,7 @@ test("the signal goes neutral wherever the reading cannot carry weight", () => {
 });
 
 test("declared confidence may lower the source trust but never raise it", () => {
-  const window = { short_window: { remaining_ratio: 0.9, reset_at: at(HOUR) } };
+  const window = burst(0.9, at(HOUR));
 
   // A hand-reported figure is MEDIUM by source and cannot promote itself.
   const inflated = resolveStrandedCapacity(
@@ -1274,8 +1292,8 @@ test("stranded capacity reorders inside a state group and nowhere else", () => {
   const tierOrder = registry.capability_tier_order;
   const slot = registry.capability_slots.DEFAULT_IMPLEMENTER;
   const options = { allowExperimental: false, taskRisk: "low", now: NOW };
-  const urgent = { short_window: { remaining_ratio: 0.8, reset_at: at(2 * HOUR) } };
-  const distant = { weekly_window: { remaining_ratio: 0.8, reset_at: at(120 * HOUR) } };
+  const urgent = { ...burst(0.8, at(2 * HOUR)), ...healthyBudget() };
+  const distant = { ...burst(0.8, at(120 * HOUR)), ...healthyBudget() };
 
   // It can move the pick when both sides are in the same state.
   const promoted = selectCandidate(
@@ -1328,8 +1346,8 @@ test("only HIGH promotes, so a merely-known reading never displaces an UNKNOWN",
   const medium = selectCandidate(
     slot,
     {
-      codex: pool({ weekly_window: { remaining_ratio: 0.9, reset_at: at(120 * HOUR) } }),
-      claude: pool({ short_window: { remaining_ratio: 0.3, reset_at: at(2 * HOUR) } }),
+      codex: pool({ ...healthyBudget() }),
+      claude: pool({ ...burst(0.3, at(2 * HOUR)), ...healthyBudget() }),
     },
     tierOrder,
     options,
@@ -1341,8 +1359,8 @@ test("only HIGH promotes, so a merely-known reading never displaces an UNKNOWN",
   const headIsUrgent = selectCandidate(
     slot,
     {
-      codex: pool({ short_window: { remaining_ratio: 0.9, reset_at: at(2 * HOUR) } }),
-      claude: pool({ short_window: { remaining_ratio: 0.9, reset_at: at(2 * HOUR) } }),
+      codex: pool({ ...burst(0.9, at(2 * HOUR)), ...healthyBudget() }),
+      claude: pool({ ...burst(0.9, at(2 * HOUR)), ...healthyBudget() }),
     },
     tierOrder,
     options,
@@ -1354,8 +1372,8 @@ test("only HIGH promotes, so a merely-known reading never displaces an UNKNOWN",
 
 test("stranded capacity cannot reach eligibility, tier, disjointness or gates", async () => {
   const tierOrder = registry.capability_tier_order;
-  const urgent = pool({ short_window: { remaining_ratio: 0.95, reset_at: at(HOUR) } });
-  const dull = pool({ weekly_window: { remaining_ratio: 0.05, reset_at: at(200 * HOUR) } });
+  const urgent = pool({ ...burst(0.95, at(HOUR)), ...healthyBudget() });
+  const dull = pool({ ...burst(0.05, at(200 * HOUR)), ...budget(0.6, at(120 * HOUR)) });
 
   // Below the slot minimum: expiring quota is not a capability grant. The
   // invalid fixture is the only place a below-minimum candidate can exist.
@@ -1470,18 +1488,20 @@ test("resource policy owns the opportunity signal without claiming capability", 
   const resource = await readFile("policies/RESOURCE_AWARE_ROUTING.md", "utf8");
   const routing = await readFile("policies/MODEL_ROUTING_POLICY.md", "utf8");
 
-  // The core principle, stated where the rule lives.
-  assert.ok(
-    resource.includes("quota opportunity cost is a routing signal, not capability authority"),
-    "the resource policy must state the core principle",
-  );
-  assert.match(resource, /## Reset proximity 與 stranded capacity/);
+  // Both core principles, stated where the rule lives.
+  for (const principle of [
+    "quota opportunity cost is a routing signal, not capability authority",
+    "short-window opportunity MUST NOT override long-horizon scarcity",
+  ]) {
+    assert.ok(resource.includes(principle), `the resource policy must state: ${principle}`);
+  }
+  assert.match(resource, /## Hierarchical quota windows/);
 
   // Every derived label and threshold has to be nameable.
   for (const token of [
     "remaining_ratio", "reset_at", "remaining_confidence",
-    "reset_proximity", "stranded_capacity_risk",
-    "NEAR", "MEDIUM", "FAR", "HIGH", "LOW", "UNKNOWN",
+    "reset_proximity", "stranded_capacity_risk", "conservation_pressure",
+    "BURST", "BUDGET", "NEAR", "MEDIUM", "FAR", "HIGH", "LOW", "NONE", "CRITICAL", "UNKNOWN",
   ]) {
     assert.ok(resource.includes(token), `the resource policy is missing ${token}`);
   }
@@ -1492,7 +1512,7 @@ test("resource policy owns the opportunity signal without claiming capability", 
   }
 
   // The neutrality invariant it must not break, restated as a consequence.
-  assert.match(resource, /`YELLOW` 與 `UNKNOWN` 之間也\*\*仍然沒有優先級\*\*/);
+  assert.match(resource, /`YELLOW` 與 `UNKNOWN` 之間\*\*仍然沒有優先級\*\*/);
   assert.match(resource, /選擇結果與本節存在之前\*\*完全相同\*\*/);
 
   // Evidence carries labels, never numbers.
@@ -1501,13 +1521,16 @@ test("resource policy owns the opportunity signal without claiming capability", 
   // The seven-layer precedence belongs to the algorithm owner, and points back
   // here for the sixth layer rather than restating it.
   assert.match(routing, /1\. policy eligibility/);
-  assert.match(routing, /6\. reset proximity \/ stranded-capacity opportunity/);
-  assert.match(routing, /7\. registry preference/);
+  assert.match(routing, /6\. long-horizon conservation/);
+  assert.match(routing, /7\. short-horizon opportunity/);
+  assert.match(routing, /8\. registry preference/);
   assert.ok(routing.includes("RESOURCE_AWARE_ROUTING.md"), "the routing policy must point at the signal owner");
   assert.match(routing, /此處不重複/);
+  // Scarcity before utilization, stated in the algorithm that applies them.
+  assert.match(routing, /scarcity first, utilization second/);
 
   // No second definition of the thresholds.
-  for (const threshold of ["≤ 6 小時", "≥ 0.5"]) {
+  for (const threshold of ["≤ 6 小時", "≥ 0.5", "≥ 0.25"]) {
     assert.ok(!routing.includes(threshold), `the routing policy must not restate the threshold ${threshold}`);
   }
 });
@@ -1518,7 +1541,8 @@ test("the opportunity layer left tiers, slots and registry mapping untouched", a
 
   // No opportunity vocabulary leaked into the mapping layer.
   for (const leaked of [
-    "stranded", "reset_proximity", "remaining_ratio", "SURPLUS", "RESET_SOON",
+    "stranded", "reset_proximity", "remaining_ratio", "conservation", "BUDGET",
+    "SURPLUS", "RESET_SOON",
   ]) {
     assert.ok(!registryText.includes(leaked), `the model registry must not carry ${leaked}`);
   }
@@ -1548,8 +1572,453 @@ test("the opportunity layer left tiers, slots and registry mapping untouched", a
 
   // The contract records the labels and is told not to record the numbers.
   const contract = await readFile("templates/ROUTER_EXECUTION_CONTRACT_TEMPLATE.md", "utf8");
-  for (const field of ["resource_opportunity", "reset_proximity", "stranded_capacity_risk", "stranded_promotion"]) {
+  for (const field of [
+    "resource_signals", "conservation", "opportunity",
+    "conservation_pressure", "budget_reset_proximity", "conservation_demotion",
+    "reset_proximity", "stranded_capacity_risk", "stranded_promotion",
+  ]) {
     assert.ok(contract.includes(field), `the contract template cannot record ${field}`);
   }
   assert.match(contract, /不寫 `remaining_ratio` 的數值或 `reset_at` 的時間戳/);
+});
+
+/* ------------------------------------------------------------------------ *
+ * Hierarchical quota windows
+ *
+ * BURST supplies utilization, BUDGET supplies scarcity, and scarcity wins.
+ * ------------------------------------------------------------------------ */
+
+test("a window is typed by role, not by name", () => {
+  // Legacy names keep their meaning, so a v0.3 snapshot needs no rewriting.
+  assert.deepEqual(
+    resourceWindows({ short_window: { remaining_ratio: 0.5 }, weekly_window: { remaining_ratio: 0.5 } }).map(({ key, role }) => [key, role]),
+    [["short_window", "BURST"], ["weekly_window", "BUDGET"]],
+  );
+
+  // An explicit role wins, so a provider whose short window really is its cap
+  // can say so rather than being misread as burst capacity.
+  assert.equal(resourceWindows({ short_window: { role: "BUDGET" } })[0].role, "BUDGET");
+
+  // The generic list is not tied to short/weekly at all.
+  const generic = resourceWindows({
+    windows: [
+      { key: "daily", role: "BURST", remaining_ratio: 0.4 },
+      { key: "monthly", role: "BUDGET", remaining_ratio: 0.4 },
+    ],
+  });
+  assert.deepEqual(generic.map(({ key, role }) => [key, role]), [["daily", "BURST"], ["monthly", "BUDGET"]]);
+
+  // A window nobody typed is evidence about neither horizon, so it is dropped
+  // rather than guessed into one.
+  assert.deepEqual(resourceWindows({ windows: [{ key: "mystery", remaining_ratio: 0.9 }] }), []);
+  assert.deepEqual(resourceWindows({ windows: [{ key: "x", role: "OTHER" }] }), []);
+  assert.deepEqual(resourceWindows(undefined), []);
+});
+
+test("conservation pressure reads remaining and proximity together", () => {
+  // An ample budget is never a reason to conserve.
+  assert.equal(conservationPressure(0.75, "FAR"), "LOW");
+  assert.equal(conservationPressure(0.75, "NEAR"), "NONE");
+
+  // The case that motivated the refinement: eight percent of the week left
+  // with five days to run.
+  assert.equal(conservationPressure(0.08, "FAR"), "CRITICAL");
+
+  // Proximity softens scarcity here, the opposite of its effect on a burst
+  // window: a cap that refills within the hour barely constrains anything.
+  assert.equal(conservationPressure(0.1, "NEAR"), "LOW");
+  assert.equal(conservationPressure(0.1, "MEDIUM"), "MEDIUM");
+  assert.equal(conservationPressure(0.1, "FAR"), "HIGH");
+  assert.ok(
+    ["LOW", "NONE"].includes(conservationPressure(0.1, "NEAR")) && conservationPressure(0.1, "FAR") === "HIGH",
+    "the same ratio must be less binding when it is about to refill",
+  );
+
+  // No usable reading on either axis is neutral, never optimistic.
+  assert.equal(conservationPressure(0.05, "UNKNOWN"), "UNKNOWN");
+  assert.equal(conservationPressure(null, "FAR"), "UNKNOWN");
+  assert.equal(conservationPressure(1.5, "FAR"), "UNKNOWN");
+});
+
+test("the tightest budget window sets the pressure", () => {
+  // A healthy weekly allowance says nothing about a nearly spent monthly cap.
+  const twoBudgets = resolveConservationPressure(
+    pool({
+      windows: [
+        { key: "weekly", role: "BUDGET", remaining_ratio: 0.8, reset_at: at(120 * HOUR) },
+        { key: "monthly", role: "BUDGET", remaining_ratio: 0.04, reset_at: at(600 * HOUR) },
+      ],
+    }),
+    { now: NOW },
+  );
+  assert.equal(twoBudgets.conservation_pressure, "CRITICAL");
+
+  // A reading nobody took must not outrank one somebody did, in either order.
+  for (const windows of [
+    [{ role: "BUDGET", remaining_ratio: 0.04, reset_at: at(600 * HOUR) }, { role: "BUDGET" }],
+    [{ role: "BUDGET" }, { role: "BUDGET", remaining_ratio: 0.04, reset_at: at(600 * HOUR) }],
+  ]) {
+    assert.equal(resolveConservationPressure(pool({ windows }), { now: NOW }).conservation_pressure, "CRITICAL");
+  }
+
+  // A BURST window never supplies the scarcity signal.
+  assert.equal(
+    resolveConservationPressure(pool(burst(0.04, at(HOUR))), { now: NOW }).conservation_pressure,
+    "UNKNOWN",
+  );
+
+  // Labels only: the resolved view must be safe to write into an artifact.
+  const serialized = JSON.stringify(twoBudgets);
+  for (const leaked of ["0.04", "0.8", "T"]) {
+    if (leaked === "T") continue;
+    assert.ok(!serialized.includes(leaked), `the resolved conservation view leaked ${leaked}`);
+  }
+});
+
+test("budget scarcity overrides burst opportunity", () => {
+  const tierOrder = registry.capability_tier_order;
+  const slot = registry.capability_slots.DEFAULT_IMPLEMENTER;
+  const options = { allowExperimental: false, taskRisk: "low", now: NOW };
+
+  // The strongest possible burst signal behind a nearly spent weekly cap.
+  const scarce = selectCandidate(
+    slot,
+    {
+      codex: pool({ ...burst(0.8, at(2 * HOUR)), ...budget(0.08, at(120 * HOUR)) }),
+      claude: pool(healthyBudget()),
+    },
+    tierOrder,
+    options,
+  );
+  assert.equal(scarce.candidate.provider, "claude");
+  assert.equal(scarce.conservation_demotion.over, "codex/luna");
+  assert.equal(scarce.stranded_promotion, null);
+
+  // The same burst signal, this time against a healthy budget: the head keeps
+  // the work. One reading is the only difference between the two outcomes.
+  const healthy = selectCandidate(
+    slot,
+    {
+      codex: pool({ ...burst(0.8, at(2 * HOUR)), ...healthyBudget() }),
+      claude: pool(healthyBudget()),
+    },
+    tierOrder,
+    options,
+  );
+  assert.equal(healthy.candidate.provider, "codex");
+  assert.equal(healthy.conservation_demotion, null);
+  assert.equal(healthy.stranded_capacity_risk, "HIGH");
+});
+
+test("conservation expresses a preference, never a refusal", () => {
+  const tierOrder = registry.capability_tier_order;
+  const slot = registry.capability_slots.DEFAULT_IMPLEMENTER;
+  const critical = pool(budget(0.02, at(120 * HOUR)));
+
+  // With every candidate under pressure the band still routes, in registry
+  // order. Scarcity must never turn into a block.
+  const result = selectCandidate(slot, { codex: critical, claude: critical }, tierOrder, {
+    allowExperimental: false,
+    taskRisk: "low",
+    now: NOW,
+  });
+  assert.equal(result.status, "SELECTED");
+  assert.equal(result.candidate.provider, "codex");
+  assert.equal(result.conservation_pressure, "CRITICAL");
+  assert.equal(result.conservation_demotion, null);
+});
+
+test("an unread budget is treated as neither healthy nor scarce", () => {
+  const tierOrder = registry.capability_tier_order;
+  const slot = registry.capability_slots.DEFAULT_IMPLEMENTER;
+  const options = { allowExperimental: false, taskRisk: "low", now: NOW };
+
+  // Not healthy: a strong burst signal behind an unread budget buys no
+  // promotion, because the cap it would spend may already be gone.
+  const noPromotion = selectCandidate(
+    slot,
+    { codex: pool(healthyBudget()), claude: pool(burst(0.9, at(2 * HOUR))) },
+    tierOrder,
+    options,
+  );
+  assert.equal(noPromotion.candidate.provider, "codex");
+  assert.equal(noPromotion.stranded_promotion, null);
+
+  // Not scarce: the same unread budget is no reason to demote either.
+  const noDemotion = selectCandidate(
+    slot,
+    { codex: pool(burst(0.9, at(2 * HOUR))), claude: pool(healthyBudget()) },
+    tierOrder,
+    options,
+  );
+  assert.equal(noDemotion.candidate.provider, "codex");
+  assert.equal(noDemotion.conservation_demotion, null);
+
+  // A budget read and found healthy is positive evidence, so measuring pays.
+  const measured = selectCandidate(
+    slot,
+    { codex: pool(healthyBudget()), claude: pool({ ...burst(0.9, at(2 * HOUR)), ...healthyBudget() }) },
+    tierOrder,
+    options,
+  );
+  assert.equal(measured.candidate.provider, "claude");
+  assert.equal(measured.stranded_promotion.over, "codex/luna");
+
+  // And a healthy budget with nothing to strand is still no boost.
+  const nothingToStrand = selectCandidate(
+    slot,
+    { codex: pool(healthyBudget()), claude: pool(healthyBudget()) },
+    tierOrder,
+    options,
+  );
+  assert.equal(nothingToStrand.candidate.provider, "codex");
+  assert.equal(nothingToStrand.stranded_promotion, null);
+});
+
+test("neither resource signal crosses a resource-state band", () => {
+  const tierOrder = registry.capability_tier_order;
+  const slot = registry.capability_slots.DEFAULT_IMPLEMENTER;
+  const options = { allowExperimental: false, taskRisk: "low", now: NOW };
+
+  // A GREEN candidate under critical conservation still outranks a YELLOW one
+  // with an untouched budget.
+  const acrossBands = selectCandidate(
+    slot,
+    {
+      codex: pool({ state: "YELLOW", ...healthyBudget() }),
+      claude: pool(budget(0.02, at(120 * HOUR))),
+    },
+    tierOrder,
+    options,
+  );
+  assert.equal(acrossBands.candidate.provider, "claude");
+  assert.equal(acrossBands.conservation_pressure, "CRITICAL");
+
+  // And conservation still cannot reorder YELLOW against UNKNOWN.
+  const yellowVersusUnknown = selectCandidate(
+    slot,
+    {
+      codex: pool({ state: "UNKNOWN", source: "UNKNOWN" }),
+      claude: pool({ state: "YELLOW", ...budget(0.02, at(120 * HOUR)) }),
+    },
+    tierOrder,
+    options,
+  );
+  assert.equal(yellowVersusUnknown.candidate.provider, "codex");
+  assert.equal(yellowVersusUnknown.conservation_demotion, null);
+});
+
+test("a stale or untrusted budget produces no conservation signal", () => {
+  const tierOrder = registry.capability_tier_order;
+  const slot = registry.capability_slots.DEFAULT_IMPLEMENTER;
+
+  // Stale: an hour-old weekly figure still looks authoritative, which is
+  // exactly why it must not route.
+  const stale = selectCandidate(
+    slot,
+    { codex: pool(budget(0.02, at(120 * HOUR))), claude: pool(healthyBudget()) },
+    tierOrder,
+    { allowExperimental: false, taskRisk: "low", now: at(60 * 60 * 1000) },
+  );
+  assert.equal(stale.candidate.provider, "codex");
+  assert.equal(stale.conservation_pressure, "UNKNOWN");
+
+  // Untrusted: a source that cannot back up its state cannot back up a
+  // healthy budget claim either.
+  assert.equal(
+    resolveConservationPressure({ ...pool(healthyBudget()), source: "UNKNOWN" }, { now: NOW }).conservation_pressure,
+    "UNKNOWN",
+  );
+  assert.equal(
+    resolveConservationPressure(pool({ ...healthyBudget(), remaining_confidence: "LOW" }), { now: NOW }).conservation_pressure,
+    "UNKNOWN",
+  );
+});
+
+test("hand-entered subscription facts normalise into both signals", () => {
+  // The real reading: Codex 41% of a five-hour window used and 78% of the
+  // week; Claude 36% of the week.
+  const codex = {
+    state: "GREEN",
+    available: true,
+    source: "USER_STATEMENT",
+    checked_at: NOW,
+    short_window: { remaining_ratio: 0.59, reset_at: at(3.75 * HOUR) },
+    weekly_window: { remaining_ratio: 0.22, reset_at: at(120 * HOUR) },
+  };
+  const claude = {
+    state: "GREEN",
+    available: true,
+    source: "USER_STATEMENT",
+    checked_at: NOW,
+    weekly_window: { remaining_ratio: 0.64, reset_at: at(36 * HOUR) },
+  };
+
+  // Codex looks inviting on the burst window and is scarce on the budget.
+  assert.equal(resolveStrandedCapacity(codex, { now: NOW }).stranded_capacity_risk, "HIGH");
+  assert.equal(resolveConservationPressure(codex, { now: NOW }).conservation_pressure, "HIGH");
+  assert.equal(resolveConservationPressure(claude, { now: NOW }).conservation_pressure, "NONE");
+
+  // A person supplies resource facts, not a model choice, and the facts say
+  // conserve Codex despite the inviting short window.
+  const result = selectCandidate(
+    registry.capability_slots.DEFAULT_IMPLEMENTER,
+    { codex, claude },
+    registry.capability_tier_order,
+    { allowExperimental: false, taskRisk: "low", now: NOW },
+  );
+  assert.equal(result.candidate.provider, "claude");
+  assert.equal(result.conservation_demotion.conservation_pressure, "HIGH");
+});
+
+test("no window data anywhere leaves selection exactly as it was", () => {
+  const tierOrder = registry.capability_tier_order;
+  const slot = registry.capability_slots.DEFAULT_IMPLEMENTER;
+
+  for (const states of [
+    {},
+    { codex: { state: "UNKNOWN", available: true, source: "ORCA_RUNTIME" } },
+    { codex: { state: "GREEN", available: true, source: "ORCA_RUNTIME", checked_at: NOW }, claude: { state: "GREEN", available: true, source: "ORCA_RUNTIME", checked_at: NOW } },
+    // A legacy snapshot with empty window objects, as v0.3 shipped them.
+    { codex: { state: "GREEN", available: true, source: "ORCA_RUNTIME", checked_at: NOW, short_window: {}, weekly_window: {} } },
+  ]) {
+    const result = selectCandidate(slot, states, tierOrder, { allowExperimental: false, taskRisk: "low", now: NOW });
+    assert.equal(result.candidate.model, "luna", "registry order must still decide");
+    assert.equal(result.conservation_demotion, null);
+    assert.equal(result.stranded_promotion, null);
+    assert.equal(result.conservation_pressure, "UNKNOWN");
+    assert.equal(result.stranded_capacity_risk, "UNKNOWN");
+  }
+});
+
+test("resource economics never reach slot membership", async () => {
+  const registryText = await readFile("policies/MODEL_REGISTRY.yaml", "utf8");
+  const real = parse(registryText);
+
+  // The best imaginable reading on every pool at once.
+  const irresistible = {
+    state: "GREEN",
+    available: true,
+    source: "ORCA_RUNTIME",
+    checked_at: NOW,
+    short_window: { remaining_ratio: 1, reset_at: at(HOUR) },
+    weekly_window: { remaining_ratio: 1, reset_at: at(600 * HOUR) },
+  };
+  const states = {
+    codex: irresistible,
+    claude: irresistible,
+    antigravity: { pools: { gemini: irresistible, non_gemini: irresistible } },
+  };
+
+  // Opus sits in ESCALATION_MODEL and nowhere else. However good its quota
+  // looks, it must not appear in a slot that never listed it.
+  assert.ok(
+    real.capability_slots.ESCALATION_MODEL.candidates.some(({ model }) => model === "opus"),
+    "the fixture assumes opus is the escalation candidate",
+  );
+
+  for (const [name, slot] of Object.entries(real.capability_slots)) {
+    const permitted = new Set(slot.candidates.map(({ model }) => model));
+    for (const allowExperimental of [false, true]) {
+      const result = selectCandidate(slot, states, real.capability_tier_order, {
+        allowExperimental,
+        allowRed: true,
+        taskRisk: "critical",
+        now: NOW,
+      });
+      if (result.status !== "SELECTED") continue;
+      assert.ok(
+        permitted.has(result.candidate.model),
+        `${name} selected ${result.candidate.model}, which is not one of its candidates`,
+      );
+      assert.ok(
+        real.capability_tier_order.indexOf(result.candidate.capability_tier) >=
+          real.capability_tier_order.indexOf(slot.minimum_tier),
+        `${name} selected a candidate below its minimum tier`,
+      );
+    }
+  }
+
+  // And a reviewer stays disjoint however healthy the implementer's quota is.
+  const reviewer = selectCandidate(
+    real.capability_slots.INDEPENDENT_REVIEWER,
+    states,
+    real.capability_tier_order,
+    { allowExperimental: false, taskRisk: "high", excludeProvider: "codex", excludeModelFamily: "gpt-5.6", now: NOW },
+  );
+  assert.equal(reviewer.status, "SELECTED");
+  assert.notEqual(reviewer.candidate.provider, "codex");
+  assert.notEqual(reviewer.candidate.model_family, "gpt-5.6");
+});
+
+test("the snapshot schema types windows and the example declares roles", async () => {
+  const example = JSON.parse(await readFile("runtime/RESOURCE_STATE.example.json", "utf8"));
+  assert.deepEqual(validateResourceState(example, { allowExampleNulls: true }), []);
+  assert.equal(example.providers.codex.short_window.role, "BURST");
+  assert.equal(example.providers.codex.weekly_window.role, "BUDGET");
+  assert.equal(example.providers.antigravity.pools.gemini.weekly_window.role, "BUDGET");
+
+  const base = { checked_at: NOW, available: true, state: "GREEN", source: "ORCA_RUNTIME" };
+
+  assert.deepEqual(
+    validateResourceState({
+      providers: { codex: { ...base, windows: [{ key: "monthly", role: "BUDGET", remaining_ratio: 0.5, reset_at: NOW }] } },
+    }),
+    [],
+  );
+
+  // A listed window with no role describes no horizon, so it is a finding.
+  assert.match(
+    validateResourceState({ providers: { codex: { ...base, windows: [{ key: "mystery", remaining_ratio: 0.5 }] } } }).join("\n"),
+    /must declare BURST or BUDGET/,
+  );
+  assert.match(
+    validateResourceState({ providers: { codex: { ...base, short_window: { role: "OTHER" } } } }).join("\n"),
+    /role: expected one of BURST\|BUDGET/,
+  );
+  assert.match(
+    validateResourceState({ providers: { codex: { ...base, windows: {} } } }).join("\n"),
+    /windows: expected a list of window entries/,
+  );
+});
+
+test("the hierarchy is owned in one place and applied in the other", async () => {
+  const resource = await readFile("policies/RESOURCE_AWARE_ROUTING.md", "utf8");
+  const routing = await readFile("policies/MODEL_ROUTING_POLICY.md", "utf8");
+  const skill = await readFile("skills/orca-multi-agent-dev/SKILL.md", "utf8");
+  const readme = await readFile("README.md", "utf8");
+
+  // The signal owner states the roles, the aggregation and the direction.
+  assert.match(resource, /### 兩種 window role/);
+  assert.match(resource, /### BURST → stranded_capacity_risk（utilization）/);
+  assert.match(resource, /### BUDGET → conservation_pressure（scarcity）/);
+  assert.match(resource, /### 重排規則：scarcity first, utilization second/);
+  assert.match(resource, /多個 `BUDGET` window 時取\*\*最嚴格者\*\*/);
+  assert.match(resource, /多個 `BURST` window 時取\*\*風險最高者\*\*/);
+
+  // Backward compatibility is a stated rule with a stated scope.
+  assert.match(resource, /### Backward compatibility/);
+  assert.match(resource, /只是 legacy compatibility/);
+  for (const legacy of ["`short_window`", "`weekly_window`"]) {
+    assert.ok(resource.includes(legacy), `the resource policy must keep documenting ${legacy}`);
+  }
+
+  // UNKNOWN is handled symmetrically and the reasoning is on the page.
+  assert.match(resource, /不查資料的人不會永遠被當成 healthy/);
+  assert.match(resource, /查了資料的人也不會永遠吃虧/);
+
+  // The algorithm owner places the layers without redefining them.
+  assert.match(routing, /先 conservation、後 opportunity/);
+
+  // Both entry points teach the ordering rather than only the old half.
+  for (const [name, text] of [["SKILL.md", skill], ["README.md", readme]]) {
+    assert.match(text, /BURST/, `${name} does not name the burst role`);
+    assert.match(text, /BUDGET/, `${name} does not name the budget role`);
+    assert.match(text, /conservation_pressure|long-horizon scarcity|長期稀缺|長期預算/, `${name} does not teach conservation`);
+  }
+  assert.ok(
+    readme.includes("short-window opportunity MUST NOT override long-horizon scarcity"),
+    "README must state the invariant this refinement adds",
+  );
+  assert.deepEqual(validateMarkdownLinks(skill, { path: "skills/orca-multi-agent-dev/SKILL.md", root: process.cwd() }), []);
 });

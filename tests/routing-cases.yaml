@@ -363,7 +363,8 @@ cases:
       The same signal has to be able to move the pick, not merely confirm it.
       Here the registry-preferred Codex has a distant reset and the second
       candidate is the one about to strand capacity, so the promotion is
-      recorded rather than silently applied.
+      recorded rather than silently applied. Both weekly budgets are read and
+      healthy, which is what makes spending the burst window safe at all.
     slot: STRONG_IMPLEMENTER
     resource_states:
       codex:
@@ -378,6 +379,7 @@ cases:
         source: ORCA_RUNTIME
         checked_at: "2026-09-01T12:00:00Z"
         short_window: { remaining_ratio: 0.70, reset_at: "2026-09-01T14:30:00Z" }
+        weekly_window: { remaining_ratio: 0.70, reset_at: "2026-09-06T00:00:00Z" }
     options: { allowExperimental: false, taskRisk: medium, now: "2026-09-01T12:01:00Z" }
     expect:
       status: SELECTED
@@ -558,3 +560,430 @@ cases:
       status: SELECTED
       provider: codex
       model: gpt-5.6-sol
+
+  # ------------------------------------------------------------------- #
+  # Hierarchical quota windows.
+  #
+  # BURST supplies utilization, BUDGET supplies scarcity, and scarcity wins.
+  # Every case here starts from candidates that already passed eligibility,
+  # capability, security and disjointness, so a case can only ever change
+  # WHICH equally-qualified candidate wins. `now` is fixed throughout.
+  # ------------------------------------------------------------------- #
+
+  - name: budget_scarcity_beats_burst_opportunity
+    kind: selection
+    why: >-
+      Codex has four fifths of a five-hour window left with two hours to spend
+      it, which in isolation is the strongest possible burst signal. Its weekly
+      budget is down to eight percent with five days still to run. Spending the
+      burst window would consume a budget that has to last the week, so the
+      provider is conserved and the work goes to the healthy candidate.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        short_window: { remaining_ratio: 0.80, reset_at: "2026-09-01T14:00:00Z" }
+        weekly_window: { remaining_ratio: 0.08, reset_at: "2026-09-06T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.75, reset_at: "2026-09-06T12:00:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-01T12:01:00Z" }
+    expect:
+      status: SELECTED
+      provider: claude
+      model: sonnet
+      conservation_demotion: true
+      stranded_promotion: false
+
+  - name: healthy_budget_allows_burst_opportunity
+    kind: selection
+    why: >-
+      The mirror of the previous case, identical but for the weekly reading.
+      With three quarters of the budget still available the burst window is
+      genuinely free capacity, so Codex keeps the work instead of being
+      conserved. The pair is the whole invariant in two cases.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        short_window: { remaining_ratio: 0.80, reset_at: "2026-09-01T14:00:00Z" }
+        weekly_window: { remaining_ratio: 0.75, reset_at: "2026-09-06T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.75, reset_at: "2026-09-06T12:00:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-01T12:01:00Z" }
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-sol
+      stranded_capacity_risk: HIGH
+      conservation_pressure: LOW
+      conservation_demotion: false
+
+  - name: imminent_budget_reset_softens_conservation
+    kind: selection
+    why: >-
+      Ten percent of a weekly cap left is scarce with five days to run and
+      almost unconstraining an hour before it refills, because the scarcity
+      resolves itself inside the horizon of the work being routed. Here the
+      head budget refills within the hour, so it is not conserved and keeps
+      the work.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.10, reset_at: "2026-09-01T13:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.75, reset_at: "2026-09-06T12:00:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-01T12:01:00Z" }
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-sol
+      conservation_pressure: LOW
+      conservation_demotion: false
+
+  - name: distant_budget_reset_hardens_conservation
+    kind: selection
+    why: >-
+      The same ten percent, five days from refilling. Identical remaining
+      ratio, opposite outcome - which is the point of reading proximity and
+      ratio together rather than either alone.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.10, reset_at: "2026-09-06T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.75, reset_at: "2026-09-06T12:00:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-01T12:01:00Z" }
+    expect:
+      status: SELECTED
+      provider: claude
+      model: sonnet
+      conservation_demotion: true
+
+  - name: unknown_budget_blocks_burst_promotion
+    kind: selection
+    why: >-
+      A strong burst signal behind a budget nobody has read. Treating the
+      silence as healthy would let a provider be promoted into a cap that may
+      already be spent; treating it as scarce would punish the pool nobody
+      could measure. It does neither: no promotion, no demotion, registry
+      order stands.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.75, reset_at: "2026-09-06T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        short_window: { remaining_ratio: 0.90, reset_at: "2026-09-01T14:00:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-01T12:01:00Z" }
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-sol
+      stranded_promotion: false
+      conservation_demotion: false
+
+  - name: healthy_budget_without_burst_reading_gives_no_boost
+    kind: selection
+    why: >-
+      A budget known to be healthy is good news about scarcity, not evidence
+      of an unspent burst window. With nothing to strand there is nothing to
+      promote, and registry order decides.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.75, reset_at: "2026-09-06T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.90, reset_at: "2026-09-06T12:00:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-01T12:01:00Z" }
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-sol
+      stranded_capacity_risk: UNKNOWN
+      stranded_promotion: false
+
+  - name: tightest_budget_window_sets_conservation
+    kind: selection
+    why: >-
+      Codex has a comfortable weekly allowance and a nearly exhausted monthly
+      cap, declared through the generic window list. Any long-horizon cap can
+      be the one that actually runs out first, so the most restrictive of them
+      sets the pressure and the provider is conserved.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        windows:
+          - { key: weekly, role: BUDGET, remaining_ratio: 0.80, reset_at: "2026-09-06T12:00:00Z" }
+          - { key: monthly, role: BUDGET, remaining_ratio: 0.04, reset_at: "2026-09-28T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        windows:
+          - { key: weekly, role: BUDGET, remaining_ratio: 0.70, reset_at: "2026-09-06T12:00:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-01T12:01:00Z" }
+    expect:
+      status: SELECTED
+      provider: claude
+      model: sonnet
+      conservation_demotion: true
+
+  - name: most_urgent_burst_window_supplies_the_opportunity
+    kind: selection
+    why: >-
+      Two burst windows on one provider: the more urgent one supplies the
+      signal, exactly as before. What is new is that the promotion still has
+      to clear the budget gate, which here it does.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        windows:
+          - { key: weekly, role: BUDGET, remaining_ratio: 0.70, reset_at: "2026-09-06T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        windows:
+          - { key: hourly, role: BURST, remaining_ratio: 0.55, reset_at: "2026-09-01T20:00:00Z" }
+          - { key: five_hour, role: BURST, remaining_ratio: 0.85, reset_at: "2026-09-01T14:00:00Z" }
+          - { key: weekly, role: BUDGET, remaining_ratio: 0.70, reset_at: "2026-09-06T12:00:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-01T12:01:00Z" }
+    expect:
+      status: SELECTED
+      provider: claude
+      model: sonnet
+      stranded_capacity_risk: HIGH
+      stranded_promotion: true
+
+  - name: urgent_burst_windows_still_lose_to_budget_scarcity
+    kind: selection
+    why: >-
+      The same two burst windows behind a nearly spent weekly cap. However
+      many short windows argue for spending now, none of them outranks the
+      long-horizon budget.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        windows:
+          - { key: hourly, role: BURST, remaining_ratio: 0.55, reset_at: "2026-09-01T17:00:00Z" }
+          - { key: five_hour, role: BURST, remaining_ratio: 0.85, reset_at: "2026-09-01T14:00:00Z" }
+          - { key: weekly, role: BUDGET, remaining_ratio: 0.06, reset_at: "2026-09-06T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        windows:
+          - { key: weekly, role: BUDGET, remaining_ratio: 0.70, reset_at: "2026-09-06T12:00:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-01T12:01:00Z" }
+    expect:
+      status: SELECTED
+      provider: claude
+      model: sonnet
+      conservation_demotion: true
+
+  - name: budget_scarcity_never_crosses_the_resource_state_band
+    kind: selection
+    why: >-
+      A GREEN provider under critical conservation still outranks a YELLOW one
+      with a pristine budget. Resource state is the fifth layer and these two
+      signals are the sixth and seventh; they reorder inside a band, never
+      between bands.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: YELLOW
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.95, reset_at: "2026-09-06T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.03, reset_at: "2026-09-06T12:00:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-01T12:01:00Z" }
+    expect:
+      status: SELECTED
+      provider: claude
+      model: sonnet
+      conservation_pressure: CRITICAL
+      conservation_demotion: false
+
+  - name: stale_budget_reading_yields_no_conservation_signal
+    kind: selection
+    why: >-
+      A weekly figure read an hour ago is worse than no figure, because it
+      still looks authoritative. Past the freshness window both signals go
+      UNKNOWN and registry order decides again.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.04, reset_at: "2026-09-06T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.90, reset_at: "2026-09-06T12:00:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-01T13:00:00Z" }
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-sol
+      conservation_pressure: UNKNOWN
+      conservation_demotion: false
+
+  - name: untrusted_source_cannot_claim_a_healthy_budget
+    kind: selection
+    why: >-
+      A candidate that cannot back up its state cannot back up its budget
+      either. Claiming a healthy long-horizon cap from an unverifiable source
+      buys nothing; the entry fails closed exactly as it does for state.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.06, reset_at: "2026-09-06T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: UNKNOWN
+        checked_at: "2026-09-01T12:00:00Z"
+        short_window: { remaining_ratio: 0.99, reset_at: "2026-09-01T13:00:00Z" }
+        weekly_window: { remaining_ratio: 0.99, reset_at: "2026-09-06T12:00:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-01T12:01:00Z" }
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-sol
+      conservation_pressure: CRITICAL
+      conservation_demotion: false
+
+  - name: user_statement_facts_normalise_into_both_signals
+    kind: selection
+    why: >-
+      The real reading this refinement came from, entered by hand: Codex at 41
+      percent of a five-hour window used and 78 percent of the week, Claude at
+      36 percent of the week. A person supplies resource facts, not a model
+      choice - and the facts say conserve Codex despite its inviting short
+      window.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: USER_STATEMENT
+        checked_at: "2026-09-01T12:00:00Z"
+        short_window: { remaining_ratio: 0.59, reset_at: "2026-09-01T15:45:00Z" }
+        weekly_window: { remaining_ratio: 0.22, reset_at: "2026-09-06T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: USER_STATEMENT
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.64, reset_at: "2026-09-03T00:00:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-01T12:01:00Z" }
+    expect:
+      status: SELECTED
+      provider: claude
+      model: sonnet
+      conservation_demotion: true
+
+  - name: legacy_window_names_map_to_roles_unchanged
+    kind: selection
+    why: >-
+      A v0.3 snapshot never declared a role. short_window still means BURST and
+      weekly_window still means BUDGET, so an existing contract keeps routing
+      the way it always did without being rewritten.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        short_window: { used: 0.9, remaining_ratio: 0.10, reset_at: "2026-09-01T14:00:00Z" }
+        weekly_window: { used: 0.95, remaining_ratio: 0.05, reset_at: "2026-09-06T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        short_window: { used: 0.1, remaining_ratio: 0.90, reset_at: "2026-09-01T14:00:00Z" }
+        weekly_window: { used: 0.2, remaining_ratio: 0.80, reset_at: "2026-09-06T12:00:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-01T12:01:00Z" }
+    expect:
+      status: SELECTED
+      provider: claude
+      model: sonnet
+      conservation_pressure: LOW
+      stranded_capacity_risk: HIGH
+      conservation_demotion: true

@@ -1,13 +1,13 @@
 {
   "schema_version": "0.3",
-  "_comment": "Public example only. Every value is null because this file must never carry real account data. Freshness is evaluated from each provider's or pool's own checked_at, never from a shared timestamp. remaining_ratio and reset_at are the facts a reset-proximity reading is derived from; the derived NEAR/MEDIUM/FAR and HIGH/MEDIUM/LOW labels are never stored here. remaining_confidence may lower the confidence implied by source, never raise it. A real runtime/RESOURCE_STATE.json is gitignored and must use boolean availability.",
+  "_comment": "Public example only. Every value is null because this file must never carry real account data. Freshness is evaluated from each provider's or pool's own checked_at, never from a shared timestamp. Every window carries a role: BURST windows supply the utilization signal (stranded capacity), BUDGET windows supply the scarcity signal (conservation pressure), and scarcity outranks utilization. remaining_ratio and reset_at are the facts both readings are derived from; the derived NEAR/MEDIUM/FAR, HIGH/MEDIUM/LOW and NONE..CRITICAL labels are never stored here. A legacy snapshot with no role reads short_window as BURST and weekly_window as BUDGET; the generic windows list is the way to describe a provider whose caps are not named that way. remaining_confidence may lower the confidence implied by source, never raise it. A real runtime/RESOURCE_STATE.json is gitignored and must use boolean availability.",
   "providers": {
     "codex": {
       "checked_at": null,
       "available": null,
       "state": "UNKNOWN",
-      "short_window": { "used": null, "remaining_ratio": null, "reset_at": null },
-      "weekly_window": { "used": null, "remaining_ratio": null, "reset_at": null },
+      "short_window": { "role": "BURST", "used": null, "remaining_ratio": null, "reset_at": null },
+      "weekly_window": { "role": "BUDGET", "used": null, "remaining_ratio": null, "reset_at": null },
       "source": "UNKNOWN",
       "remaining_confidence": "UNKNOWN"
     },
@@ -15,8 +15,8 @@
       "checked_at": null,
       "available": null,
       "state": "UNKNOWN",
-      "short_window": { "used": null, "remaining_ratio": null, "reset_at": null },
-      "weekly_window": { "used": null, "remaining_ratio": null, "reset_at": null },
+      "short_window": { "role": "BURST", "used": null, "remaining_ratio": null, "reset_at": null },
+      "weekly_window": { "role": "BUDGET", "used": null, "remaining_ratio": null, "reset_at": null },
       "source": "UNKNOWN",
       "remaining_confidence": "UNKNOWN"
     },
@@ -26,8 +26,8 @@
           "checked_at": null,
           "available": null,
           "state": "UNKNOWN",
-          "short_window": { "used": null, "remaining_ratio": null, "reset_at": null },
-          "weekly_window": { "used": null, "remaining_ratio": null, "reset_at": null },
+          "short_window": { "role": "BURST", "used": null, "remaining_ratio": null, "reset_at": null },
+          "weekly_window": { "role": "BUDGET", "used": null, "remaining_ratio": null, "reset_at": null },
           "source": "UNKNOWN",
           "remaining_confidence": "UNKNOWN"
         },
@@ -35,8 +35,8 @@
           "checked_at": null,
           "available": null,
           "state": "UNKNOWN",
-          "short_window": { "used": null, "remaining_ratio": null, "reset_at": null },
-          "weekly_window": { "used": null, "remaining_ratio": null, "reset_at": null },
+          "short_window": { "role": "BURST", "used": null, "remaining_ratio": null, "reset_at": null },
+          "weekly_window": { "role": "BUDGET", "used": null, "remaining_ratio": null, "reset_at": null },
           "source": "UNKNOWN",
           "remaining_confidence": "UNKNOWN"
         }
