@@ -5,9 +5,11 @@ import { parse } from "yaml";
 import {
   scanText,
   selectCandidate,
+  validateHistory,
   validateMarkdownLinks,
   validateRegistry,
   validateResourceState,
+  validateRepository,
   validateRoutingCases,
 } from "../scripts/validate-policy-pack.mjs";
 
@@ -299,4 +301,60 @@ test("resource state requires a declared source and refuses sourceless confidenc
     validateResourceState({ providers: { codex: { ...base, source: "USER_STATEMENT", state: "YELLOW" } } }),
     [],
   );
+});
+
+test("repository safety files protect the public artifact", async () => {
+  const license = await readFile("LICENSE", "utf8");
+  assert.match(license, /MIT License/);
+  assert.match(license, /Copyright \(c\) 2026 fordissi/);
+  assert.match(license, /without restriction/);
+  assert.match(license, /WITHOUT WARRANTY OF ANY KIND/);
+
+  const gitignore = await readFile(".gitignore", "utf8");
+  for (const entry of ["node_modules/", "runtime/RESOURCE_STATE.json", "*.log", ".env", ".claude/"]) {
+    assert.ok(gitignore.includes(entry), `.gitignore no longer protects ${entry}`);
+  }
+
+  // The design history is deliberately public and must stay inside the scan.
+  const validator = await readFile("scripts/validate-policy-pack.mjs", "utf8");
+  assert.ok(!validator.includes("docs/superpowers"), "docs/superpowers must not be excluded from scanning");
+});
+
+test("repository history scan finds a secret that HEAD no longer contains", async (t) => {
+  const { execFileSync } = await import("node:child_process");
+  const { mkdtemp, writeFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join: joinPath } = await import("node:path");
+
+  const dir = await mkdtemp(joinPath(tmpdir(), "policy-history-"));
+  const git = (...args) => execFileSync("git", ["-C", dir, ...args], { encoding: "utf8" });
+
+  try {
+    git("init", "-q");
+    git("config", "user.email", "test" + "@" + "example.invalid");
+    git("config", "user.name", "history fixture");
+
+    // Assembled at runtime so this test file is not itself a finding.
+    const leaked = "api" + "_key=" + "abcdef123456";
+    await writeFile(joinPath(dir, "leaked.txt"), `${leaked}\n`, "utf8");
+    git("add", "leaked.txt");
+    git("commit", "-q", "-m", "add file");
+
+    await writeFile(joinPath(dir, "leaked.txt"), "cleaned\n", "utf8");
+    git("add", "leaked.txt");
+    git("commit", "-q", "-m", "remove secret");
+
+    // HEAD is clean...
+    const headFindings = validateRepository(dir).findings.filter((f) => f.includes("credential-assignment"));
+    assert.deepEqual(headFindings, [], "HEAD should be clean in this fixture");
+
+    // ...but the history is not, and a later commit must not hide it.
+    const historyFindings = validateHistory(dir);
+    assert.ok(historyFindings.length > 0, "history scan must report the older revision");
+    assert.match(historyFindings.join("\n"), /credential-assignment/);
+    // Findings must never echo what they matched.
+    assert.ok(!historyFindings.join("\n").includes("abcdef123456"), "history findings must not echo matched text");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

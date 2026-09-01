@@ -618,31 +618,49 @@ function publishableFiles(root) {
     .filter((file) => !BINARY_EXTENSIONS.has(extname(file).toLowerCase()));
 }
 
+/**
+ * Reads and parses a required input. A missing or unparseable input is a
+ * CONFIG_INVALID finding, never a crash: the validator must be able to report
+ * on a repository that is broken in exactly that way.
+ */
+function readInput(root, relativePath, parseAs, findings) {
+  try {
+    const text = readFileSync(join(root, relativePath), "utf8");
+    return parseAs === "json" ? JSON.parse(text) : parseYaml(text);
+  } catch (error) {
+    findings.push(`${relativePath}: CONFIG_INVALID - could not read or parse (${error.code ?? "parse error"})`);
+    return undefined;
+  }
+}
+
 export function validateRepository(root = process.cwd()) {
   const findings = [];
   const summary = { registry: 0, resourceExample: 0, routingCases: 0, filesScanned: 0, scanFindings: 0, markdownFilesLinkChecked: 0 };
 
-  const registryPath = join(root, "policies", "MODEL_REGISTRY.yaml");
-  const registry = parseYaml(readFileSync(registryPath, "utf8"));
-  for (const finding of validateRegistry(registry)) {
-    findings.push(`policies/MODEL_REGISTRY.yaml: ${finding}`);
+  const registry = readInput(root, "policies/MODEL_REGISTRY.yaml", "yaml", findings);
+  if (registry !== undefined) {
+    for (const finding of validateRegistry(registry)) {
+      findings.push(`policies/MODEL_REGISTRY.yaml: ${finding}`);
+    }
+    summary.registry = Object.keys(registry?.capability_slots ?? {}).length;
   }
-  summary.registry = Object.keys(registry?.capability_slots ?? {}).length;
 
-  const examplePath = join(root, "runtime", "RESOURCE_STATE.example.json");
-  const example = JSON.parse(readFileSync(examplePath, "utf8"));
-  // The example-only null affordance is granted here and nowhere else.
-  for (const finding of validateResourceState(example, { allowExampleNulls: true })) {
-    findings.push(`runtime/RESOURCE_STATE.example.json: ${finding}`);
+  const example = readInput(root, "runtime/RESOURCE_STATE.example.json", "json", findings);
+  if (example !== undefined) {
+    // The example-only null affordance is granted here and nowhere else.
+    for (const finding of validateResourceState(example, { allowExampleNulls: true })) {
+      findings.push(`runtime/RESOURCE_STATE.example.json: ${finding}`);
+    }
+    summary.resourceExample = 1;
   }
-  summary.resourceExample = 1;
 
-  const casesPath = join(root, "tests", "routing-cases.yaml");
-  const cases = parseYaml(readFileSync(casesPath, "utf8"));
-  for (const finding of validateRoutingCases(cases, registry)) {
-    findings.push(`tests/routing-cases.yaml: ${finding}`);
+  const cases = readInput(root, "tests/routing-cases.yaml", "yaml", findings);
+  if (cases !== undefined && registry !== undefined) {
+    for (const finding of validateRoutingCases(cases, registry)) {
+      findings.push(`tests/routing-cases.yaml: ${finding}`);
+    }
+    summary.routingCases = Array.isArray(cases?.cases) ? cases.cases.length : 0;
   }
-  summary.routingCases = Array.isArray(cases?.cases) ? cases.cases.length : 0;
 
   const invalidFixturePath = join(root, "tests", "fixtures", "invalid-model-registry.yaml");
   if (existsSync(invalidFixturePath)) {
@@ -691,6 +709,75 @@ export function validateRepository(root = process.cwd()) {
 }
 
 /**
+ * Scans every blob reachable from any revision, not just HEAD.
+ *
+ * A later commit that deletes a secret does not remove it from history, so a
+ * clean working tree proves nothing before a first public push. Blobs are
+ * deduplicated by object id, so an unchanged file is scanned once rather than
+ * once per revision. Findings carry revision, path, line and pattern only -
+ * the matched text is never returned.
+ */
+export function validateHistory(root = process.cwd()) {
+  const findings = [];
+  const git = (args) =>
+    execFileSync("git", args, { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+
+  let revisions;
+  try {
+    revisions = git(["rev-list", "--all"]).split(/\r?\n/).filter((line) => line.length > 0);
+  } catch {
+    return ["history: could not enumerate reachable revisions"];
+  }
+
+  const seenBlobs = new Set();
+
+  for (const revision of revisions) {
+    let listing;
+    try {
+      listing = git(["ls-tree", "-r", revision]);
+    } catch {
+      findings.push(`history: could not list revision ${revision.slice(0, 9)}`);
+      continue;
+    }
+
+    for (const line of listing.split(/\r?\n/)) {
+      if (line.length === 0) continue;
+
+      const [meta, path] = line.split("\t");
+      if (path === undefined) continue;
+
+      const [, type, objectId] = meta.split(/\s+/);
+      if (type !== "blob" || seenBlobs.has(objectId)) continue;
+      seenBlobs.add(objectId);
+
+      if (path.startsWith("node_modules/")) continue;
+      if (BINARY_EXTENSIONS.has(extname(path).toLowerCase())) continue;
+
+      let content;
+      try {
+        content = git(["cat-file", "blob", objectId]);
+      } catch {
+        continue;
+      }
+      if (content.includes("\0")) continue;
+
+      const scannable = content
+        .split(/\r?\n/)
+        .map((entry) => (entry.trimStart().startsWith("PROHIBITED:") ? "" : entry))
+        .join("\n");
+
+      for (const finding of scanText(scannable, { path })) {
+        findings.push(
+          `${revision.slice(0, 9)}:${finding.path}:${finding.line}:${finding.column}: ${finding.pattern}`,
+        );
+      }
+    }
+  }
+
+  return findings;
+}
+
+/**
  * Checks that repository-relative Markdown links resolve to real files.
  * External URLs, bare anchors and mail links are out of scope.
  */
@@ -727,6 +814,14 @@ if (process.argv[1] !== undefined && pathToFileURL(process.argv[1]).href === imp
       `routing cases: ${summary.routingCases} | files scanned: ${summary.filesScanned} | ` +
       `markdown link-checked: ${summary.markdownFilesLinkChecked}`,
   );
+
+  // Required before a first public push: a clean HEAD proves nothing about
+  // what earlier revisions still carry.
+  if (process.argv.includes("--history")) {
+    const historyFindings = validateHistory(process.cwd());
+    console.log(`history: all reachable revisions scanned, ${historyFindings.length} finding(s)`);
+    findings.push(...historyFindings);
+  }
 
   if (findings.length > 0) {
     console.error(`\n${findings.length} finding(s):`);

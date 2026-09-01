@@ -4,3 +4,7 @@ runtime/RESOURCE_STATE.json
 .env
 .env.*
 !.env.example
+
+# Local agent harness settings. Hidden on this machine only by a user-global
+# git ignore, so the repository must protect it for every other checkout.
+.claude/
