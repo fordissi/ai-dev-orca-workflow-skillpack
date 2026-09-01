@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import {
   scanText,
   selectCandidate,
@@ -92,4 +93,19 @@ test("sensitive and unfinished markers are reported", () => {
   const patterns = new Set(findings.map(({ pattern }) => pattern));
   assert.ok(patterns.has("credential-assignment"));
   assert.ok(patterns.has("unfinished-marker"));
+});
+
+test("stable policies expose required executable enums", async () => {
+  const workflow = await readFile("policies/WORKFLOW_POLICY.md", "utf8");
+  const concurrency = await readFile("policies/CONCURRENCY_POLICY.md", "utf8");
+  const routing = await readFile("policies/MODEL_ROUTING_POLICY.md", "utf8");
+  for (const phrase of ["verify → classify → route → contract → execute → review → repair or escalate → close", "permission ceiling", "authoritative owner"]) assert.match(workflow, new RegExp(phrase));
+  for (const mode of ["SEQUENTIAL", "PARALLEL_INDEPENDENT", "COMPETITIVE_DESIGN", "PARALLEL_SAME_CORE_IMPLEMENTATION"]) assert.match(concurrency, new RegExp(mode));
+  for (const dimension of ["risk", "complexity", "context_size", "ambiguity", "change_intensity", "verification_need"]) assert.match(routing, new RegExp(dimension));
+  for (const tier of ["CHEAP", "DEFAULT", "STRONG", "DEEP"]) assert.match(routing, new RegExp(tier));
+  for (const role of ["ROUTER", "IMPLEMENTATION", "LONG_CONTEXT_DISCOVERY", "INDEPENDENT_REVIEWER", "REGRESSION_HUNTER", "ESCALATION"]) assert.match(routing, new RegExp(role));
+  assert.match(routing, new RegExp("MODEL_REGISTRY.yaml"));
+  assert.ok(routing.includes("failed_repair_count >= max_repair_attempts"));
+  assert.match(workflow, new RegExp("normative"));
+  assert.match(workflow, new RegExp("conformance checker"));
 });
