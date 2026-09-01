@@ -136,7 +136,17 @@ test("repository rejects a fixture whose candidate is below the slot minimum", a
 test("repository routing cases all conform to the registry", async () => {
   const registry = parse(await readFile("policies/MODEL_REGISTRY.yaml", "utf8"));
   const cases = parse(await readFile("tests/routing-cases.yaml", "utf8"));
-  assert.equal(cases.cases.length, 10);
+  const names = new Set(cases.cases.map(({ name }) => name));
+  for (const required of [
+    "bounded_implementation_all_unknown", "yellow_primary_unknown_fallback",
+    "unknown_primary_yellow_fallback", "auth_contract_requires_deep_reasoner",
+    "large_cross_repo_with_independent_review", "green_fallback_over_red_primary",
+    "independent_reviewer_is_disjoint", "no_candidate_meets_minimum",
+    "experimental_high_risk_is_blocked", "repair_budget_exhausted",
+  ]) {
+    assert.ok(names.has(required), `routing cases are missing ${required}`);
+  }
+  assert.ok(cases.cases.length >= 10);
   assert.deepEqual(validateRoutingCases(cases, registry), []);
 });
 
@@ -357,4 +367,44 @@ test("repository history scan finds a secret that HEAD no longer contains", asyn
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("blocked results carry a reason code that distinguishes cannot from must-not", async () => {
+  const tierOrder = registry.capability_tier_order;
+  const slot = registry.capability_slots.DEFAULT_IMPLEMENTER;
+
+  // Misconfiguration is not a routing problem.
+  const invalidFixture = parse(await readFile("tests/fixtures/invalid-model-registry.yaml", "utf8"));
+  const brokenSlot = structuredClone(invalidFixture.capability_slots.STRONG_IMPLEMENTER);
+  brokenSlot.minimum_tier = "NOT_A_TIER";
+  assert.equal(selectCandidate(brokenSlot, {}, tierOrder, {}).code, "CONFIG_INVALID");
+  assert.equal(selectCandidate({ candidates: [] }, {}, tierOrder, {}).code, "CONFIG_INVALID");
+
+  // Only availability stands in the way: waiting fixes it.
+  const unavailable = selectCandidate(slot, {
+    codex: { state: "GREEN", available: false },
+    claude: { state: "GREEN", available: false },
+  }, tierOrder, { allowExperimental: false, taskRisk: "low" });
+  assert.equal(unavailable.code, "ROUTING_UNAVAILABLE");
+
+  // Policy stands in the way: only a human can lift it.
+  const policyBlocked = selectCandidate(slot, {
+    codex: { state: "GREEN", available: true },
+    claude: { state: "GREEN", available: true },
+  }, tierOrder, { allowExperimental: false, taskRisk: "high", excludeProvider: "codex", excludeModelFamily: "claude-sonnet" });
+  assert.equal(policyBlocked.code, "POLICY_BLOCKED");
+
+  // Qualified but all RED, and RED is not permitted for this task.
+  const redOnly = selectCandidate(slot, {
+    codex: { state: "RED", available: true },
+    claude: { state: "RED", available: true },
+  }, tierOrder, { allowExperimental: false, taskRisk: "low" });
+  assert.equal(redOnly.code, "RESOURCE_BLOCKED");
+
+  // ...and permitting RED selects rather than blocks.
+  const redAllowed = selectCandidate(slot, {
+    codex: { state: "RED", available: true },
+    claude: { state: "RED", available: true },
+  }, tierOrder, { allowExperimental: false, taskRisk: "low", allowRed: true });
+  assert.equal(redAllowed.status, "SELECTED");
 });

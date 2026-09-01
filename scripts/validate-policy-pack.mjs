@@ -242,17 +242,18 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
   } = options;
 
   if (!isPlainObject(slot) || !Array.isArray(slot.candidates) || slot.candidates.length === 0) {
-    return { status: "BLOCKED", reason: "slot has no ordered candidates" };
+    return { status: "BLOCKED", code: "CONFIG_INVALID", reason: "slot has no ordered candidates" };
   }
 
   if (!Array.isArray(tierOrder) || tierOrder.length === 0) {
-    return { status: "BLOCKED", reason: "capability_tier_order is missing or empty" };
+    return { status: "BLOCKED", code: "CONFIG_INVALID", reason: "capability_tier_order is missing or empty" };
   }
 
   const minimumIndex = tierIndex(tierOrder, slot.minimum_tier);
   if (minimumIndex === -1) {
     return {
       status: "BLOCKED",
+      code: "CONFIG_INVALID",
       reason: `slot minimum_tier ${JSON.stringify(slot.minimum_tier)} is not in capability_tier_order`,
     };
   }
@@ -268,33 +269,46 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
     // either direction.
     const resourceState = RESOURCE_STATES.includes(entry?.state) ? entry.state : "UNKNOWN";
 
+    // Every condition is evaluated, not short-circuited, so a candidate whose
+    // ONLY problem is availability can be told apart from one that policy
+    // would reject anyway. That distinction decides the blocked reason code.
+    const failures = [];
+
     if (entry?.available === false) {
-      rejected.push(`${label}: provider or pool is unavailable`);
-      continue;
+      failures.push({ kind: "unavailable", why: `${label}: provider or pool is unavailable` });
     }
 
     if (candidate?.status === "experimental" && !allowExperimental) {
-      rejected.push(`${label}: experimental candidate is not permitted for ${taskRisk}-risk work`);
-      continue;
+      failures.push({
+        kind: "policy",
+        why: `${label}: experimental candidate is not permitted for ${taskRisk}-risk work`,
+      });
     }
 
     const candidateIndex = tierIndex(tierOrder, candidate?.capability_tier);
     if (candidateIndex === -1 || candidateIndex < minimumIndex) {
-      rejected.push(`${label}: capability tier is below minimum tier ${slot.minimum_tier}`);
-      continue;
+      failures.push({ kind: "policy", why: `${label}: capability tier is below minimum tier ${slot.minimum_tier}` });
     }
 
     if (excludeProvider !== null && candidate?.provider === excludeProvider) {
-      rejected.push(`${label}: shares the implementer provider`);
-      continue;
+      failures.push({ kind: "policy", why: `${label}: shares the implementer provider` });
     }
 
     if (excludeModelFamily !== null && candidate?.model_family === excludeModelFamily) {
-      rejected.push(`${label}: shares the implementer model family`);
+      failures.push({ kind: "policy", why: `${label}: shares the implementer model family` });
+    }
+
+    if (failures.length === 0) {
+      qualified.push({ candidate, resourceState });
       continue;
     }
 
-    qualified.push({ candidate, resourceState });
+    rejected.push({
+      label,
+      failures,
+      // True when waiting for the provider to come back would be enough.
+      onlyUnavailable: failures.every(({ kind }) => kind === "unavailable"),
+    });
   }
 
   const pick =
@@ -302,15 +316,30 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
     qualified.find(({ resourceState }) => resourceState === "YELLOW" || resourceState === "UNKNOWN") ??
     (allowRed ? qualified.find(({ resourceState }) => resourceState === "RED") : undefined);
 
-  if (pick === undefined) {
-    const reason =
-      qualified.length === 0
-        ? `no candidate qualifies: ${rejected.join("; ")}`
-        : "the only qualified candidates are RED and this task does not permit RED routing";
-    return { status: "BLOCKED", reason };
+  if (pick !== undefined) {
+    return { status: "SELECTED", candidate: pick.candidate };
   }
 
-  return { status: "SELECTED", candidate: pick.candidate };
+  // Qualified candidates exist but every one of them is RED, and this task did
+  // not permit RED routing. Waiting for a reset fixes this; nothing else will.
+  if (qualified.length > 0) {
+    return {
+      status: "BLOCKED",
+      code: "RESOURCE_BLOCKED",
+      reason: "the only qualified candidates are RED and this task does not permit RED routing",
+    };
+  }
+
+  // If some candidate would qualify once its provider is available again, this
+  // is an availability problem. Otherwise policy is what stands in the way, and
+  // a human has to decide - not the router.
+  const code = rejected.some(({ onlyUnavailable }) => onlyUnavailable) ? "ROUTING_UNAVAILABLE" : "POLICY_BLOCKED";
+
+  return {
+    status: "BLOCKED",
+    code,
+    reason: `no candidate qualifies: ${rejected.flatMap(({ failures }) => failures.map(({ why }) => why)).join("; ")}`,
+  };
 }
 
 /**
@@ -421,6 +450,16 @@ export function scanText(text, options = {}) {
 
 const CASE_KINDS = ["selection", "multi_stage"];
 
+// "Cannot" and "must not" need different handling upstream, so a BLOCKED
+// result always says which it is. Owner: MODEL_ROUTING_POLICY.md.
+const BLOCKED_REASON_CODES = [
+  "CONFIG_INVALID",
+  "ROUTING_UNAVAILABLE",
+  "POLICY_BLOCKED",
+  "RESOURCE_BLOCKED",
+  "PERMISSION_BLOCKED",
+];
+
 const CONCURRENCY_MODES = [
   "SEQUENTIAL",
   "PARALLEL_INDEPENDENT",
@@ -508,6 +547,12 @@ export function validateRoutingCases(document, registry) {
 
       if (result.status === "BLOCKED") {
         if (!isNonEmptyString(result.reason)) findings.push(`${named}: BLOCKED result must carry a reason`);
+        if (!BLOCKED_REASON_CODES.includes(result.code)) {
+          findings.push(`${named}: BLOCKED result carries invalid code ${JSON.stringify(result.code)}`);
+        }
+        if ("code" in testCase.expect && result.code !== testCase.expect.code) {
+          findings.push(`${named}: expected code ${testCase.expect.code}, got ${result.code}`);
+        }
         continue;
       }
 

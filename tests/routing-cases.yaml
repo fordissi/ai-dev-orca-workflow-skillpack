@@ -103,25 +103,36 @@ cases:
   - name: experimental_high_risk_is_blocked
     kind: selection
     why: >-
-      Experimental candidates may not take high-risk work unless a human
-      explicitly allows the experiment. With the stable fallback unavailable,
-      the correct answer is BLOCKED, not a downgrade.
-    slot: LONG_CONTEXT_DISCOVERY
+      A regression hunt on high-risk work must be disjoint from the
+      implementer, which removes every codex candidate. The only remaining
+      candidate is experimental, and experimental may not take high-risk work
+      unless a human explicitly allows the experiment. Both exclusions are
+      policy, so no amount of waiting helps: this is POLICY_BLOCKED, and only a
+      human can lift it.
+    slot: REGRESSION_HUNTER
     resource_states:
       antigravity: { pools: { gemini: { state: GREEN, available: true } } }
-      claude: { state: GREEN, available: false }
-    options: { allowExperimental: false, taskRisk: high }
+      codex: { state: GREEN, available: true }
+    options:
+      allowExperimental: false
+      taskRisk: high
+      excludeProvider: codex
+      excludeModelFamily: gpt-5.6
     expect:
       status: BLOCKED
+      code: POLICY_BLOCKED
 
   - name: no_candidate_meets_minimum
     kind: selection
     why: >-
-      No qualified candidate must return BLOCKED with a reason rather than
-      crossing the capability floor. Note that a candidate literally below its
-      slot minimum cannot exist in a valid registry - validateRegistry rejects
-      that, and tests/fixtures/invalid-model-registry.yaml covers it - so this
-      case exercises the unavailable and experimental exclusion paths.
+      No qualified candidate must return BLOCKED rather than crossing the
+      capability floor. A candidate literally below its slot minimum cannot
+      exist in a valid registry - validateRegistry rejects that, and
+      tests/fixtures/invalid-model-registry.yaml covers it - so this case
+      exercises the unavailable and experimental exclusion paths. The stable
+      DEEP candidate fails on availability alone, so the honest code is
+      ROUTING_UNAVAILABLE: when that provider returns, routing succeeds
+      without any policy change.
     slot: DEEP_REASONER
     resource_states:
       claude: { state: GREEN, available: false }
@@ -129,6 +140,24 @@ cases:
     options: { allowExperimental: false, taskRisk: critical }
     expect:
       status: BLOCKED
+      code: ROUTING_UNAVAILABLE
+
+  - name: red_only_is_resource_blocked
+    kind: selection
+    why: >-
+      Every candidate qualifies on capability, but all of them are RED and this
+      task does not permit RED routing. That is distinct from having no
+      qualified candidate: nothing is misconfigured and no policy forbids these
+      models, so the answer is RESOURCE_BLOCKED and the fix is a quota reset or
+      an explicit human decision.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex: { state: RED, available: true }
+      claude: { state: RED, available: true }
+    options: { allowExperimental: false, taskRisk: medium }
+    expect:
+      status: BLOCKED
+      code: RESOURCE_BLOCKED
 
   - name: auth_contract_requires_deep_reasoner
     kind: multi_stage

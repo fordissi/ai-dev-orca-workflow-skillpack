@@ -89,6 +89,28 @@ Role 與 slot 名稱**永遠不得**被當成 capability tier 來比較。Execut
 
 Resource overlay **只能在達到相同 `minimum_tier` 的候選之間重排**。它不能把需要 `DEEP` 的任務改派給 `CHEAP` 候選，也不能改變 architecture authority。
 
+## Blocked reason codes
+
+`BLOCKED` 必須附一個 reason code。理由是「不能做」與「做不到」需要不同處置，
+把兩者混成一個 `BLOCKED` 會讓上層無法判斷該等待、該補設定，還是該找人決策。
+
+| Code | 意義 | 誰能解除 |
+|---|---|---|
+| `CONFIG_INVALID` | slot、`capability_tier_order` 或 `minimum_tier` 本身不符 schema | 修設定 |
+| `ROUTING_UNAVAILABLE` | 存在**只差可用性**的候選——provider 恢復後即合格 | 等待或補候選 |
+| `POLICY_BLOCKED` | 所有候選都被政策排除（experimental 接高風險、低於 `minimum_tier`、與 implementer 不 disjoint） | 只有 human 能決定 |
+| `RESOURCE_BLOCKED` | 有合格候選但全為 `RED`，且本 task 不允許 `RED` | 等待重置或 human 明確放行 |
+| `PERMISSION_BLOCKED` | 完成任務所需權限超出 permission ceiling | human 調整 ceiling 或改做法 |
+
+判定規則：只要存在**唯一失敗原因是 unavailable** 的候選，就是 `ROUTING_UNAVAILABLE`；
+否則為 `POLICY_BLOCKED`。因此候選的每個條件都必須完整評估，不得短路——
+短路會讓「等一下就好」與「政策就是不允許」變得無法區分。
+
+`PERMISSION_BLOCKED` 不由 candidate 選擇產生，它發生在 permission ceiling 的比對階段，
+由 operational router 在組 `dispatch_command` 時判定。
+
+**不得為了把 `BLOCKED` 變成 `SELECTED` 而降低 `minimum_tier`、放棄 disjointness 或提高權限。**
+
 ## Independent review 的 disjointness
 
 當 `verification_need` 為 `independent` 或 `adversarial` 時，reviewer 的 provider 與 model family **都必須**與 implementer 不同。
