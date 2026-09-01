@@ -1,5 +1,19 @@
 # Model Registry — the single owner of dynamic provider/model mapping.
 #
+# ADOPTERS READ THIS FIRST
+# ------------------------
+# The mapping shipped here reflects the AUTHORING HOST and the CLI state
+# observed there at the recorded verification date. It is NOT a guarantee that
+# these providers, models or plans are available to you.
+#
+# Every candidate is evidence_status: provisional. The Codex model IDs in
+# particular rest only on local CLI state, because that CLI exposes no
+# authoritative model-discovery command equivalent to `agy models`.
+#
+# Before your first dispatch, re-resolve every candidate against your OWN
+# installed CLIs and subscription plans, and edit this file to match what you
+# actually have. Routing on someone else's host state is a guess.
+#
 # Stable workflow rules live in the Markdown policies and do NOT change when a
 # model changes. Only this file changes when mapping changes.
 #

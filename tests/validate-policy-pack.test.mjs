@@ -40,8 +40,8 @@ test("registry rejects a fallback below minimum capability", () => {
 
 test("all-UNKNOWN resource state never changes registry order", () => {
   const selected = selectCandidate(registry.capability_slots.DEFAULT_IMPLEMENTER, {
-    codex: { state: "UNKNOWN", available: true },
-    claude: { state: "UNKNOWN", available: true },
+    codex: { state: "UNKNOWN", available: true, source: "ORCA_RUNTIME" },
+    claude: { state: "UNKNOWN", available: true, source: "ORCA_RUNTIME" },
   }, registry.capability_tier_order, { allowExperimental: false, taskRisk: "low" });
   assert.equal(selected.status, "SELECTED");
   assert.equal(selected.candidate.model, "luna");
@@ -49,24 +49,24 @@ test("all-UNKNOWN resource state never changes registry order", () => {
 
 test("UNKNOWN primary is not demoted below a YELLOW fallback", () => {
   const selected = selectCandidate(registry.capability_slots.DEFAULT_IMPLEMENTER, {
-    codex: { state: "UNKNOWN", available: true },
-    claude: { state: "YELLOW", available: true },
+    codex: { state: "UNKNOWN", available: true, source: "ORCA_RUNTIME" },
+    claude: { state: "YELLOW", available: true, source: "ORCA_RUNTIME" },
   }, registry.capability_tier_order, { allowExperimental: false, taskRisk: "low" });
   assert.equal(selected.candidate.model, "luna");
 });
 
 test("YELLOW resource state is not demoted below UNKNOWN", () => {
   const selected = selectCandidate(registry.capability_slots.DEFAULT_IMPLEMENTER, {
-    codex: { state: "YELLOW", available: true },
-    claude: { state: "UNKNOWN", available: true },
+    codex: { state: "YELLOW", available: true, source: "ORCA_RUNTIME" },
+    claude: { state: "UNKNOWN", available: true, source: "ORCA_RUNTIME" },
   }, registry.capability_tier_order, { allowExperimental: false, taskRisk: "low" });
   assert.equal(selected.candidate.model, "luna");
 });
 
 test("GREEN candidate is preferred over RED without crossing the minimum", () => {
   const selected = selectCandidate(registry.capability_slots.DEFAULT_IMPLEMENTER, {
-    codex: { state: "RED", available: true },
-    claude: { state: "GREEN", available: true },
+    codex: { state: "RED", available: true, source: "ORCA_RUNTIME" },
+    claude: { state: "GREEN", available: true, source: "ORCA_RUNTIME" },
   }, registry.capability_tier_order, { allowExperimental: false, taskRisk: "low" });
   assert.equal(selected.candidate.model, "sonnet");
 });
@@ -75,7 +75,7 @@ test("high-risk work rejects experimental candidates unless explicitly allowed",
   const slot = structuredClone(registry.capability_slots.DEFAULT_IMPLEMENTER);
   slot.candidates[0].status = "experimental";
   slot.candidates.splice(1);
-  const selected = selectCandidate(slot, { codex: { state: "GREEN", available: true } }, registry.capability_tier_order, { allowExperimental: false, taskRisk: "high" });
+  const selected = selectCandidate(slot, { codex: { state: "GREEN", available: true, source: "ORCA_RUNTIME" } }, registry.capability_tier_order, { allowExperimental: false, taskRisk: "high" });
   assert.equal(selected.status, "BLOCKED");
   assert.equal(typeof selected.reason, "string");
   assert.ok(selected.reason.length > 0);
@@ -83,8 +83,8 @@ test("high-risk work rejects experimental candidates unless explicitly allowed",
 
 test("independent review excludes the implementer provider and model family", () => {
   const selected = selectCandidate(registry.capability_slots.DEFAULT_IMPLEMENTER, {
-    codex: { state: "GREEN", available: true },
-    claude: { state: "UNKNOWN", available: true },
+    codex: { state: "GREEN", available: true, source: "ORCA_RUNTIME" },
+    claude: { state: "UNKNOWN", available: true, source: "ORCA_RUNTIME" },
   }, registry.capability_tier_order, { allowExperimental: false, taskRisk: "high", excludeProvider: "codex", excludeModelFamily: "gpt-5.6" });
   assert.equal(selected.candidate.provider, "claude");
 });
@@ -382,29 +382,126 @@ test("blocked results carry a reason code that distinguishes cannot from must-no
 
   // Only availability stands in the way: waiting fixes it.
   const unavailable = selectCandidate(slot, {
-    codex: { state: "GREEN", available: false },
-    claude: { state: "GREEN", available: false },
+    codex: { state: "GREEN", available: false, source: "ORCA_RUNTIME" },
+    claude: { state: "GREEN", available: false, source: "ORCA_RUNTIME" },
   }, tierOrder, { allowExperimental: false, taskRisk: "low" });
   assert.equal(unavailable.code, "ROUTING_UNAVAILABLE");
 
   // Policy stands in the way: only a human can lift it.
   const policyBlocked = selectCandidate(slot, {
-    codex: { state: "GREEN", available: true },
-    claude: { state: "GREEN", available: true },
+    codex: { state: "GREEN", available: true, source: "ORCA_RUNTIME" },
+    claude: { state: "GREEN", available: true, source: "ORCA_RUNTIME" },
   }, tierOrder, { allowExperimental: false, taskRisk: "high", excludeProvider: "codex", excludeModelFamily: "claude-sonnet" });
   assert.equal(policyBlocked.code, "POLICY_BLOCKED");
 
   // Qualified but all RED, and RED is not permitted for this task.
   const redOnly = selectCandidate(slot, {
-    codex: { state: "RED", available: true },
-    claude: { state: "RED", available: true },
+    codex: { state: "RED", available: true, source: "ORCA_RUNTIME" },
+    claude: { state: "RED", available: true, source: "ORCA_RUNTIME" },
   }, tierOrder, { allowExperimental: false, taskRisk: "low" });
   assert.equal(redOnly.code, "RESOURCE_BLOCKED");
 
   // ...and permitting RED selects rather than blocks.
   const redAllowed = selectCandidate(slot, {
-    codex: { state: "RED", available: true },
-    claude: { state: "RED", available: true },
+    codex: { state: "RED", available: true, source: "ORCA_RUNTIME" },
+    claude: { state: "RED", available: true, source: "ORCA_RUNTIME" },
   }, tierOrder, { allowExperimental: false, taskRisk: "low", allowRed: true });
   assert.equal(redAllowed.status, "SELECTED");
+});
+
+test("routing enforces the resource-source trust invariant, not just the example snapshot", () => {
+  const tierOrder = registry.capability_tier_order;
+  const slot = registry.capability_slots.DEFAULT_IMPLEMENTER;
+  const options = { allowExperimental: false, taskRisk: "low" };
+
+  // An untrusted GREEN must not win, even though it is first in registry order
+  // and claims the best possible state.
+  const untrustedPrimary = selectCandidate(slot, {
+    codex: { state: "GREEN", available: true, source: "UNKNOWN" },
+    claude: { state: "UNKNOWN", available: true, source: "ORCA_RUNTIME" },
+  }, tierOrder, options);
+  assert.equal(untrustedPrimary.status, "SELECTED");
+  assert.equal(untrustedPrimary.candidate.provider, "claude");
+
+  // With nothing trustworthy left, fail closed rather than route on a claim
+  // the snapshot cannot back up.
+  for (const bad of [
+    { state: "GREEN", available: true, source: "UNKNOWN" },
+    { state: "GREEN", available: true },
+    { state: "GREEN", available: true, source: "SOMETHING_ELSE" },
+  ]) {
+    const result = selectCandidate(slot, { codex: bad, claude: bad }, tierOrder, options);
+    assert.equal(result.status, "BLOCKED");
+    assert.equal(result.code, "CONFIG_INVALID");
+  }
+
+  // Absence of an entry is missing data, not a malformed claim: it still routes
+  // as UNKNOWN by registry order.
+  const noEntry = selectCandidate(slot, {}, tierOrder, options);
+  assert.equal(noEntry.status, "SELECTED");
+  assert.equal(noEntry.candidate.provider, "codex");
+
+  // A trusted source keeps its declared state.
+  const trusted = selectCandidate(slot, {
+    codex: { state: "RED", available: true, source: "ORCA_RUNTIME" },
+    claude: { state: "GREEN", available: true, source: "USER_STATEMENT" },
+  }, tierOrder, options);
+  assert.equal(trusted.candidate.provider, "claude");
+});
+
+test("experimental and RED authorisation default to false and are honoured when granted", () => {
+  const tierOrder = registry.capability_tier_order;
+  const trustedRed = { state: "RED", available: true, source: "ORCA_RUNTIME" };
+
+  const experimentalSlot = structuredClone(registry.capability_slots.DEFAULT_IMPLEMENTER);
+  experimentalSlot.candidates[0].status = "experimental";
+  experimentalSlot.candidates.splice(1);
+  const green = { codex: { state: "GREEN", available: true, source: "ORCA_RUNTIME" } };
+
+  // Defaults: both authorisations absent means both are denied.
+  assert.equal(selectCandidate(experimentalSlot, green, tierOrder, {}).status, "BLOCKED");
+  assert.equal(
+    selectCandidate(registry.capability_slots.DEFAULT_IMPLEMENTER, { codex: trustedRed, claude: trustedRed }, tierOrder, {}).code,
+    "RESOURCE_BLOCKED",
+  );
+
+  // Granted explicitly in the Strategic Contract, both proceed.
+  assert.equal(selectCandidate(experimentalSlot, green, tierOrder, { allowExperimental: true }).status, "SELECTED");
+  assert.equal(
+    selectCandidate(registry.capability_slots.DEFAULT_IMPLEMENTER, { codex: trustedRed, claude: trustedRed }, tierOrder, { allowRed: true }).status,
+    "SELECTED",
+  );
+});
+
+test("contract template defers reason-code semantics to the routing policy", async () => {
+  const contract = await readFile("templates/ROUTER_EXECUTION_CONTRACT_TEMPLATE.md", "utf8");
+  const routing = await readFile("policies/MODEL_ROUTING_POLICY.md", "utf8");
+
+  // Strategic authorisation fields live in the contract, defaulting to false.
+  for (const field of ["allow_experimental: false", "allow_red: false", "experimental_justification"]) {
+    assert.ok(contract.includes(field), `contract template is missing ${field}`);
+  }
+
+  // Names may be enumerated anywhere; semantics have exactly one owner.
+  assert.ok(contract.includes("MODEL_ROUTING_POLICY.md"), "contract must point at the reason-code owner");
+  assert.match(routing, /## Blocked reason codes/);
+
+  // The per-code meaning table must not be duplicated in the template.
+  const codeRowsInContract = (contract.match(/^\| `(CONFIG_INVALID|ROUTING_UNAVAILABLE|POLICY_BLOCKED|RESOURCE_BLOCKED|PERMISSION_BLOCKED)`/gm) ?? []).length;
+  assert.equal(codeRowsInContract, 0, "contract template must not redefine reason-code semantics");
+});
+
+test("release hygiene: host-specific registry warning and line-ending policy", async () => {
+  const attributes = await readFile(".gitattributes", "utf8");
+  assert.match(attributes, /\* text=auto eol=lf/);
+  assert.match(attributes, /\*\.png binary/);
+
+  const readme = await readFile("README.md", "utf8");
+  assert.match(readme, /core\.longpaths true/);
+  assert.match(readme, /provisional/);
+
+  // Adopters must not read the shipped mapping as universal availability.
+  const registryText = await readFile("policies/MODEL_REGISTRY.yaml", "utf8");
+  assert.match(registryText, /AUTHORING HOST/);
+  assert.match(registryText, /re-resolve/i);
 });

@@ -20,6 +20,16 @@ License: MIT
 
 ## 五分鐘快速開始
 
+Windows（Git for Windows）先設定一次：
+
+```bash
+git config --global core.longpaths true
+```
+
+`docs/superpowers/` 下的設計文件檔名較長。若把本 repository clone 到本身已經很深的
+父路徑底下，未開啟長路徑支援時 checkout 會以 `Filename too long` 失敗。這是 Git for
+Windows 的預設路徑上限，不是 repository 的缺陷；改 clone 到較短路徑也可以。
+
 ```bash
 npm install
 npm test          # conformance tests
@@ -27,6 +37,16 @@ npm run validate  # registry / resource / routing cases / 全檔掃描 / 連結�
 ```
 
 兩者都應 exit 0，`npm run validate` 印出 `Policy pack validation passed`。
+
+> **採用前必讀。** 隨附的 `policies/MODEL_REGISTRY.yaml` 反映的是**撰寫這份 pack 的
+> 那台主機**在當時觀察到的 CLI 狀態。其中的 provider、model ID 與能力標籤全部標記為
+> `evidence_status: provisional`，**不構成任何普遍可用性保證**——Codex 的 model ID
+> 尤其如此，因為該 CLI 沒有等同 `agy models` 的權威列表命令。
+>
+> 第一次派工之前，請對照**你自己**已安裝的 CLI 與訂閱方案重新確認候選是否存在、
+> 是否可用，並依實際結果修改 registry。詳見
+> [`references/MODEL_EVIDENCE.md`](references/MODEL_EVIDENCE.md) 與
+> [`references/SOURCE_NOTES.md`](references/SOURCE_NOTES.md)。
 
 接著：
 

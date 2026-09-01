@@ -24,7 +24,7 @@ cases:
       UNKNOWN must be neither punished nor rewarded.
     slot: DEFAULT_IMPLEMENTER
     resource_states:
-      codex: { state: UNKNOWN, available: true }
+      codex: { state: UNKNOWN, available: true, source: ORCA_RUNTIME }
     options: { allowExperimental: false, taskRisk: low }
     expect:
       status: SELECTED
@@ -38,8 +38,8 @@ cases:
       order wins because neither state outranks the other.
     slot: STRONG_IMPLEMENTER
     resource_states:
-      codex: { state: YELLOW, available: true }
-      claude: { state: UNKNOWN, available: true }
+      codex: { state: YELLOW, available: true, source: ORCA_RUNTIME }
+      claude: { state: UNKNOWN, available: true, source: ORCA_RUNTIME }
     options: { allowExperimental: false, taskRisk: medium }
     expect:
       status: SELECTED
@@ -53,8 +53,8 @@ cases:
       a YELLOW fallback either; the result must be identical.
     slot: STRONG_IMPLEMENTER
     resource_states:
-      codex: { state: UNKNOWN, available: true }
-      claude: { state: YELLOW, available: true }
+      codex: { state: UNKNOWN, available: true, source: ORCA_RUNTIME }
+      claude: { state: YELLOW, available: true, source: ORCA_RUNTIME }
     options: { allowExperimental: false, taskRisk: medium }
     expect:
       status: SELECTED
@@ -68,8 +68,8 @@ cases:
       the slot minimum. The overlay reorders; it never lowers the floor.
     slot: STRONG_IMPLEMENTER
     resource_states:
-      codex: { state: RED, available: true }
-      claude: { state: GREEN, available: true }
+      codex: { state: RED, available: true, source: ORCA_RUNTIME }
+      claude: { state: GREEN, available: true, source: ORCA_RUNTIME }
     options: { allowExperimental: false, taskRisk: medium }
     expect:
       status: SELECTED
@@ -84,9 +84,9 @@ cases:
       is removed and the experimental antigravity candidate is not permitted.
     slot: INDEPENDENT_REVIEWER
     resource_states:
-      antigravity: { pools: { gemini: { state: GREEN, available: true } } }
-      claude: { state: UNKNOWN, available: true }
-      codex: { state: GREEN, available: true }
+      antigravity: { pools: { gemini: { state: GREEN, available: true, source: ORCA_RUNTIME } } }
+      claude: { state: UNKNOWN, available: true, source: ORCA_RUNTIME }
+      codex: { state: GREEN, available: true, source: ORCA_RUNTIME }
     options:
       allowExperimental: false
       taskRisk: high
@@ -111,8 +111,8 @@ cases:
       human can lift it.
     slot: REGRESSION_HUNTER
     resource_states:
-      antigravity: { pools: { gemini: { state: GREEN, available: true } } }
-      codex: { state: GREEN, available: true }
+      antigravity: { pools: { gemini: { state: GREEN, available: true, source: ORCA_RUNTIME } } }
+      codex: { state: GREEN, available: true, source: ORCA_RUNTIME }
     options:
       allowExperimental: false
       taskRisk: high
@@ -135,8 +135,8 @@ cases:
       without any policy change.
     slot: DEEP_REASONER
     resource_states:
-      claude: { state: GREEN, available: false }
-      codex: { state: GREEN, available: true }
+      claude: { state: GREEN, available: false, source: ORCA_RUNTIME }
+      codex: { state: GREEN, available: true, source: ORCA_RUNTIME }
     options: { allowExperimental: false, taskRisk: critical }
     expect:
       status: BLOCKED
@@ -152,8 +152,8 @@ cases:
       an explicit human decision.
     slot: STRONG_IMPLEMENTER
     resource_states:
-      codex: { state: RED, available: true }
-      claude: { state: RED, available: true }
+      codex: { state: RED, available: true, source: ORCA_RUNTIME }
+      claude: { state: RED, available: true, source: ORCA_RUNTIME }
     options: { allowExperimental: false, taskRisk: medium }
     expect:
       status: BLOCKED
@@ -240,3 +240,82 @@ cases:
       concurrency_mode: SEQUENTIAL
       human_gate: true
       human_gate_reason: repair budget exhausted without convergence
+
+  - name: untrusted_source_cannot_win
+    kind: selection
+    why: >-
+      The primary declares GREEN while admitting its source is UNKNOWN. That is
+      a claim the snapshot cannot back up, so it must not confer eligibility at
+      all - not even downgraded to UNKNOWN, which would still let it win on
+      registry order. The trustworthy fallback is selected instead.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex: { state: GREEN, available: true, source: UNKNOWN }
+      claude: { state: UNKNOWN, available: true, source: ORCA_RUNTIME }
+    options: { allowExperimental: false, taskRisk: medium }
+    expect:
+      status: SELECTED
+      provider: claude
+      model: sonnet
+
+  - name: untrusted_source_only_is_config_invalid
+    kind: selection
+    why: >-
+      When the only candidate's resource entry violates the source trust
+      invariant, the answer is CONFIG_INVALID: the input must be fixed, and no
+      other diagnosis can be trusted until it is. Fail closed rather than
+      routing on a claim with no backing.
+    slot: ESCALATION_MODEL
+    resource_states:
+      claude: { state: GREEN, available: true, source: UNKNOWN }
+    options: { allowExperimental: false, taskRisk: critical }
+    expect:
+      status: BLOCKED
+      code: CONFIG_INVALID
+
+  - name: missing_source_is_config_invalid
+    kind: selection
+    why: >-
+      An entry that declares no source at all is treated the same way. Note the
+      contrast with bounded_implementation_all_unknown: having no entry is
+      missing data and routes as UNKNOWN, while having an entry that omits its
+      source is a malformed claim.
+    slot: ESCALATION_MODEL
+    resource_states:
+      claude: { state: GREEN, available: true }
+    options: { allowExperimental: false, taskRisk: critical }
+    expect:
+      status: BLOCKED
+      code: CONFIG_INVALID
+
+  - name: explicit_allow_red_selects
+    kind: selection
+    why: >-
+      allow_red is authorised in the Strategic Contract, never decided by the
+      Operational Router. With it granted, the same RED-only situation that
+      returns RESOURCE_BLOCKED by default proceeds instead.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex: { state: RED, available: true, source: ORCA_RUNTIME }
+      claude: { state: RED, available: true, source: ORCA_RUNTIME }
+    options: { allowExperimental: false, allowRed: true, taskRisk: medium }
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-sol
+
+  - name: explicit_allow_experimental_selects
+    kind: selection
+    why: >-
+      allow_experimental is likewise a Strategic Contract authorisation. Granted
+      explicitly, the experimental discovery candidate becomes eligible; the
+      default of false is what makes experimental_high_risk_is_blocked block.
+    slot: LONG_CONTEXT_DISCOVERY
+    resource_states:
+      antigravity: { pools: { gemini: { state: GREEN, available: true, source: ORCA_RUNTIME } } }
+      claude: { state: UNKNOWN, available: true, source: ORCA_RUNTIME }
+    options: { allowExperimental: true, taskRisk: medium }
+    expect:
+      status: SELECTED
+      provider: antigravity
+      model: AUTO_GEMINI

@@ -210,6 +210,34 @@ export function validateResourceState(state, options = {}) {
   return findings;
 }
 
+/**
+ * A snapshot entry may only confer a confident state if it declares where it
+ * came from.
+ *
+ * Absence of an entry is UNKNOWN: no reading at all is missing data, which is
+ * neither punished nor rewarded. An entry that is present but malformed is a
+ * different thing - it is a claim the snapshot cannot back up - so it fails
+ * closed as CONFIG_INVALID and can never win selection. Trust levels are owned
+ * by RESOURCE_AWARE_ROUTING.md.
+ */
+function resourceEntryTrust(entry) {
+  if (entry === undefined) return null;
+
+  if (!("source" in entry)) {
+    return "resource entry declares no source";
+  }
+
+  if (!RESOURCE_SOURCES.includes(entry.source)) {
+    return `resource entry has unknown source ${JSON.stringify(entry.source)}`;
+  }
+
+  if (entry.source === "UNKNOWN" && entry.state !== "UNKNOWN") {
+    return `resource entry claims state ${JSON.stringify(entry.state)} with source UNKNOWN`;
+  }
+
+  return null;
+}
+
 function resolveResourceEntry(resourceStates, resourceStateKey) {
   if (!isPlainObject(resourceStates) || !isNonEmptyString(resourceStateKey)) {
     return undefined;
@@ -265,14 +293,21 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
     const label = `${candidate?.provider ?? "unknown"}/${candidate?.model ?? "unknown"}`;
     const entry = resolveResourceEntry(resourceStates, candidate?.resource_state_key);
 
-    // No trustworthy reading resolves to UNKNOWN rather than an assumption in
-    // either direction.
-    const resourceState = RESOURCE_STATES.includes(entry?.state) ? entry.state : "UNKNOWN";
-
     // Every condition is evaluated, not short-circuited, so a candidate whose
     // ONLY problem is availability can be told apart from one that policy
     // would reject anyway. That distinction decides the blocked reason code.
     const failures = [];
+
+    // The trust invariant is enforced here, on the live routing path, not only
+    // when validating the example snapshot. An untrusted entry never confers a
+    // confident state, so an untrusted GREEN cannot win.
+    const untrusted = resourceEntryTrust(entry);
+    if (untrusted !== null) {
+      failures.push({ kind: "config", why: `${label}: ${untrusted}` });
+    }
+
+    const resourceState =
+      untrusted === null && RESOURCE_STATES.includes(entry?.state) ? entry.state : "UNKNOWN";
 
     if (entry?.available === false) {
       failures.push({ kind: "unavailable", why: `${label}: provider or pool is unavailable` });
@@ -330,10 +365,18 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
     };
   }
 
+  // A malformed snapshot outranks everything else: until the input is fixed no
+  // other diagnosis can be trusted.
+  const hasConfigFailure = rejected.some(({ failures }) => failures.some(({ kind }) => kind === "config"));
+
   // If some candidate would qualify once its provider is available again, this
   // is an availability problem. Otherwise policy is what stands in the way, and
   // a human has to decide - not the router.
-  const code = rejected.some(({ onlyUnavailable }) => onlyUnavailable) ? "ROUTING_UNAVAILABLE" : "POLICY_BLOCKED";
+  const code = hasConfigFailure
+    ? "CONFIG_INVALID"
+    : rejected.some(({ onlyUnavailable }) => onlyUnavailable)
+      ? "ROUTING_UNAVAILABLE"
+      : "POLICY_BLOCKED";
 
   return {
     status: "BLOCKED",

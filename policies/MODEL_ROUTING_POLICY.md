@@ -76,18 +76,35 @@ Role 與 slot 名稱**永遠不得**被當成 capability tier 來比較。Execut
 輸入：slot、`minimum_tier`、registry 的 ordered candidates、resource state snapshot、task context。
 
 1. 從指定 slot 讀取 registry 的 ordered `candidates`（順序具有意義）。
-2. 移除下列候選：
+2. 檢查每個候選的 resource entry 是否通過 **source trust invariant**（見
+   [`RESOURCE_AWARE_ROUTING.md`](RESOURCE_AWARE_ROUTING.md)）：沒有宣告 `source`、
+   `source` 不在允許集合、或 `source: UNKNOWN` 卻宣告非 `UNKNOWN` 的 state，
+   一律 **fail closed**——該候選不具資格，且其宣告的 state 不予採信。
+   **不得把不可信的 `GREEN` 悄悄正規化成可用資格**，也不得只降級為 `UNKNOWN`
+   後讓它照 registry 順序勝出。
+   完全沒有 entry 是另一回事：那是「沒有讀數」，視為 `UNKNOWN`，正常參與排序。
+3. 移除下列候選：
    - `available` 為 false；
-   - `status: experimental` 且 task context 未明確允許 experimental；
+   - `status: experimental` 且 `allow_experimental` 未為 true；
    - `capability_tier` 在 ladder 上低於 slot 的 `minimum_tier`；
    - 進行 independent review 時，與 implementer **相同 provider 或相同 model family** 的候選。
-3. 若存在合格的 `GREEN` 候選，依 registry 順序取第一個。
-4. 否則在 `YELLOW` 與 `UNKNOWN` 之間**維持 registry 順序**取第一個合格候選。`YELLOW` 與 `UNKNOWN` 之間不建立優先級；`UNKNOWN` 不因缺少資料而被懲罰或獎勵。
-5. `RED` 只在沒有任何非 `RED` 合格候選、且 task 明確允許時使用，並在 contract 中記錄理由。
-6. 沒有合格候選時，**不得跨越 `minimum_tier`，也不得放棄 independent review 的 disjointness**。回傳 `{status: BLOCKED, reason}` 並進 human gate。
-7. 成功時回傳 `{status: SELECTED, candidate}`。Router 保存此次決策快照與理由，但不保存原始 quota payload。
+4. 若存在合格的 `GREEN` 候選，依 registry 順序取第一個。
+5. 否則在 `YELLOW` 與 `UNKNOWN` 之間**維持 registry 順序**取第一個合格候選。`YELLOW` 與 `UNKNOWN` 之間不建立優先級；`UNKNOWN` 不因缺少資料而被懲罰或獎勵。
+6. `RED` 只在沒有任何非 `RED` 合格候選、且 `allow_red` 為 true 時使用，並在 contract 中記錄理由。
+7. 沒有合格候選時，**不得跨越 `minimum_tier`，也不得放棄 independent review 的 disjointness**。回傳 `{status: BLOCKED, code, reason}` 並進 human gate。
+8. 成功時回傳 `{status: SELECTED, candidate}`。Router 保存此次決策快照與理由，但不保存原始 quota payload。
 
 Resource overlay **只能在達到相同 `minimum_tier` 的候選之間重排**。它不能把需要 `DEEP` 的任務改派給 `CHEAP` 候選，也不能改變 architecture authority。
+
+### 授權旗標歸屬
+
+`allow_experimental` 與 `allow_red` 是 **human 在 strategic contract 中的授權決定**，
+兩者預設為 `false`。`allow_experimental` 為 true 時必須同時載明
+`experimental_justification`。
+
+**Operational router 只讀取這兩個值，不得自行決定，也不得為了把 `BLOCKED` 變成
+`SELECTED` 而翻轉它們。** 需要授權時交回 human gate。這條規則存在的理由是：
+若 router 能自行放寬，能力下限與 experimental 隔離就形同虛設。
 
 ## Blocked reason codes
 

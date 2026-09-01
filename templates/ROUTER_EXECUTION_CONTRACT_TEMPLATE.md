@@ -50,6 +50,13 @@ review_disjointness_required: # verification_need 為 independent/adversarial �
 discovery_role:               # 不需要 discovery 階段時填 none
 discovery_slot:
 
+# 授權旗標。這兩項是 human 的授權決定，由 strategic contract 載明；
+# operational router 只讀取，不得自行決定，也不得為了讓 BLOCKED 變成
+# SELECTED 而翻轉它們。預設 false 是正確的。
+allow_experimental: false     # true 才允許 status: experimental 的候選
+experimental_justification:   # allow_experimental 為 true 時必填，說明為何可接受
+allow_red: false              # true 才允許在只剩 RED 候選時繼續
+
 concurrency_mode:             # SEQUENTIAL | PARALLEL_INDEPENDENT | COMPETITIVE_DESIGN
 integration_owner:            # 任何 mode 下都只能有一個
 
@@ -127,18 +134,19 @@ dispatch_command:             # unresolved
 
 ## Blocked reason codes
 
-`BLOCKED` 必須附一個 reason code，讓「不能做」與「做不到」可以分開處理：
+`BLOCKED` 必須附一個 reason code：
 
-| Code | 意義 | 處置 |
-|---|---|---|
-| `CONFIG_INVALID` | registry、resource state 或 contract 本身不符 schema | 修正設定，不是換模型 |
-| `ROUTING_UNAVAILABLE` | 沒有任何候選可用（unavailable 或候選清單為空） | 等待或補充 registry |
-| `POLICY_BLOCKED` | 政策禁止（experimental 接高風險、找不到 disjoint reviewer、必經 human gate） | 回 human gate |
-| `RESOURCE_BLOCKED` | 只剩 `RED` 候選且本 task 不允許 `RED` | 等待重置或由 human 明確放行 |
-| `PERMISSION_BLOCKED` | 完成任務所需權限超出 permission ceiling | 由 human 調整 ceiling 或改變做法 |
+```text
+CONFIG_INVALID | ROUTING_UNAVAILABLE | POLICY_BLOCKED
+RESOURCE_BLOCKED | PERMISSION_BLOCKED
+```
 
-不得為了繞過 `POLICY_BLOCKED` 或 `PERMISSION_BLOCKED` 而降低 `minimum_tier`、
-放棄 independent review 的 disjointness，或提高權限。
+**這些 code 的語意由 [`policies/MODEL_ROUTING_POLICY.md`](../policies/MODEL_ROUTING_POLICY.md)
+的 Blocked reason codes 章節定義，那裡是唯一的 owner。** 本範本只列出名稱供填寫，
+不重複定義它們的意義——第二份定義遲早會分歧。
+
+不得為了讓 `BLOCKED` 變成 `SELECTED` 而降低 `minimum_tier`、放棄 independent review
+的 disjointness、提高權限，或自行翻轉 `allow_experimental` / `allow_red`。
 
 ---
 
