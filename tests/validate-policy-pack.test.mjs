@@ -220,3 +220,24 @@ test("project and experiment readmes forbid real operational data", async () => 
   assert.match(experiment, /optional/i);
   assert.match(experiment, /UNKNOWN|not authoritative|non-authoritative/i);
 });
+
+test("official commands avoid stale or dangerous defaults", async () => {
+  // Literals are assembled at runtime so this test is not itself a hit.
+  const prohibited = [
+    "--" + "screen",
+    "approval_policy = " + '"untrusted"',
+    "--" + "dangerously-skip-permissions",
+  ];
+  const offending = [];
+  for (const file of ["references/OFFICIAL_COMMANDS.md", "references/SOURCE_NOTES.md"]) {
+    const text = await readFile(file, "utf8");
+    text.split(/\r?\n/).forEach((line, index) => {
+      // A historical or deliberately prohibited example must declare itself.
+      if (line.trimStart().startsWith("PROHIBITED:")) return;
+      for (const literal of prohibited) {
+        if (line.includes(literal)) offending.push(`${file}:${index + 1}: ${literal}`);
+      }
+    });
+  }
+  assert.deepEqual(offending, []);
+});

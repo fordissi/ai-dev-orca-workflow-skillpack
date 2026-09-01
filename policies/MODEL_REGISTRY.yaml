@@ -29,9 +29,15 @@ resolvers:
   antigravity_models:
     command: "agy models"
     resolves: ["AUTO_GEMINI"]
+    verified_at: "2026-09-01"
     note: >-
       AUTO_GEMINI is a placeholder. Resolve it against the live model list
       before dispatch. Do not hard-code a display name observed on one host.
+      Verified on 2026-09-01: the command returns a live list. That list also
+      contains NON-Gemini families, so provider does not imply model_family.
+      A resolution that lands outside the candidate's declared model_family
+      is CONFIG_INVALID and must not be dispatched - this is what keeps
+      independent-review disjointness honest.
 
 capability_slots:
 
@@ -207,7 +213,7 @@ capability_slots:
         evidence_status: provisional
         evidence_scope: long_context_reasoning
         confidence: low
-        source: "external long-context benchmarks; local smoke cases pending"
+        source: "external long-context benchmarks; agy models resolver verified 2026-09-01; local smoke cases pending"
         verified_at: null
         expires_at: null
       - provider: claude
@@ -243,7 +249,7 @@ capability_slots:
         evidence_status: provisional
         evidence_scope: long_context_reasoning
         confidence: low
-        source: "external long-context benchmarks; local smoke cases pending"
+        source: "external long-context benchmarks; agy models resolver verified 2026-09-01; local smoke cases pending"
         verified_at: null
         expires_at: null
       - provider: claude
@@ -288,7 +294,7 @@ capability_slots:
         evidence_status: provisional
         evidence_scope: long_context_reasoning
         confidence: low
-        source: "external long-context benchmarks; local smoke cases pending"
+        source: "external long-context benchmarks; agy models resolver verified 2026-09-01; local smoke cases pending"
         verified_at: null
         expires_at: null
       - provider: codex
