@@ -592,6 +592,45 @@ function toMillis(value) {
 }
 
 /**
+ * Parses a provider-native RELATIVE refresh duration such as "160h 46m",
+ * "3h", "45m" into milliseconds. Conservative: hours+minutes, hours only or
+ * minutes only, all non-negative integers; anything else -> null (the caller
+ * then keeps reset_at UNKNOWN). It never invents a duration.
+ *
+ * Antigravity `agy /usage` prints these on a consumed window
+ * ("... Refreshes in 160h 46m"); see references/RESOURCE_PROBES.md.
+ */
+export function parseRelativeDuration(text) {
+  if (!isNonEmptyString(text)) return null;
+  const cleaned = text.trim();
+  const full = /^(\d+)\s*h\s*(\d+)\s*m$/i.exec(cleaned);
+  if (full) {
+    const h = Number(full[1]);
+    const m = Number(full[2]);
+    if (m >= 60) return null;
+    return (h * 60 + m) * 60 * 1000;
+  }
+  const hoursOnly = /^(\d+)\s*h$/i.exec(cleaned);
+  if (hoursOnly) return Number(hoursOnly[1]) * 60 * 60 * 1000;
+  const minutesOnly = /^(\d+)\s*m$/i.exec(cleaned);
+  if (minutesOnly) return Number(minutesOnly[1]) * 60 * 1000;
+  return null;
+}
+
+/**
+ * Normalizes a relative refresh duration against the probe's checked_at into
+ * an absolute ISO reset_at. Provenance stays RELATIVE_PROVIDER_DURATION at the
+ * call site - this does not claim the provider emitted an absolute timestamp.
+ * Unparseable duration or checked_at -> null (reset_at UNKNOWN).
+ */
+export function relativeResetAt(checkedAt, durationText) {
+  const base = toMillis(checkedAt);
+  const deltaMs = parseRelativeDuration(durationText);
+  if (!Number.isFinite(base) || deltaMs === null) return null;
+  return new Date(base + deltaMs).toISOString();
+}
+
+/**
  * Every window on an entry, in a single shape, whatever schema it was written
  * in. A window whose role cannot be established is dropped rather than
  * guessed: an unclassified window is not evidence about either horizon.

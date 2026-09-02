@@ -300,6 +300,33 @@ remaining、reset = 100%、從 5h 窗推週窗（或反向）、從模糊散文�
 `remaining_ratio` + `reset_at` 已知，BUDGET 的 `remaining_ratio` 仍 `UNKNOWN`）；
 既有 routing policy 只消費已知欄位。
 
+#### Relative refresh durations
+
+有些 provider（實測 Antigravity `agy /usage`）在**已消耗的** window 上印的是**相對
+倒數**，例如 `Refreshes in 160h 46m`，而不是絕對時間。這是合法的 provider-native
+reset 證據，normalize 為：
+
+```text
+remaining_ratio    = 由百分比解析（"98.81%" → 0.9881）
+reset_in           = 解析後的 provider duration（"160h 46m"）
+reset_at           = checked_at + reset_in
+reset_at_source    = RELATIVE_PROVIDER_DURATION   （provenance；不得謊稱 provider 給了絕對時間戳）
+```
+
+解析保守：支援 `<h>h <m>m`；只有 hours 或只有 minutes 時，能安全解析才收；其餘
+（無法解析的措辭、負值、非數字）→ `reset_at` `UNKNOWN`，**絕不 invent**。
+
+一個 window 帶著可解析的相對 refresh duration 時，其 `reset_at` 一經導出即與任何其他
+`reset_at` 等價，因此該 window（BUDGET）**可以**參與 `conservation_pressure`、
+`budget_expiry_opportunity` 與 `reset_proximity`。
+
+沒有倒數的 window（例如 `100.00% / Quota available`）：`remaining_ratio = 1.0`、
+`availability = AVAILABLE`、`reset_at = UNKNOWN`——**不推斷 reset time**。它仍可用
+observed ratio 參與排序，但 reset-dependent 的機會訊號（`stranded_capacity_risk`、
+`reset_proximity`）對它維持 `UNKNOWN`。這只是**觀察到的行為**（全額可用的短窗**可能**
+省略倒數），**不**編成「usage 為 0% 時 Antigravity 一定隱藏 reset time」的硬規則；
+日後若探到短窗也有倒數，用同一套相對時間邏輯解析。
+
 ### Relevant providers only
 
 保留 lazy / event-driven 行為：**只 probe 與當前 routing decision 相關的

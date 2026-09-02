@@ -325,10 +325,18 @@ results:
     executable: "agy 1.1.24, at ~/AppData/Local/agy/bin"
     session: authenticated (Google AI Pro)
     method: "/usage via orca terminal (interactive)"
-    probe_result: PROBE_OK for ratios; reset_at UNKNOWN
+    probe_result: PROBE_OK
     quota_fields: >-
       two pools (antigravity.gemini, antigravity.non_gemini), each BURST (5h)
-      and BUDGET (weekly) as remaining %; NO reset timestamps in the panel
+      and BUDGET (weekly) as remaining %. reset timing IS emitted, as a
+      RELATIVE refresh duration on a consumed window
+      ("... Refreshes in 160h 46m") -> normalize
+      reset_at = checked_at + reset_in, reset_at_source =
+      RELATIVE_PROVIDER_DURATION. A full window with no countdown
+      ("100.00% / Quota available") -> remaining_ratio 1.0, reset_at UNKNOWN
+      (observed behaviour, not a hard rule). Corrected 2026-09-02 on
+      human-observed evidence; the earlier "NO reset timestamps" note was
+      wrong.
     blocker: >-
       `agy -p` headless denies-closed on read tools
       (PROBE_PERMISSION_BLOCKED); interactive path works

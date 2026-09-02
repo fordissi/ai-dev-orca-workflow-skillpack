@@ -7,7 +7,9 @@ import {
   budgetExpiryOpportunity,
   canonicalFingerprint,
   canonicalContinuationFacts,
+  parseRelativeDuration,
   refreshRequired,
+  relativeResetAt,
   resetExpired,
   resolveResourceAcquisition,
   classifyCommand,
@@ -1760,6 +1762,60 @@ test("an event-invalidated resource entry needs a refresh before autonomous sele
   assert.equal(refreshRequired(entry, NOW), true);
   assert.equal(resetExpired(entry, NOW), false);
   assert.equal(resolveConservationPressure(entry, { now: NOW }).conservation_pressure, "UNKNOWN");
+});
+
+test("a provider relative refresh duration normalizes to an absolute reset_at, or UNKNOWN", () => {
+  const MIN = 60 * 1000;
+  const HR = 60 * MIN;
+
+  // The observed Antigravity form: hours + minutes.
+  assert.equal(parseRelativeDuration("160h 46m"), 160 * HR + 46 * MIN);
+  assert.equal(parseRelativeDuration(" 3h  0m "), 3 * HR);
+  // Hours only / minutes only when clearly parseable.
+  assert.equal(parseRelativeDuration("3h"), 3 * HR);
+  assert.equal(parseRelativeDuration("45m"), 45 * MIN);
+
+  // Anything else -> null. Never invent a duration.
+  for (const bad of ["", "soon", "Quota available", "160h 70m", "-3h", "1d 2h", "h 46m", null, 12]) {
+    assert.equal(parseRelativeDuration(bad), null, `"${bad}" must not parse`);
+  }
+
+  // reset_at = checked_at + reset_in, with a real checked_at.
+  const checkedAt = "2026-09-01T12:00:00Z";
+  assert.equal(relativeResetAt(checkedAt, "160h 46m"), new Date(Date.parse(checkedAt) + 160 * HR + 46 * MIN).toISOString());
+  // Unparseable duration or checked_at -> null (reset_at stays UNKNOWN).
+  assert.equal(relativeResetAt(checkedAt, "Quota available"), null);
+  assert.equal(relativeResetAt(null, "3h"), null);
+});
+
+test("a relative-duration reset_at feeds the existing signals; a countdown-less full window does not", () => {
+  const checkedAt = "2026-09-01T12:00:00Z";
+  const now = "2026-09-01T12:02:00Z";
+
+  // "99% remaining · Refreshes in 160h 46m" -> a weekly BUDGET window with a
+  // derived reset_at drives conservation / proximity like any other.
+  const weeklyResetAt = relativeResetAt(checkedAt, "160h 46m");
+  const geminiBudget = pool({
+    checked_at: checkedAt,
+    source: "PROVIDER_NATIVE_PROBE",
+    weekly_window: { remaining_ratio: 0.9881, reset_at: weeklyResetAt },
+  });
+  const c = resolveConservationPressure(geminiBudget, { now });
+  assert.notEqual(c.budget_reset_proximity, "UNKNOWN"); // ~160h -> FAR
+  assert.equal(c.budget_reset_proximity, "FAR");
+  assert.equal(c.conservation_pressure, "LOW"); // 0.99 remaining, FAR
+  assert.equal(c.budget_expiry_opportunity, "LOW"); // lots left but not near reset
+
+  // "100.00% / Quota available" -> a 5h BURST window at full quota, no reset
+  // time. It contributes its ratio but every reset-dependent signal is UNKNOWN.
+  const fullBurst = pool({
+    checked_at: checkedAt,
+    source: "PROVIDER_NATIVE_PROBE",
+    short_window: { remaining_ratio: 1.0, reset_at: null },
+  });
+  const s = resolveStrandedCapacity(fullBurst, { now });
+  assert.equal(s.reset_proximity, "UNKNOWN");
+  assert.equal(s.stranded_capacity_risk, "UNKNOWN");
 });
 
 test("resource acquisition prefers structured, then a successful probe, then user facts, then UNKNOWN", () => {

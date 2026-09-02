@@ -96,17 +96,61 @@ orca terminal close  --terminal <handle> --tab --json                 # release 
   `~/AppData/Local/agy/bin/agy`. On PATH after adding that dir.
 - **Session:** authenticated (Google AI Pro) — no login prompt.
 - **Command:** `/usage` (interactive).
-- **Probe result 2026-09-02:** `PROBE_OK` for ratios; `reset_at` UNKNOWN.
+- **Probe result:** `PROBE_OK`. Ratios always parseable; reset timing is
+  emitted as a **relative refresh duration** on windows that are being
+  consumed.
 - **Quota fields observed:** two independently-limited pools, each with a
-  weekly and a 5-hour limit as a *remaining* percentage — **no reset
-  timestamps in the panel**:
-  - pool `GEMINI MODELS` (Gemini Flash, Gemini Pro) → maps to
-    `resource_state_key: antigravity.gemini`.
-  - pool `CLAUDE AND GPT MODELS` (Claude Opus, Claude Sonnet, GPT-OSS) → maps
-    to `resource_state_key: antigravity.non_gemini`.
-  - Normalize each as: `role: BURST` / `role: BUDGET`, `remaining_ratio`
-    parseable, `reset_at: null` (not observed → stays UNKNOWN, no value
-    invented).
+  weekly (BUDGET) and a 5-hour (BURST) limit shown as a *remaining*
+  percentage. Pool → `resource_state_key`:
+  - `GEMINI MODELS` (Gemini Flash, Gemini Pro) → `antigravity.gemini`
+  - `CLAUDE AND GPT MODELS` (Claude Opus, Claude Sonnet, GPT-OSS) →
+    `antigravity.non_gemini`
+- **Reset timing (corrected 2026-09-02 on human-observed evidence).** The
+  earlier note that Antigravity exposes no reset timing was wrong. A window
+  that has been consumed prints a relative countdown:
+
+  ```text
+  Weekly Limit Remaining
+  98.81%
+  99% remaining · Refreshes in 160h 46m
+  ```
+
+  Normalize:
+
+  - `remaining_ratio` — from the numeric percentage (`98.81%` → `0.9881`).
+  - `reset_in` — the parsed provider duration (`160h 46m`).
+  - `reset_at` — `checked_at + reset_in`.
+  - `reset_at_source` — `RELATIVE_PROVIDER_DURATION` (do **not** claim the
+    provider emitted an absolute timestamp).
+
+  A window with a visible refresh duration therefore **does** feed
+  `conservation_pressure`, `budget_expiry_opportunity` and `reset_proximity`
+  once `reset_at` is derived.
+
+- **A window with no countdown.** A 5-hour window at full quota prints:
+
+  ```text
+  Five Hour Limit Remaining
+  100.00%
+  Quota available
+  ```
+
+  Normalize: `remaining_ratio = 1.0`, `availability = AVAILABLE`,
+  `reset_at = null` (UNKNOWN). **Do not infer a reset time.** The window may
+  still participate on its observed ratio, but every reset-dependent signal
+  (`stranded_capacity_risk`, `reset_proximity`) stays `UNKNOWN` for it.
+
+  This is recorded as *observed behaviour only*: a fully available Five Hour
+  window may omit refresh timing. It is **not** encoded as a hard rule that
+  Antigravity hides reset time whenever usage is 0%. If a later probe sees a
+  countdown on the Five Hour window, parse it with the same relative-duration
+  logic.
+
+- **Relative-duration parsing — conservative.** Support `<h>h <m>m`; `<h>h`
+  alone and `<m>m` alone when clearly parseable. Anything else (unparseable
+  wording, negative, non-numeric) → `reset_at` UNKNOWN. Never invent a reset
+  time. Executable form: `parseRelativeDuration()` / `relativeResetAt()` in
+  `scripts/validate-policy-pack.mjs`.
 - **Blocker:** `agy -p` / print (headless) mode fail-closes on any tool that
   needs the `command` permission (*"a tool required the 'command' permission
   that headless mode cannot prompt for"*), so a headless probe cannot read
