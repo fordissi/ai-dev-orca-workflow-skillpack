@@ -4,6 +4,13 @@ Local `--help` verified: **2026-09-01**; reasoning / dispatch / attestation
 section re-verified **2026-09-02** against `codex-cli 0.151.0`,
 `Claude Code 2.1.258`, `agy 1.1.23`, `orca 1.4.194`.
 
+Provider-native **resource probe** invocations (Codex `/status`, Claude
+`/usage`, Antigravity `agy` `/usage`) — verified account/session state, quota
+fields observable, and blockers — live in
+[`RESOURCE_PROBES.md`](RESOURCE_PROBES.md); the acquisition precedence and
+source-trust rules are in
+[`../policies/RESOURCE_AWARE_ROUTING.md`](../policies/RESOURCE_AWARE_ROUTING.md).
+
 ## Version verification rule
 
 **已安裝的 `--help` 勝過本文件的任何範例。** 自動化之前先跑：

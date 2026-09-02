@@ -9,6 +9,7 @@ import {
   canonicalContinuationFacts,
   refreshRequired,
   resetExpired,
+  resolveResourceAcquisition,
   classifyCommand,
   classifyExecutionState,
   classifyPermissionRequest,
@@ -1759,6 +1760,77 @@ test("an event-invalidated resource entry needs a refresh before autonomous sele
   assert.equal(refreshRequired(entry, NOW), true);
   assert.equal(resetExpired(entry, NOW), false);
   assert.equal(resolveConservationPressure(entry, { now: NOW }).conservation_pressure, "UNKNOWN");
+});
+
+test("resource acquisition prefers structured, then a successful probe, then user facts, then UNKNOWN", () => {
+  const freshProbe = (state) => ({
+    state, source: "PROVIDER_NATIVE_PROBE", available: true, checked_at: NOW,
+    weekly_window: { remaining_ratio: 0.6, reset_at: at(120 * HOUR) },
+  });
+  const structured = { state: "GREEN", source: "ORCA_RUNTIME", available: true, checked_at: NOW };
+  const userFacts = { state: "YELLOW", source: "USER_STATEMENT", available: true, checked_at: NOW };
+
+  // Structured runtime outranks a successful probe.
+  const a = resolveResourceAcquisition({ structured, probe: { probe_status: "PROBE_OK", entry: freshProbe("RED") } }, { now: NOW });
+  assert.equal(a.acquisition_source, "ORCA_RUNTIME");
+  assert.equal(a.fallback_used, false);
+
+  // No structured data: a PROBE_OK probe is used, and it is fresh observational
+  // evidence at HIGH trust, so it can carry a confident state.
+  const b = resolveResourceAcquisition({ probe: { probe_status: "PROBE_OK", entry: freshProbe("GREEN") } }, { now: NOW });
+  assert.equal(b.acquisition_source, "PROVIDER_NATIVE_PROBE");
+  assert.equal(b.entry.state, "GREEN");
+  assert.equal(resolveConservationPressure(b.entry, { now: NOW }).state, "GREEN");
+
+  // Any non-OK probe outcome falls through without disabling anything.
+  for (const status of ["PROBE_AUTH_REQUIRED", "PROBE_CLI_MISSING", "PROBE_IDENTITY_UNCERTAIN", "PROBE_PARSE_FAILED"]) {
+    const c = resolveResourceAcquisition({ probe: { probe_status: status, entry: freshProbe("GREEN") }, user_statement: userFacts }, { now: NOW });
+    assert.equal(c.acquisition_source, "USER_STATEMENT", `${status} must not be used as a probe reading`);
+    assert.equal(c.probe_status, status);
+  }
+
+  // Nothing usable anywhere -> UNKNOWN, never a thrown error or a fabricated state.
+  const d = resolveResourceAcquisition({ probe: { probe_status: "PROBE_TIMEOUT" } }, { now: NOW });
+  assert.equal(d.acquisition_source, "UNKNOWN");
+  assert.equal(d.entry.state, "UNKNOWN");
+
+  // A reset-expired structured entry is skipped; a fresh probe replaces it.
+  const expired = { state: "RED", source: "ORCA_RUNTIME", available: true, checked_at: at(-2 * 60 * 1000), short_window: { remaining_ratio: 0.02, reset_at: at(-60 * 1000) } };
+  const e = resolveResourceAcquisition({ structured: expired, probe: { probe_status: "PROBE_OK", entry: freshProbe("GREEN") } }, { now: NOW });
+  assert.equal(e.acquisition_source, "PROVIDER_NATIVE_PROBE");
+
+  // A still-fresh prior probe reading is reused with its own provenance.
+  const f = resolveResourceAcquisition({ current: freshProbe("GREEN") }, { now: NOW });
+  assert.equal(f.acquisition_source, "PROVIDER_NATIVE_PROBE");
+  assert.equal(f.fallback_used, false);
+});
+
+test("the acquisition layer is owned in one place and never gates the registry", async () => {
+  const resource = await readFile("policies/RESOURCE_AWARE_ROUTING.md", "utf8");
+  const probes = await readFile("references/RESOURCE_PROBES.md", "utf8");
+
+  assert.match(resource, /## Resource acquisition/);
+  // The distinctive tokens and invariant phrases, loosely (markdown bold and
+  // line wrapping are not part of the contract).
+  for (const phrase of [
+    "PROVIDER_NATIVE_PROBE",
+    "PROBE_OK",
+    "PROBE_AUTH_REQUIRED",
+    "PROBE_IDENTITY_UNCERTAIN",
+    "Acquisition precedence",
+    "不自動登入",
+    "a supported provider-native read-only probe MUST be",
+    "does not restrict which provider-native resource adapters may be queried",
+    "disjointness 不套用到 resource probe",
+    "quota 為 `UNKNOWN` 就產出 `RESOURCE_BLOCKED`",
+    "disable registry model",
+  ]) {
+    assert.ok(resource.includes(phrase), `the resource policy must state: ${phrase}`);
+  }
+
+  // The verified invocation reference exists and covers the three probes.
+  for (const cmd of ["/status", "/usage", "agy"]) assert.ok(probes.includes(cmd));
+  assert.match(probes, /resource-interface qualification, not model-quality/i);
 });
 
 test("budget expiry opportunity is the offensive mirror of conservation", () => {

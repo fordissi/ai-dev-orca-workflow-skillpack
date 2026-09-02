@@ -695,6 +695,19 @@ company-platform:d13d-readonly-discovery:reviewer:ACTIVE
 **不得**在標題中放入 credential、PII、完整 prompt，或 provider session secret
 identifier。
 
+### Resource-probe terminals
+
+`RESOURCE_PROBE` terminal 是一種**唯讀觀察** scope 的短命 terminal，用來對 provider
+CLI 送 `/status` / `/usage` 取得 quota facts。它**不是** worker / reviewer /
+implementation task / continuation，走
+`RESOURCE_PROBE_START → READY → OBSERVED → COMPLETE → RELEASED`，觀察後即依上方
+cleanup 規則釋放。**不得**因為 probe 完成就關閉既有的 ACTIVE implementation /
+reviewer terminal；也**不得**把 `/status` / `/usage` 注入到 busy 的 ACTIVE worker
+（可能干擾其 TUI state 時改建 dedicated probe terminal）。probe 的取得順序、budget
+與 identity 規則由
+[`RESOURCE_AWARE_ROUTING.md`](RESOURCE_AWARE_ROUTING.md) 的 Resource acquisition
+章節定義，此處不重複。
+
 ### Automatic cleanup policy（保守預設）
 
 ```text

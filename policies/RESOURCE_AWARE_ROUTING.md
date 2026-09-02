@@ -170,6 +170,210 @@ continuation **不因為 quota reset 就換模型**；只有 `MAX_TURNS_REACHED`
 worker、stale continuation 被拒、retry 換 worker、reviewer dispatch、新 task 這類
 **新的 routing decision** 才套用本節的 refresh 規則。
 
+## Resource acquisition（provider-native probing）
+
+本節是 **resource acquisition 順序、provider-native probe 語意、`PROVIDER_NATIVE_PROBE`
+source trust，與「refresh → acquire → normalize → route」流程** 的 normative owner。
+已驗證的各 provider 實際命令記在
+[`../references/RESOURCE_PROBES.md`](../references/RESOURCE_PROBES.md)。
+
+### Root gap
+
+Refresh 規則知道**怎麼用** quota data，但沒規定**怎麼取得**。Orca runtime 與 worker
+inventory 目前不暴露 normalize 後的 quota 欄位，router 因此常常直接退化成
+`resource_state = UNKNOWN`——即使 provider 自己的唯讀 CLI（Codex `/status`、
+Claude `/usage`、Antigravity `/usage`）interactively 就看得到用量。
+
+**`Lack of quota fields in Orca inventory alone is not sufficient reason to
+return UNKNOWN; a supported provider-native read-only probe MUST be attempted
+first.`**
+
+### Acquisition precedence
+
+需要 refresh 的每一個 relevant `resource_state_key`，依序嘗試：
+
+```text
+1. ORCA / structured runtime resource source   → 有就 normalize 使用
+2. provider-native read-only resource probe     → 可用就 attempt
+3. fresh USER_STATEMENT                          → 有就 normalize 使用
+4. UNKNOWN
+```
+
+**不得**從「Orca inventory 沒有 quota 欄位」直接跳到 `UNKNOWN` 而不先考慮受支援的
+provider-native probe。
+
+**`Resource ranking happens after required resource acquisition attempts, not
+before them.`**
+
+### RESOURCE_PROBE_ADAPTER
+
+Provider probe 的通用抽象，至少產出：
+
+```yaml
+provider:
+resource_pool:                 # 對應 resource_state_key
+probe_method:                  # interactive_tui | ...
+probe_command_or_interaction:  # 例如 "/status" / "/usage"
+checked_at:
+source: PROVIDER_NATIVE_PROBE
+source_confidence:             # HIGH | MEDIUM | LOW（identity/parser caveat 時調降）
+probe_status:                  # 見下
+auth_status:
+parse_status:
+windows:                       # normalize 後，餵進既有 RESOURCE_STATE model
+  - window_role: BURST | BUDGET
+    remaining_ratio:           # 或 used_ratio；讀不到填 null
+    reset_at:                  # 讀不到填 null
+    window_name:
+raw_output_persisted: false
+```
+
+Adapter **餵進既有的 RESOURCE_STATE model**，不建立平行的 quota-routing 模型。
+
+### Provider-native probe methods
+
+| Provider | 唯讀命令 | 用途 |
+|---|---|---|
+| Codex | `/status` | 短窗使用率 / 長期 quota / reset（有暴露時） |
+| Claude | `/usage` | 5h 短窗 / 週長窗 / reset（有暴露時） |
+| Gemini / Antigravity | `/usage` | 同上；實際 executable / session path **由 runtime 探得，不猜** |
+
+Adapter 宣告：`PROBE_SUPPORTED` / `PROBE_UNSUPPORTED` / `PROBE_AUTH_REQUIRED` /
+`PROBE_UNAVAILABLE`。若 runtime 與已記錄的 command 不同，**不得**硬寫未驗證的命令列。
+
+### Interactive TUI 是允許的
+
+不要求 provider 提供 JSON quota API。若 provider 只透過 interactive TUI / slash
+command 暴露用量，operational router **可以**用 Orca terminal 控制查詢：discover 或
+建立 bounded probe terminal → 等 TUI ready → 送唯讀 `/status` 或 `/usage` → bounded
+read → 只解析 quota facts → normalize → 依 terminal lifecycle 釋放。TUI-only access
+**不等於**「resource information unavailable」。
+
+### Probe outcomes
+
+```text
+PROBE_OK  PROBE_AUTH_REQUIRED  PROBE_CLI_MISSING  PROBE_SESSION_UNAVAILABLE
+PROBE_PERMISSION_BLOCKED  PROBE_PARSE_FAILED  PROBE_DATA_UNAVAILABLE
+PROBE_TIMEOUT  PROBE_IDENTITY_UNCERTAIN
+```
+
+只有 `PROBE_OK`（且 entry fresh、通過 source trust invariant、identity 已驗證）才產出
+**可用的** `PROVIDER_NATIVE_PROBE` 讀數；其餘一律 fall through 到下一個 tier。
+
+這些是 **resource acquisition outcomes**。它們**不得**自動：disable registry model、
+標記 model unqualified、mutate human-authoritative registry config、計為
+implementation failure、或累加 `failed_repair_count`。
+
+### 不自動登入
+
+唯讀 probe 允許。**互動式認證 / account 變更不自動允許。** CLI 若要求 login 或
+re-auth：不輸入 credential、不自動開 OAuth 核准（除非既有 workflow policy 明確允許）、
+不改 account state。回 `PROBE_AUTH_REQUIRED` 並繼續 fallback。人可以稍後自行認證。
+
+### Source trust
+
+| Source | Trust | 說明 |
+|---|---|---|
+| `ORCA_RUNTIME` | HIGH | Orca runtime 提供的 normalize 後狀態 |
+| `PROVIDER_NATIVE_PROBE` | HIGH | provider 自己的 CLU 唯讀輸出，identity 已驗證、parser 成功、`checked_at` 已記 |
+| `USER_STATEMENT` | MEDIUM | 人工告知 |
+| `UNKNOWN` | NONE | 沒有可信來源 |
+
+`PROVIDER_NATIVE_PROBE` **不得**被標成 `ORCA_RUNTIME`——provenance 要明確。identity
+未證實時以 `PROBE_IDENTITY_UNCERTAIN` 處理（不產出可用讀數），或退而以
+`remaining_confidence` 調降；`remaining_confidence` 一律只能**調降**不能調升 source
+所隱含的信任度。
+
+### Account / pool identity
+
+Resource facts 只有屬於**實際用來 dispatch 的 account/pool** 才有用。Probe 應盡量
+capture 或驗證：provider、managed account identity / account selector、
+`resource_state_key`、subscription pool。同一 provider 有多個 managed account 時，
+**不得**把 Account A 的 quota 套到 Account B。無法證明 identity → `PROBE_IDENTITY_UNCERTAIN`，
+不作為 HIGH-confidence routing data，依 precedence fallback。
+
+### Parsing / normalization
+
+保守解析。**只 normalize 直接可見的欄位。** 永遠不推斷：只看到 reset time 就補
+remaining、reset = 100%、從 5h 窗推週窗（或反向）、從模糊散文推 `reset_at`、從進度條
+推精確百分比（除非 parser 明確可靠）。部分欄位可見時存 partial facts（例如 BURST 的
+`remaining_ratio` + `reset_at` 已知，BUDGET 的 `remaining_ratio` 仍 `UNKNOWN`）；
+既有 routing policy 只消費已知欄位。
+
+### Relevant providers only
+
+保留 lazy / event-driven 行為：**只 probe 與當前 routing decision 相關的
+provider/pool**。三個 Stage 2 候選的 snapshot 都要 refresh → probe 這三個；Codex
+state 仍 fresh → 不 probe Codex；某 provider 不在該 slot 候選內 → 不為了完整性而
+probe。Reviewer 選擇時：**先套 reviewer disjointness，再** probe 剩下的
+reviewer-eligible provider/pool。
+
+### Probe budget
+
+Probe 本身不得變成主要 orchestration 成本：short readiness timeout、bounded output
+read、bounded parse、**不無限重試**。每個 relevant provider 每次 routing decision
+**一次正常 probe**；只有 transient TUI readiness 失敗才 optional 一次 bounded retry。
+仍不可用 → `UNKNOWN`。
+
+### Terminal hygiene
+
+Dedicated resource probe terminal 走 lifecycle：
+`RESOURCE_PROBE_START → READY → OBSERVED → COMPLETE → RELEASED`。probe terminal
+**不是** worker / reviewer / implementation task / continuation，唯讀觀察 scope。
+不得因為 probe 完成就關閉既有的 ACTIVE implementation / reviewer terminal；也不得
+留下一堆 stale「Claude usage」「Codex status」terminal。**不得**把 `/usage` /
+`/status` 注入到 busy 的 ACTIVE implementation worker——可能干擾它的 task / TUI state
+時，改建 dedicated probe terminal。terminal 生命週期的 runtime 邊界見
+[`WORKFLOW_POLICY.md`](WORKFLOW_POLICY.md) 的 Session lifecycle and cleanup。
+
+### Provider independence
+
+**`The provider/model running the Operational Router does not restrict which provider-native resource adapters may be queried.`** Codex Luna router 仍可
+invoke / reuse Claude、Codex、Antigravity 的 CLI 做唯讀 resource inspection。
+Resource probing 是 infrastructure observation，不是 task reasoning——**reviewer
+provider/model-family disjointness 不套用到 resource probe。**
+
+### Security / privacy
+
+Probe 不得暴露 auth token、API key、cookie、account secret、完整 credential path、
+或無關的對話 / task 內容。只持久化 routing 所需的 normalize 後 resource facts。
+**不預設持久化完整 raw TUI transcript**（bounded transient inspection 允許）。輸出含
+account email / name 時，避免把非必要 PII 寫進 `RESOURCE_STATE`，優先用 opaque
+account/pool identifier。
+
+### Pre-dispatch flow
+
+```text
+NEW AUTONOMOUS ROUTING DECISION
+  → identify eligible candidate providers/pools
+  → check resource snapshot validity（TTL + reset generation + not invalidated）
+  → for each stale / reset-expired / invalidated relevant resource_state_key:
+        attempt acquisition precedence: 1 structured → 2 probe → 3 user statement → 4 UNKNOWN
+  → normalize RESOURCE_STATE
+  → THEN compute: state band / BUDGET conservation / BUDGET expiry opportunity / BURST stranded capacity
+  → candidate ranking
+  → dispatch
+```
+
+成功 probe 之後：set 新的 `checked_at`、更新 observed windows、清掉該 entry 的
+acquisition-time invalidation、重算 derived signals。**不得 fabricate 沒觀察到的
+window。**
+
+### USER_STATEMENT 互動
+
+「Claude just reset」這類 fresh user statement 仍是合法 fallback，會 invalidate 舊
+facts。**若此時 provider-native probe 可以跑，先 probe**；probe 成功就用觀察到的
+facts；probe 跑不了，user statement 可以確立 reset event，但精確 remaining ratio
+仍是 `UNKNOWN`，除非使用者也提供了數字。
+
+### UNKNOWN 仍是中性
+
+`UNKNOWN` quota **本身不是 hard routing blocker**。quota 為 `UNKNOWN` 的候選只要
+runtime available、registry enabled、stage eligible、permission compatible、
+reviewer disjointness 滿足、且沒有已知的 hard resource block，仍可被選中。
+**不得**僅因 quota 為 `UNKNOWN` 就產出 `RESOURCE_BLOCKED`。已知的 provider
+unavailable / 已知 exhausted 狀態仍照既有政策作用。
+
 ## Hierarchical quota windows
 
 **`quota opportunity cost is a routing signal, not capability authority`**

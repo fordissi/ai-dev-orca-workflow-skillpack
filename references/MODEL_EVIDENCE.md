@@ -291,3 +291,58 @@ correction 的理由見
 **待辦（給人類，非 routing gate）：** 補齊 Terra / Sol 的本機 smoke case（記入 E5）；
 解除 E6 的 `agy` headless blocker 後完成 Gemini 的 reviewer/discovery qualification。
 `next_revalidation_due: 2026-10-02`。
+
+## E9 — Resource-interface qualification（2026-09-02，不是 capability 證據）
+
+```yaml
+id: E9
+source: local
+accessed_at: "2026-09-02"
+scope: provider_native_resource_probe_interface
+what_it_measures: >-
+  Whether each provider's own read-only CLI can be driven (via Orca terminal
+  control) to expose current quota/usage facts. This is resource-INTERFACE
+  qualification for the acquisition layer, NOT model-quality benchmarking and
+  NOT a routing gate.
+results:
+  codex:
+    executable: "codex 0.151.0, on PATH"
+    session: authenticated (Plus)
+    method: "/status via orca terminal"
+    probe_result: PROBE_OK
+    quota_fields: "BURST (5h) % + reset; BUDGET (weekly) % + reset"
+    blocker: none
+  claude:
+    executable: "Claude Code 2.1.258, on PATH"
+    session: authenticated (Pro)
+    method: "/usage via orca terminal"
+    probe_result: PROBE_OK
+    quota_fields: "BURST (session/5h) % + reset; BUDGET (week) % + reset"
+    blocker: >-
+      panel states the numbers are approximate / local-machine-only ->
+      record remaining_confidence: MEDIUM, not HIGH
+  antigravity:
+    executable: "agy 1.1.24, at ~/AppData/Local/agy/bin"
+    session: authenticated (Google AI Pro)
+    method: "/usage via orca terminal (interactive)"
+    probe_result: PROBE_OK for ratios; reset_at UNKNOWN
+    quota_fields: >-
+      two pools (antigravity.gemini, antigravity.non_gemini), each BURST (5h)
+      and BUDGET (weekly) as remaining %; NO reset timestamps in the panel
+    blocker: >-
+      `agy -p` headless denies-closed on read tools
+      (PROBE_PERMISSION_BLOCKED); interactive path works
+  gemini_standalone:
+    executable: "gemini 0.58.0, on PATH"
+    session: NOT usable - deprecated client, sign-in fails
+    probe_result: PROBE_SESSION_UNAVAILABLE
+    quota_fields: none
+    blocker: "client no longer supported for individuals; use agy instead"
+methodology_limitation: >-
+  Interface qualification only. It says nothing about model capability and is
+  not an evidence_status input. Full verified invocation notes are in
+  references/RESOURCE_PROBES.md.
+evidence_status: provisional
+expires_at: "2026-12-01"
+supports_tier_claim_for: []
+```

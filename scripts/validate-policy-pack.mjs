@@ -21,7 +21,25 @@ const RESOURCE_STATES = ["GREEN", "YELLOW", "RED", "UNKNOWN"];
 
 // A snapshot's authority is inherited from its source; the snapshot itself is
 // only an overlay/cache. Trust levels live in RESOURCE_AWARE_ROUTING.md.
-const RESOURCE_SOURCES = ["ORCA_RUNTIME", "USER_STATEMENT", "UNKNOWN"];
+// PROVIDER_NATIVE_PROBE is fresh observational evidence read directly from a
+// provider's own read-only CLI (/status, /usage) when Orca exposes no
+// structured quota fields.
+const RESOURCE_SOURCES = ["ORCA_RUNTIME", "PROVIDER_NATIVE_PROBE", "USER_STATEMENT", "UNKNOWN"];
+
+// Outcomes of a single provider-native resource probe. Resource-acquisition
+// outcomes only: they never disable a model, mark it unqualified, mutate the
+// registry, or count as an implementation failure.
+const PROBE_OUTCOMES = [
+  "PROBE_OK",
+  "PROBE_AUTH_REQUIRED",
+  "PROBE_CLI_MISSING",
+  "PROBE_SESSION_UNAVAILABLE",
+  "PROBE_PERMISSION_BLOCKED",
+  "PROBE_PARSE_FAILED",
+  "PROBE_DATA_UNAVAILABLE",
+  "PROBE_TIMEOUT",
+  "PROBE_IDENTITY_UNCERTAIN",
+];
 const CANDIDATE_STATUSES = ["stable", "experimental"];
 
 // Capability stage: a backward-compatible band ABOVE capability_tier. Ordered,
@@ -520,7 +538,16 @@ const CONSERVATION_VALUES = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "NONE", "UNKNO
 const CONFIDENCE_VALUES = ["HIGH", "MEDIUM", "LOW", "UNKNOWN"];
 
 // A reading can never be more confident than the source it came from.
-const SOURCE_TRUST = { ORCA_RUNTIME: "HIGH", USER_STATEMENT: "MEDIUM", UNKNOWN: "UNKNOWN" };
+const SOURCE_TRUST = {
+  ORCA_RUNTIME: "HIGH",
+  // Directly observed from the provider's own CLI with a verified account /
+  // pool identity and a successful parse. Same trust ceiling as ORCA_RUNTIME;
+  // an unverified identity lowers it via remaining_confidence
+  // (PROBE_IDENTITY_UNCERTAIN never yields a usable entry).
+  PROVIDER_NATIVE_PROBE: "HIGH",
+  USER_STATEMENT: "MEDIUM",
+  UNKNOWN: "UNKNOWN",
+};
 
 // Legacy v0.3 snapshots named their windows instead of typing them. The names
 // keep working and mean what they always meant; an explicit `role` wins, so a
@@ -728,6 +755,77 @@ export function resetExpired(entry, now) {
 export function refreshRequired(entry, now) {
   if (!isPlainObject(entry)) return false;
   return entry.invalidated === true || resetExpired(entry, now);
+}
+
+/**
+ * Whether a resource entry is a fresh, trustworthy reading usable right now:
+ * a declared valid source, no trust-invariant violation, not reset-expired or
+ * event-invalidated, and a checked_at inside the freshness TTL.
+ */
+function entryUsableNow(entry, now) {
+  if (!isPlainObject(entry)) return false;
+  if (resourceEntryTrust(entry) !== null) return false;
+  if (refreshRequired(entry, now)) return false;
+  const evaluatedAt = toMillis(now);
+  const checkedAt = toMillis(entry.checked_at);
+  return Number.isFinite(checkedAt) && Number.isFinite(evaluatedAt) && evaluatedAt - checkedAt <= SNAPSHOT_FRESH_MS;
+}
+
+/**
+ * Resource-acquisition precedence for one resource_state_key whose snapshot
+ * needs refreshing. RESOURCE_AWARE_ROUTING.md's "Resource acquisition" section
+ * is the owner; this makes the precedence executable.
+ *
+ *   1. structured trusted runtime data (ORCA_RUNTIME)
+ *   2. a successful provider-native read-only probe (PROVIDER_NATIVE_PROBE)
+ *   3. fresh user-provided facts (USER_STATEMENT)
+ *   4. UNKNOWN
+ *
+ * A provider-native probe is usable only with probe_status PROBE_OK and a
+ * fresh, trustworthy entry; any other probe outcome (auth required, CLI
+ * missing, parse failed, identity uncertain, ...) falls through without
+ * disabling anything. UNKNOWN is neutral, never a block.
+ */
+export function resolveResourceAcquisition(tiers, options = {}) {
+  const { now = Date.now() } = options;
+  const t = isPlainObject(tiers) ? tiers : {};
+  const probe = isPlainObject(t.probe) ? t.probe : null;
+  const probeStatus = probe !== null && PROBE_OUTCOMES.includes(probe.probe_status) ? probe.probe_status : null;
+
+  // Tier 0: the current snapshot is still fresh and valid (any trusted source,
+  // including a prior PROVIDER_NATIVE_PROBE) - reuse it, no acquisition needed.
+  if (entryUsableNow(t.current, now)) {
+    return { acquisition_source: t.current.source, probe_status: probeStatus, fallback_used: false, entry: t.current };
+  }
+
+  // Tier 1: fresh structured runtime data (ORCA_RUNTIME).
+  if (entryUsableNow(t.structured, now)) {
+    return { acquisition_source: "ORCA_RUNTIME", probe_status: probeStatus, fallback_used: false, entry: t.structured };
+  }
+
+  // Tier 2: a successful provider-native probe. Only PROBE_OK yields a usable
+  // reading; every other outcome falls through.
+  if (probe !== null && probe.probe_status === "PROBE_OK" && entryUsableNow(probe.entry, now)) {
+    return {
+      acquisition_source: "PROVIDER_NATIVE_PROBE",
+      probe_status: "PROBE_OK",
+      fallback_used: isPlainObject(t.structured),
+      entry: probe.entry,
+    };
+  }
+
+  // Tier 3: fresh user-provided facts.
+  if (entryUsableNow(t.user_statement, now)) {
+    return { acquisition_source: "USER_STATEMENT", probe_status: probeStatus, fallback_used: true, entry: t.user_statement };
+  }
+
+  // Tier 4: UNKNOWN - neutral, never a block.
+  return {
+    acquisition_source: "UNKNOWN",
+    probe_status: probeStatus,
+    fallback_used: true,
+    entry: { state: "UNKNOWN", source: "UNKNOWN", checked_at: null, available: null },
+  };
 }
 
 function readableEntry(entry, now) {
@@ -1333,7 +1431,9 @@ export function scanText(text, options = {}) {
  * the case, not the policy.
  * ------------------------------------------------------------------------ */
 
-const CASE_KINDS = ["selection", "multi_stage", "stage_admission", "reasoning_dispatch"];
+const CASE_KINDS = ["selection", "multi_stage", "stage_admission", "reasoning_dispatch", "resource_acquisition"];
+
+const ACQUISITION_SOURCES = ["ORCA_RUNTIME", "PROVIDER_NATIVE_PROBE", "USER_STATEMENT", "UNKNOWN"];
 
 const STAGE_ADMISSION_RESULTS = ["STAGE_1_DEFAULT", "STAGE_2_ADVANCED", "STAGE_3_FLAGSHIP"];
 const DISPATCH_RESULTS = ["PASS", "INVALID_DISPATCH", "DISPATCH_CONTRACT_MISMATCH", "CONFIG_INVALID"];
@@ -1554,6 +1654,29 @@ export function validateRoutingCases(document, registry) {
         findings.push(`${named}: checkReasoningDispatch produced unknown result ${JSON.stringify(outcome.result)}`);
       } else if (outcome.result !== testCase.expect.result) {
         findings.push(`${named}: expected dispatch result ${testCase.expect.result}, got ${outcome.result}`);
+      }
+      continue;
+    }
+
+    if (testCase.kind === "resource_acquisition") {
+      const now = "now" in testCase ? testCase.now : Date.now();
+      const acq = resolveResourceAcquisition(testCase.tiers, { now });
+      if (!ACQUISITION_SOURCES.includes(acq.acquisition_source)) {
+        findings.push(`${named}: acquisition produced unknown source ${JSON.stringify(acq.acquisition_source)}`);
+      } else if ("acquisition_source" in testCase.expect && acq.acquisition_source !== testCase.expect.acquisition_source) {
+        findings.push(`${named}: expected acquisition_source ${testCase.expect.acquisition_source}, got ${acq.acquisition_source}`);
+      }
+      if ("final_state" in testCase.expect) {
+        const state = acq.entry?.state ?? "UNKNOWN";
+        if (state !== testCase.expect.final_state) {
+          findings.push(`${named}: expected final_state ${testCase.expect.final_state}, got ${state}`);
+        }
+      }
+      if ("probe_status" in testCase.expect && (acq.probe_status ?? null) !== testCase.expect.probe_status) {
+        findings.push(`${named}: expected probe_status ${JSON.stringify(testCase.expect.probe_status)}, got ${JSON.stringify(acq.probe_status ?? null)}`);
+      }
+      if ("fallback_used" in testCase.expect && acq.fallback_used !== testCase.expect.fallback_used) {
+        findings.push(`${named}: expected fallback_used ${testCase.expect.fallback_used}, got ${acq.fallback_used}`);
       }
       continue;
     }

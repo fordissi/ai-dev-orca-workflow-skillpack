@@ -13,8 +13,11 @@ License: MIT
 
 ## 非目標
 
-- 不是自動 router 應用程式。這裡沒有讀帳號、沒有呼叫 provider API、沒有自動派工。
-- 不保證任何 provider 在 Windows 能可靠回報 quota。
+- 不是自動 router 應用程式。這裡沒有呼叫 provider API、沒有自動派工。
+- 不保證任何 provider 在 Windows 能可靠回報 quota。`RESOURCE_AWARE_ROUTING.md`
+  的 provider-native probe 層會在 refresh 需要時，用 provider 自己的唯讀 CLI
+  （Codex `/status`、Claude `/usage`、Antigravity `/usage`）取得用量再退化到
+  `UNKNOWN`——唯讀觀察，不登入、不改帳號狀態。
 - 不會因為某模型便宜或額度多，就把高風險任務降級給能力不足的模型。
 - 不預設同一核心實作可以平行進行。
 
@@ -256,8 +259,9 @@ public repository commit policy。
 | `policies/CONCURRENCY_POLICY.md` | concurrency mode 與啟用條件 |
 | `policies/MODEL_ROUTING_POLICY.md` | 分類、slot、candidate 演算法、escalation |
 | `policies/MODEL_REGISTRY.yaml` | ordered candidates 與能力標籤 |
-| `policies/RESOURCE_AWARE_ROUTING.md` | resource state、freshness、候選重排 |
+| `policies/RESOURCE_AWARE_ROUTING.md` | resource state、freshness、reset-aware refresh、provider-native probe 取得、候選重排 |
 | `references/OFFICIAL_COMMANDS.md` | 已驗證的 CLI 命令 |
+| `references/RESOURCE_PROBES.md` | 已驗證的 provider-native `/status` / `/usage` probe 方式與 blocker |
 | `references/SOURCE_NOTES.md` | 查核方式與日期 |
 | `references/MODEL_EVIDENCE.md` | 外部證據及其限制 |
 | `templates/` | contract、strategic return、handoff、session、benchmark、decision note |

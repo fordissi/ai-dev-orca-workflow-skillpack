@@ -2369,3 +2369,248 @@ cases:
       model: gpt-5.6-terra
       budget_expiry_opportunity: LOW
       expiry_promotion: false
+
+  # =================================================================== #
+  # PROVIDER-NATIVE RESOURCE PROBE LAYER (0.6.3)
+  #
+  # kind: resource_acquisition -> resolveResourceAcquisition(tiers, {now});
+  #   precedence: current-still-valid -> ORCA_RUNTIME -> PROVIDER_NATIVE_PROBE
+  #   (PROBE_OK only) -> fresh USER_STATEMENT -> UNKNOWN. UNKNOWN is neutral.
+  #   Probe failure never disables a model or mutates the registry.
+  # =================================================================== #
+
+  - name: orca_structured_absent_claude_probe_succeeds
+    kind: resource_acquisition
+    why: >-
+      Orca exposes no structured quota fields. A Claude /usage probe succeeds
+      with a fresh reading - the state comes from PROVIDER_NATIVE_PROBE, not
+      UNKNOWN. Lack of Orca quota fields alone is not a reason to give up.
+    tiers:
+      structured: null
+      probe:
+        probe_status: PROBE_OK
+        entry:
+          state: GREEN
+          source: PROVIDER_NATIVE_PROBE
+          available: true
+          checked_at: "2026-09-01T12:00:00Z"
+          weekly_window: { remaining_ratio: 0.60, reset_at: "2026-09-06T00:00:00Z" }
+      user_statement: null
+    now: "2026-09-01T12:01:00Z"
+    expect:
+      acquisition_source: PROVIDER_NATIVE_PROBE
+      final_state: GREEN
+      probe_status: PROBE_OK
+      fallback_used: false
+
+  - name: probe_auth_required_falls_through_to_user_statement
+    kind: resource_acquisition
+    why: >-
+      The provider CLI exists but needs login. The probe returns
+      PROBE_AUTH_REQUIRED, no automatic login is attempted, and a fresh user
+      statement is used as the next tier.
+    tiers:
+      structured: null
+      probe: { probe_status: PROBE_AUTH_REQUIRED }
+      user_statement:
+        state: YELLOW
+        source: USER_STATEMENT
+        available: true
+        checked_at: "2026-09-01T12:00:00Z"
+    now: "2026-09-01T12:01:00Z"
+    expect:
+      acquisition_source: USER_STATEMENT
+      final_state: YELLOW
+      probe_status: PROBE_AUTH_REQUIRED
+      fallback_used: true
+
+  - name: probe_cli_missing_and_no_other_source_is_unknown
+    kind: resource_acquisition
+    why: >-
+      The provider CLI is not installed. PROBE_CLI_MISSING, no structured data,
+      no user statement -> UNKNOWN. UNKNOWN is neutral, not a block.
+    tiers:
+      structured: null
+      probe: { probe_status: PROBE_CLI_MISSING }
+      user_statement: null
+    now: "2026-09-01T12:01:00Z"
+    expect:
+      acquisition_source: UNKNOWN
+      final_state: UNKNOWN
+      probe_status: PROBE_CLI_MISSING
+
+  - name: reset_expired_structured_replaced_by_a_successful_probe
+    kind: resource_acquisition
+    why: >-
+      The structured snapshot is RED and its 5h window reset_at has passed.
+      A fresh /status probe replaces the expired generation with GREEN.
+    tiers:
+      structured:
+        state: RED
+        source: ORCA_RUNTIME
+        available: true
+        checked_at: "2026-09-01T13:58:00Z"
+        short_window: { remaining_ratio: 0.02, reset_at: "2026-09-01T14:00:00Z" }
+      probe:
+        probe_status: PROBE_OK
+        entry:
+          state: GREEN
+          source: PROVIDER_NATIVE_PROBE
+          available: true
+          checked_at: "2026-09-01T14:01:00Z"
+          short_window: { remaining_ratio: 0.95, reset_at: "2026-09-01T19:00:00Z" }
+      user_statement: null
+    now: "2026-09-01T14:01:30Z"
+    expect:
+      acquisition_source: PROVIDER_NATIVE_PROBE
+      final_state: GREEN
+      probe_status: PROBE_OK
+      fallback_used: true
+
+  - name: reset_expired_structured_probe_fails_user_statement_only
+    kind: resource_acquisition
+    why: >-
+      Structured snapshot reset-expired; the probe times out; the user said
+      "Claude just reset" but gave no number. The user statement establishes
+      the reset event, so acquisition_source is USER_STATEMENT, but the exact
+      state stays UNKNOWN - no reset-replenishment percentage is invented.
+    tiers:
+      structured:
+        state: RED
+        source: ORCA_RUNTIME
+        available: true
+        checked_at: "2026-09-01T13:58:00Z"
+        short_window: { remaining_ratio: 0.02, reset_at: "2026-09-01T14:00:00Z" }
+      probe: { probe_status: PROBE_TIMEOUT }
+      user_statement:
+        state: UNKNOWN
+        source: USER_STATEMENT
+        available: true
+        checked_at: "2026-09-01T14:01:00Z"
+    now: "2026-09-01T14:01:30Z"
+    expect:
+      acquisition_source: USER_STATEMENT
+      final_state: UNKNOWN
+      probe_status: PROBE_TIMEOUT
+
+  - name: all_acquisition_methods_unavailable_is_unknown
+    kind: resource_acquisition
+    why: Nothing usable at any tier -> UNKNOWN, fallback_used true.
+    tiers:
+      structured: null
+      probe: { probe_status: PROBE_DATA_UNAVAILABLE }
+      user_statement: null
+    now: "2026-09-01T12:01:00Z"
+    expect:
+      acquisition_source: UNKNOWN
+      final_state: UNKNOWN
+      probe_status: PROBE_DATA_UNAVAILABLE
+      fallback_used: true
+
+  - name: probe_identity_uncertain_is_not_high_confidence_routing_data
+    kind: resource_acquisition
+    why: >-
+      The probe read something, but the account/pool identity could not be
+      proven. PROBE_IDENTITY_UNCERTAIN is not PROBE_OK, so the reading is not
+      used as routing state and acquisition falls through.
+    tiers:
+      structured: null
+      probe:
+        probe_status: PROBE_IDENTITY_UNCERTAIN
+        entry:
+          state: GREEN
+          source: PROVIDER_NATIVE_PROBE
+          available: true
+          checked_at: "2026-09-01T12:00:00Z"
+      user_statement: null
+    now: "2026-09-01T12:01:00Z"
+    expect:
+      acquisition_source: UNKNOWN
+      probe_status: PROBE_IDENTITY_UNCERTAIN
+
+  - name: a_fresh_prior_probe_reading_is_reused_without_reprobing
+    kind: resource_acquisition
+    why: >-
+      The current snapshot came from an earlier PROVIDER_NATIVE_PROBE and is
+      still inside the TTL with its reset generation valid. It is reused as-is;
+      no new probe is run.
+    tiers:
+      current:
+        state: GREEN
+        source: PROVIDER_NATIVE_PROBE
+        available: true
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.55, reset_at: "2026-09-06T00:00:00Z" }
+      structured: null
+      probe: null
+      user_statement: null
+    now: "2026-09-01T12:02:00Z"
+    expect:
+      acquisition_source: PROVIDER_NATIVE_PROBE
+      final_state: GREEN
+      fallback_used: false
+
+  - name: structured_runtime_outranks_a_successful_probe
+    kind: resource_acquisition
+    why: >-
+      When fresh structured runtime data IS available it is tier 1 and is used
+      even though a probe also succeeded - probing is the fallback, not the
+      default.
+    tiers:
+      structured:
+        state: GREEN
+        source: ORCA_RUNTIME
+        available: true
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.70, reset_at: "2026-09-06T00:00:00Z" }
+      probe:
+        probe_status: PROBE_OK
+        entry:
+          state: YELLOW
+          source: PROVIDER_NATIVE_PROBE
+          available: true
+          checked_at: "2026-09-01T12:00:00Z"
+      user_statement: null
+    now: "2026-09-01T12:01:00Z"
+    expect:
+      acquisition_source: ORCA_RUNTIME
+      final_state: GREEN
+      probe_status: PROBE_OK
+      fallback_used: false
+
+  - name: unknown_quota_alone_does_not_block_a_worker_selection
+    kind: selection
+    why: >-
+      Every relevant provider degraded to UNKNOWN after acquisition. UNKNOWN is
+      neutral: a runtime-available, enabled, stage-eligible candidate is still
+      selected in registry order - never RESOURCE_BLOCKED just for UNKNOWN.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex: { state: UNKNOWN, available: true, source: UNKNOWN }
+      claude: { state: UNKNOWN, available: true, source: UNKNOWN }
+    options: { allowExperimental: false, taskRisk: medium }
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-terra
+
+  - name: unknown_quota_reviewer_still_dispatches
+    kind: selection
+    why: >-
+      Reviewer selection with UNKNOWN quota after disjointness is applied. The
+      disjoint reviewer is still dispatched; UNKNOWN quota is not a blocker.
+    slot: INDEPENDENT_REVIEWER
+    resource_states:
+      claude: { state: UNKNOWN, available: true, source: UNKNOWN }
+      codex: { state: UNKNOWN, available: true, source: UNKNOWN }
+      antigravity: { pools: { gemini: { state: UNKNOWN, available: true, source: UNKNOWN } } }
+    options:
+      allowExperimental: false
+      taskRisk: high
+      excludeProvider: codex
+      excludeModelFamily: gpt-5.6
+    expect:
+      status: SELECTED
+      provider: antigravity
+      model: AUTO_GEMINI
+      disjoint_from: { provider: codex, model_family: gpt-5.6 }

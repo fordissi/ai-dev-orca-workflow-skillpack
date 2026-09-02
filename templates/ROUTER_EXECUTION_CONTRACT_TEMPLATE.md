@@ -183,6 +183,24 @@ review_disjointness_verified: # unresolved — provider 與 model family 都必�
 resource_checked_at:          # unresolved — 每個 pool 各自的時間，或 UNKNOWN
 resource_overlay_applied:     # unresolved — true | false
 
+# Resource acquisition evidence（每個需要 refresh 的 relevant resource_state_key
+# 一筆）。語意見 policies/RESOURCE_AWARE_ROUTING.md 的 Resource acquisition。
+# compact 即可；不得 inline 原始 /usage / /status transcript（除非明確要求 debug）。
+resource_acquisition:         # unresolved — 清單，或 none（無 key 需要 refresh 時）
+  - provider:
+    account_or_pool:           # opaque identifier，不寫 email / secret
+    refresh_required:          # true | false
+    acquisition_source:        # ORCA_RUNTIME | PROVIDER_NATIVE_PROBE | USER_STATEMENT | UNKNOWN
+    probe_method:              # interactive_tui | none
+    probe_status:              # PROBE_OK | PROBE_AUTH_REQUIRED | PROBE_CLI_MISSING
+                               # | PROBE_SESSION_UNAVAILABLE | PROBE_PERMISSION_BLOCKED
+                               # | PROBE_PARSE_FAILED | PROBE_DATA_UNAVAILABLE
+                               # | PROBE_TIMEOUT | PROBE_IDENTITY_UNCERTAIN | none
+    checked_at:
+    windows_observed:          # 例：[BURST, BUDGET]，或 partial
+    fallback_used:             # true | false
+    final_resource_state:      # GREEN | YELLOW | RED | UNKNOWN
+
 # 三個資源訊號。只記標籤，不記數值：remaining_ratio、reset_at 與任何
 # 原始 quota 讀數都不得寫進 artifact。語意見
 # policies/RESOURCE_AWARE_ROUTING.md 的 Hierarchical quota windows。
