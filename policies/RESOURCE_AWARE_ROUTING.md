@@ -1,6 +1,6 @@
 # Resource-Aware Routing Policy
 
-Version: `0.4`
+Version: `0.5`
 Status: normative
 
 這份文件是 **resource state、freshness、quota window role（BURST / BUDGET）、conservation pressure、reset proximity / stranded capacity 與候選重排** 的 normative owner。
@@ -101,9 +101,74 @@ Candidate 透過 registry 中的 `resource_state_key` 指向唯一一筆狀態�
 
 Freshness 依**每一筆 provider 或 pool 自己的 `checked_at`** 評估，絕不使用共用的全域 timestamp。
 
-- 未滿 5 分鐘：可重用。
-- 超過 5 分鐘：視為 stale。
-- Critical routing：必須要求刷新，或明確記錄仍為 `UNKNOWN`。刷新失敗時記 `UNKNOWN`，不沿用過期數值。
+一筆 snapshot 可重用的條件是**兩者同時成立**：
+
+```text
+freshness = time freshness  AND  window-generation validity
+```
+
+- **Time freshness** — `checked_at` 距 `now` 未滿 **5 分鐘**。超過即 stale。
+- **Window-generation validity** — 該 entry 的**每一個** relevant quota window 的 `reset_at` 都仍在 `now` 之後。
+
+### Reset-boundary invalidation（hard invariant）
+
+**`A quota window becomes immediately stale when its reset_at is reached or passed, regardless of checked_at age.`**
+
+例：`checked_at = 13:58`、`reset_at = 14:00`、`now = 14:01`。snapshot 只有 3 分鐘舊，
+但那個 window 描述的是**上一個 quota generation**——`RESET_EXPIRED`，MUST NOT reuse。
+它**不是**一般的 5 分鐘 freshness reuse，`checked_at < 5m` **不得**蓋過
+`reset_at <= now`。
+
+任一 relevant window `RESET_EXPIRED` 時，整筆 entry 需要 refresh：在 refresh 完成前，
+該 entry 的 `state` 視為 `UNKNOWN`，且 `conservation_pressure` /
+`budget_expiry_opportunity` / `stranded_capacity_risk` 皆為 `UNKNOWN`。
+
+### Refresh-required triggers
+
+下一次**新的 autonomous candidate selection 之前**，operational router 必須先確認每一個
+relevant `resource_state_key` 是否仍有效；任一成立即 **refresh required**：
+
+- `checked_at` 超過 freshness TTL；
+- 任一 quota window `reset_at <= now`（reset-boundary）；
+- provider 回報 rate limit / quota exhausted；
+- dispatch 因 quota / rate limit 失敗；
+- runtime 回報 resource unavailable；
+- 使用者提供了更新的 quota facts。
+
+這些 trigger **不等於** permanent provider failure——它們只表示「下一個 autonomous
+routing decision 前需要 refresh」。refresh 完成後才計算 resource state band、
+conservation、expiry opportunity、stranded capacity 與 candidate ranking。
+
+**`Autonomous model selection must not use a reset-expired quota window.`**
+
+### Lazy + event-driven，不做背景輪詢
+
+**不新增常駐 daemon，不要求每 5 分鐘背景輪詢所有 provider。** 模型是
+**lazy + event-driven**：active worker 照常跑；只有在下一個 routing decision 之前
+才確認 resource state 是否仍有效；stale / reset-expired 才 refresh。這讓 skillpack
+維持泛用、低成本、無背景依賴。
+
+### Refresh 失敗 → UNKNOWN
+
+需要 refresh 但沒有可信 quota source 時，**不得沿用 reset-expired 數值**。該 entry
+的 resource state 變為 `UNKNOWN`，之後套用既有政策——`UNKNOWN` 為中性。
+
+**不猜測 remaining quota、不推算 reset 後的補充百分比、不假設 reset 就等於 100%**，
+除非有實際可信 source 這樣回報。`USER_STATEMENT` 說「Claude 剛 reset」可以
+**invalidate** 舊 snapshot，但除非同時提供新的 remaining 數字，新的精確百分比仍是
+`UNKNOWN`；runtime 能讀到新用量時才從 runtime refresh。
+
+### 與 active worker、continuation 的關係
+
+Quota reset **不得**自動中斷已啟動的健康 worker，也不得把任務 restart 到剛 reset 的
+provider 上。Quota re-evaluation 只影響**下一個** dispatch、下一個 independent
+reviewer 選擇、以及**需要新的 model-selection 決策的** continuation。語意見
+[`WORKFLOW_POLICY.md`](WORKFLOW_POLICY.md) 的 Execution lifecycle semantics。
+
+**Continuation freshness 與 quota freshness 是兩個獨立檢查**：同一個有效 worker 的
+continuation **不因為 quota reset 就換模型**；只有 `MAX_TURNS_REACHED` 後需要新
+worker、stale continuation 被拒、retry 換 worker、reviewer dispatch、新 task 這類
+**新的 routing decision** 才套用本節的 refresh 規則。
 
 ## Hierarchical quota windows
 

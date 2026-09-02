@@ -188,6 +188,11 @@ resource_overlay_applied:     # unresolved — true | false
 # policies/RESOURCE_AWARE_ROUTING.md 的 Hierarchical quota windows。
 # 順序固定：conservation（防守）→ budget expiry（進攻）→ burst utilization。
 resource_signals:
+  refresh_required:           # unresolved — true 表示某 resource_state_key 在本次
+                              # selection 前需要 refresh（checked_at 超過 TTL、任一
+                              # window reset_at <= now、或 event-driven invalidation）。
+                              # 未 refresh 前該 entry 視為 UNKNOWN。語意見
+                              # policies/RESOURCE_AWARE_ROUTING.md 的 Freshness。
   conservation:               # 長期 BUDGET window：稀缺（防守）
     conservation_pressure:    # unresolved — NONE | LOW | MEDIUM | HIGH | CRITICAL | UNKNOWN
     budget_reset_proximity:   # unresolved — NEAR | MEDIUM | FAR | UNKNOWN

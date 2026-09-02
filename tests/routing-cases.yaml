@@ -2207,3 +2207,165 @@ cases:
       model: gpt-5.6-terra
       conservation_pressure: LOW
       expiry_promotion: false
+
+  # =================================================================== #
+  # RESET-AWARE RESOURCE REFRESH (0.6.2)
+  #
+  # A quota snapshot is reusable only while it is within the freshness TTL AND
+  # every relevant window still belongs to the current reset generation.
+  # Crossing reset_at invalidates that window even if checked_at is recent;
+  # `invalidated: true` is an event-driven trigger (rate limit / quota
+  # exhausted / dispatch failure / newer user fact). Until refreshed, the
+  # entry's state band and all three derived signals are UNKNOWN - the old
+  # value is never reused and no reset-replenishment percentage is guessed.
+  # =================================================================== #
+
+  - name: reset_expired_window_refreshes_a_constrained_candidate_to_unknown
+    kind: selection
+    why: >-
+      The Claude 5h window was constrained (RED) but its reset_at (14:00) is now
+      in the past. checked_at is only 3 minutes old, yet the window describes
+      the previous quota generation - its state band drops to UNKNOWN and Claude
+      becomes routable again. Codex, the alternative that was used, is now
+      unavailable.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex: { state: GREEN, available: false, source: ORCA_RUNTIME }
+      antigravity: { pools: { gemini: { state: RED, available: true, source: ORCA_RUNTIME } } }
+      claude:
+        state: RED
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T13:58:00Z"
+        short_window: { remaining_ratio: 0.03, reset_at: "2026-09-01T14:00:00Z" }
+    options: { allowExperimental: false, allowRed: false, taskRisk: medium, now: "2026-09-01T14:01:00Z" }
+    expect:
+      status: SELECTED
+      provider: claude
+      model: sonnet
+
+  - name: before_the_reset_boundary_the_constrained_candidate_stays_excluded
+    kind: selection
+    why: >-
+      Same snapshot, evaluated one minute earlier at 13:59. The window has not
+      reset yet, so Claude is still RED; with allow_red false and Codex
+      unavailable there is no routable candidate. The two-minute difference
+      across 14:00 is the whole point of reset-boundary invalidation.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex: { state: GREEN, available: false, source: ORCA_RUNTIME }
+      antigravity: { pools: { gemini: { state: RED, available: true, source: ORCA_RUNTIME } } }
+      claude:
+        state: RED
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T13:58:00Z"
+        short_window: { remaining_ratio: 0.03, reset_at: "2026-09-01T14:00:00Z" }
+    options: { allowExperimental: false, allowRed: false, taskRisk: medium, now: "2026-09-01T13:59:00Z" }
+    expect:
+      status: BLOCKED
+      code: RESOURCE_BLOCKED
+
+  - name: recent_checked_at_does_not_rescue_a_reset_expired_window
+    kind: selection
+    why: >-
+      Claude's snapshot was taken 30 seconds ago (well inside the 5-minute TTL)
+      but its 5h window reset_at (14:00) has passed. The stale GREEN state and
+      the stale 90% remaining are both discarded: Claude reads UNKNOWN and the
+      registry head is selected instead of the pre-reset GREEN Claude.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex: { state: UNKNOWN, available: true, source: ORCA_RUNTIME }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T14:00:30Z"
+        short_window: { remaining_ratio: 0.90, reset_at: "2026-09-01T14:00:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-01T14:01:00Z" }
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-terra
+
+  - name: quota_failure_event_invalidates_state_before_the_next_dispatch
+    kind: selection
+    why: >-
+      A dispatch to Claude just failed on a rate limit, so the operational
+      router set invalidated: true on its resource entry. The GREEN reading is
+      no longer usable for the next autonomous selection - Claude reads UNKNOWN
+      and registry order decides. This is not a permanent provider failure.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex: { state: UNKNOWN, available: true, source: ORCA_RUNTIME }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        invalidated: true
+        weekly_window: { remaining_ratio: 0.80, reset_at: "2026-09-06T12:00:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-01T12:01:00Z" }
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-terra
+
+  - name: reset_expired_reviewer_candidate_is_refreshed_before_selection
+    kind: selection
+    why: >-
+      The next independent-reviewer selection after Codex's 5h window reset. The
+      Codex candidates were RED before the boundary; now their window is
+      reset-expired so they read UNKNOWN and rejoin the pool. The registry-order
+      reviewer (a disjoint Codex model) is selected instead of falling through
+      to Claude.
+    slot: INDEPENDENT_REVIEWER
+    resource_states:
+      claude: { state: UNKNOWN, available: true, source: ORCA_RUNTIME }
+      codex:
+        state: RED
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T13:58:00Z"
+        short_window: { remaining_ratio: 0.04, reset_at: "2026-09-01T14:00:00Z" }
+    options:
+      allowExperimental: false
+      allowRed: false
+      taskRisk: high
+      excludeProvider: antigravity
+      excludeModelFamily: gemini
+      now: "2026-09-01T14:01:00Z"
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-luna
+      disjoint_from: { provider: antigravity, model_family: gemini }
+
+  - name: reset_expired_budget_window_grants_no_expiry_promotion
+    kind: selection
+    why: >-
+      Claude's weekly window shows 80% remaining resetting at 14:00 - before the
+      boundary that would be a HIGH budget_expiry_opportunity. At 14:01 the
+      window is reset-expired: the 80% is not reused, Claude reads UNKNOWN, and
+      no expiry promotion happens. The healthy registry head is kept.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T14:00:30Z"
+        weekly_window: { remaining_ratio: 0.75, reset_at: "2026-09-06T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T14:00:30Z"
+        weekly_window: { remaining_ratio: 0.80, reset_at: "2026-09-01T14:00:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-01T14:01:00Z" }
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-terra
+      budget_expiry_opportunity: LOW
+      expiry_promotion: false

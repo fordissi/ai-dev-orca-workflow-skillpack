@@ -378,6 +378,13 @@ poll
 normative owner，與上方 Execution lifecycle semantics 是不同層次的問題：那一節回答
 「這次執行是否還在正常進行」，這一節回答「即使正常進行，現在還可不可以續跑它」。
 
+**Continuation freshness 與 quota freshness 是兩個獨立檢查。** 同一個有效 worker 的
+continuation **不因為 quota reset 就換模型**。只有在需要**新的 routing decision** 時
+（`MAX_TURNS_REACHED` 後需要新 worker、stale continuation 被拒、retry 換 worker、
+reviewer dispatch、新 task），才在 candidate selection 之前套用
+[`RESOURCE_AWARE_ROUTING.md`](RESOURCE_AWARE_ROUTING.md) 的 reset-aware
+resource refresh。兩者不得混為一談。
+
 ### 核心不變式
 
 ```text
@@ -702,6 +709,14 @@ MAX_TURNS_REACHED     → bounded continuation 仍有效才保留
 **不得只以 elapsed wall-clock time 判斷是否關閉 `ACTIVE` session。** 這條規則必須
 與 Execution lifecycle semantics 的 progress-aware waiting 語意相容——那裡已經
 定義「慢不是 blocked」，這裡延伸為「慢也不是該關閉的理由」。
+
+**Quota reset 不中斷健康的 `ACTIVE` worker。** 某個 provider 的 quota window 在
+worker 執行期間 reset，**不得**因此停止該 worker 或把任務 restart 到剛 reset 的
+provider 上。Quota re-evaluation（見
+[`RESOURCE_AWARE_ROUTING.md`](RESOURCE_AWARE_ROUTING.md) 的
+Reset-aware resource refresh）只影響**下一個** dispatch、下一個 independent
+reviewer 選擇，以及需要**新的 model-selection 決策**的 continuation——不影響
+已經在跑的健康 worker。
 
 ### 資源與安全衛生（不是安全邊界本身）
 

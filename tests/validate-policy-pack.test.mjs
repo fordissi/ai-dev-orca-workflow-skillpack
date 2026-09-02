@@ -7,6 +7,8 @@ import {
   budgetExpiryOpportunity,
   canonicalFingerprint,
   canonicalContinuationFacts,
+  refreshRequired,
+  resetExpired,
   classifyCommand,
   classifyExecutionState,
   classifyPermissionRequest,
@@ -1717,6 +1719,46 @@ test("conservation pressure reads remaining and proximity together", () => {
   assert.equal(conservationPressure(0.05, "UNKNOWN"), "UNKNOWN");
   assert.equal(conservationPressure(null, "FAR"), "UNKNOWN");
   assert.equal(conservationPressure(1.5, "FAR"), "UNKNOWN");
+});
+
+test("a quota window is stale the moment its reset_at is reached, regardless of checked_at", () => {
+  const MIN = 60 * 1000;
+  const win = (resetAt) => ({ short_window: { remaining_ratio: 0.5, reset_at: resetAt } });
+
+  // reset 1 min ago, checked 3 min ago -> expired, refresh required
+  const expired = pool({ ...win(at(-1 * MIN)), checked_at: at(-3 * MIN) });
+  assert.equal(resetExpired(expired, NOW), true);
+  assert.equal(refreshRequired(expired, NOW), true);
+
+  // reset 1h in the future -> still the current generation
+  const current = pool({ ...win(at(1 * HOUR)), checked_at: at(-3 * MIN) });
+  assert.equal(resetExpired(current, NOW), false);
+  assert.equal(refreshRequired(current, NOW), false);
+
+  // a fresh checked_at does NOT rescue a window past its reset boundary
+  const freshButExpired = pool({ ...win(at(-1 * MIN)), checked_at: at(-30 * 1000) });
+  assert.equal(resetExpired(freshButExpired, NOW), true);
+
+  // reset-expired -> conservation / expiry / stranded all UNKNOWN; the old
+  // ratio is not reused and no reset-replenishment percentage is inferred.
+  const c = resolveConservationPressure(
+    pool({ weekly_window: { remaining_ratio: 0.9, reset_at: at(-1 * MIN) }, checked_at: at(-30 * 1000) }),
+    { now: NOW },
+  );
+  assert.equal(c.conservation_pressure, "UNKNOWN");
+  assert.equal(c.budget_expiry_opportunity, "UNKNOWN");
+  const s = resolveStrandedCapacity(
+    pool({ short_window: { remaining_ratio: 0.9, reset_at: at(-1 * MIN) }, checked_at: at(-30 * 1000) }),
+    { now: NOW },
+  );
+  assert.equal(s.stranded_capacity_risk, "UNKNOWN");
+});
+
+test("an event-invalidated resource entry needs a refresh before autonomous selection", () => {
+  const entry = pool({ weekly_window: { remaining_ratio: 0.8, reset_at: at(120 * HOUR) }, invalidated: true });
+  assert.equal(refreshRequired(entry, NOW), true);
+  assert.equal(resetExpired(entry, NOW), false);
+  assert.equal(resolveConservationPressure(entry, { now: NOW }).conservation_pressure, "UNKNOWN");
 });
 
 test("budget expiry opportunity is the offensive mirror of conservation", () => {

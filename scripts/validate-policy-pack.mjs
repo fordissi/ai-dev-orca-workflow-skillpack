@@ -701,6 +701,35 @@ export function budgetExpiryOpportunity(remainingRatio, proximity) {
  * below MEDIUM. Every one of those yields UNKNOWN on both signals, which is
  * neutral: it neither promotes nor demotes.
  */
+/**
+ * Whether any of an entry's quota windows has reached or passed its reset.
+ *
+ * `checked_at` recency does not rescue a window across its reset boundary: a
+ * window whose reset_at is <= now describes the previous quota generation and
+ * MUST NOT be reused. A refresh is required before the next autonomous
+ * selection. RESOURCE_AWARE_ROUTING.md's Freshness section is the owner.
+ */
+export function resetExpired(entry, now) {
+  const evaluatedAt = toMillis(now);
+  if (!Number.isFinite(evaluatedAt)) return false;
+  return resourceWindows(entry).some((window) => {
+    const at = toMillis(window.reset_at);
+    return Number.isFinite(at) && at <= evaluatedAt;
+  });
+}
+
+/**
+ * Whether a resource entry needs refreshing before it can drive an autonomous
+ * routing decision: a stale reading past its reset boundary, or one an
+ * event-driven trigger has explicitly invalidated (`invalidated: true`, set by
+ * the operational router after a rate-limit / quota-exhausted / dispatch
+ * failure / newer-user-fact event). Not a permanent provider failure.
+ */
+export function refreshRequired(entry, now) {
+  if (!isPlainObject(entry)) return false;
+  return entry.invalidated === true || resetExpired(entry, now);
+}
+
 function readableEntry(entry, now) {
   if (!isPlainObject(entry)) return null;
   if (resourceEntryTrust(entry) !== null) return null;
@@ -719,12 +748,20 @@ function readableEntry(entry, now) {
 
   const evaluatedAt = toMillis(now);
   const checkedAt = toMillis(entry.checked_at);
-  const stale = !Number.isFinite(checkedAt) || !Number.isFinite(evaluatedAt) || evaluatedAt - checkedAt > SNAPSHOT_FRESH_MS;
+  const ttlStale = !Number.isFinite(checkedAt) || !Number.isFinite(evaluatedAt) || evaluatedAt - checkedAt > SNAPSHOT_FRESH_MS;
 
-  if (stale) return { state, confidence, stale: true, usable: false };
-  if (confidenceRank(confidence) < confidenceRank("MEDIUM")) return { state, confidence, stale: false, usable: false };
+  // freshness = time freshness AND window-generation validity. A reset-expired
+  // or event-invalidated entry is stale however recent its checked_at is.
+  const needsRefresh = refreshRequired(entry, now);
 
-  return { state, confidence, stale: false, usable: true };
+  if (ttlStale || needsRefresh) {
+    return { state, confidence, stale: true, refresh_required: ttlStale || needsRefresh, reset_expired: resetExpired(entry, now), usable: false };
+  }
+  if (confidenceRank(confidence) < confidenceRank("MEDIUM")) {
+    return { state, confidence, stale: false, refresh_required: false, reset_expired: false, usable: false };
+  }
+
+  return { state, confidence, stale: false, refresh_required: false, reset_expired: false, usable: true };
 }
 
 const UNKNOWN_BASE = Object.freeze({ state: "UNKNOWN", confidence: "UNKNOWN", stale: false });
@@ -928,8 +965,14 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
       failures.push({ kind: "config", why: `${label}: ${untrusted}` });
     }
 
+    // A reset-expired or event-invalidated entry needs a refresh before it can
+    // drive selection. Until then its state band is UNKNOWN (neutral), not the
+    // pre-reset value - crossing reset_at invalidates the reading even when
+    // checked_at is recent. availability (below) is a runtime fact and is not
+    // downgraded by this.
+    const staleAcrossReset = refreshRequired(entry, now);
     const resourceState =
-      untrusted === null && RESOURCE_STATES.includes(entry?.state) ? entry.state : "UNKNOWN";
+      untrusted === null && RESOURCE_STATES.includes(entry?.state) && !staleAcrossReset ? entry.state : "UNKNOWN";
 
     if (entry?.available === false) {
       failures.push({ kind: "unavailable", why: `${label}: provider or pool is unavailable` });
