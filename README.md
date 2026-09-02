@@ -106,6 +106,14 @@ visibility, or live quota visibility.** 因此它指定**能力需求**，不指
 classify -> slot -> overlay -> candidate -> contract -> dispatch
 ```
 
+能力分成三個 stage（`0.5` 起），在 `capability_tier` 之上、向後相容：
+`STAGE_1_DEFAULT`（Luna / Gemini Flash low，大多數日常工作）、
+`STAGE_2_ADVANCED`（Terra / Sonnet 5，正常的 escalation tier）、
+`STAGE_3_FLAGSHIP`（Sol / Opus 5，罕見）。**risk、production 相關性、測試數量
+都不會提高 stage**——只有 capability difficulty 會。stage admission 與
+reasoning-exact dispatch 的規則見
+[`policies/MODEL_ROUTING_POLICY.md`](policies/MODEL_ROUTING_POLICY.md)。
+
 ## 五個端到端範例
 
 ### A. 規格清楚的局部實作
@@ -122,9 +130,11 @@ change_intensity=localized, verification_need=standard`
 
 分類 `risk=critical, ambiguity=high, change_intensity=structural,
 verification_need=independent`
-→ slot `DEEP_REASONER`，`minimum_tier: DEEP`
+→ ambiguity/structural 是 Stage 2 訊號 → slot `DEEP_REASONER`
+（`STAGE_2_ADVANCED`，`minimum_tier: STRONG`）
 → **quota 緊張不能降低這個門檻**
 → auth/RBAC/RLS 屬於不可繞過的 **human gate**，先回人決策
+（human gate 是 risk 觸發的，不因此把 stage 拉到 Stage 3）
 → reviewer 的 provider 與 model family 都必須與 implementer 不同；
 找不到 disjoint 候選就回 `BLOCKED`。
 

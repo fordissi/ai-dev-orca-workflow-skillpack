@@ -228,11 +228,39 @@ routing failure。architecture review、long-context discovery、deep reasoning
 | `HARD_EXECUTION_CEILING` | 達到安全上限而 session 仍活著 | human gate |
 | `PERMISSION_BLOCKED` | 所需操作超出 permission ceiling | 交回 human |
 | `ROUTING_UNAVAILABLE` | session 已不可達且未留下結束紀錄 | 交回 human 或重新路由 |
+| `DISPATCH_CONTRACT_MISMATCH` | worker 實際的 provider/model/reasoning_effort 與 contract 不符 | 見下方 *Dispatch contract attestation* |
 
 **這些是觀察狀態，不是 blocked reason code。** 其中 `PERMISSION_BLOCKED` 與
 `ROUTING_UNAVAILABLE` 是唯二會交棒給 canonical blocked reason code 的出口，
 其語意由 [`MODEL_ROUTING_POLICY.md`](MODEL_ROUTING_POLICY.md) 的
-Blocked reason codes 章節定義，此處不重複。
+Blocked reason codes 章節定義，此處不重複。`DISPATCH_CONTRACT_MISMATCH`
+**不是** `ROUTING_UNAVAILABLE`，也不是任何 blocked reason code。
+
+### Dispatch contract attestation
+
+`provider + model + reasoning_effort` 是 execution identity（owner：
+[`MODEL_ROUTING_POLICY.md`](MODEL_ROUTING_POLICY.md)）。Dispatch 後，operational
+router 應做一次 best-effort attestation：比對 contract 的
+`expected_runtime_identity`（`provider` / `model` / `reasoning_effort`）與
+runtime 實際值。取值方式與能力缺口見
+[`../references/OFFICIAL_COMMANDS.md`](../references/OFFICIAL_COMMANDS.md) 的
+*Runtime attestation*。
+
+| attestation_result | 意義 | 動作 |
+|---|---|---|
+| `MATCH` | 三者一致 | 正常繼續 |
+| `UNVERIFIED` | runtime 未提供可讀取的實際值 | 記錄；依 task 風險決定是否要求人工確認，不阻塞低風險工作 |
+| `DISPATCH_CONTRACT_MISMATCH` | 任一欄位不符（例：contract `Sol medium`，實際 `Sol max`） | 見下 |
+
+`DISPATCH_CONTRACT_MISMATCH` 的安全處置：
+
+- 若 runtime 支援安全中斷單一 worker，**停止或避免它繼續高成本工作**；
+- 若 runtime 無法安全停止單一 terminal（見下方 *Session lifecycle and cleanup*
+  的 Runtime capability 邊界），**立即回報 mismatch 並進 `HUMAN_GATE` 或
+  bounded recovery**，依既有 lifecycle 政策；
+- **永不假裝 worker 符合 contract**，也不因為 model id 對得上就忽略 reasoning
+  effort 不符；
+- 這是 lifecycle outcome，不計入 `failed_repair_count`。
 
 ### ACTIVE：什麼算 observable progress
 

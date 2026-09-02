@@ -41,7 +41,17 @@ classification:               # 六個維度全部必填
 
 implementation_role:          # ROUTER | IMPLEMENTATION | LONG_CONTEXT_DISCOVERY | ...
 implementation_slot:          # 能力需求，不是模型名稱
-minimum_tier:                 # CHEAP | DEFAULT | STRONG | DEEP
+selected_stage:               # STAGE_1_DEFAULT | STAGE_2_ADVANCED | STAGE_3_FLAGSHIP
+                              # 由 stage admission 判定（MODEL_ROUTING_POLICY.md）；
+                              # risk / production / 測試數量不得提高它
+minimum_tier:                 # CHEAP | DEFAULT | STRONG | DEEP（與 selected_stage 一致）
+
+# 僅在 selected_stage 為 STAGE_3_FLAGSHIP 時必填。缺這段的 Stage 3 選擇不合法。
+flagship_admission:
+  escalation_reason:          # 對應 MODEL_ROUTING_POLICY.md 的 Stage 3 admission 清單
+  why_stage_2_insufficient:   # 具體理由，不得只寫「風險高」
+  prior_stage_2_attempt_failed: # true | false
+  human_authorization:       # required_and_provided | not_required | MISSING
 
 review_role:
 review_slot:
@@ -121,11 +131,37 @@ registry_version:             # unresolved — 來自 MODEL_REGISTRY.yaml 的 ve
 capability_slot:              # unresolved — 實際解析的 slot
 minimum_tier_satisfied:       # unresolved — true 時才可派工
 
+selected_stage:               # unresolved — STAGE_1_DEFAULT | STAGE_2_ADVANCED | STAGE_3_FLAGSHIP
+stage_admission_reason:       # unresolved — 為何是這個 stage（advanced signal / exceptional evidence / default）
+
 selected_candidate:           # unresolved
   actual_provider:
   actual_model:
   actual_model_family:
+  reasoning_effort:            # registry 預設，或有 task 證據時調整後的值；絕不預設 max（Luna 例外）
+
+# provider + model + reasoning_effort 是 execution identity。dispatch_command
+# 必須明確傳入三者（Codex：-m 與 -c model_reasoning_effort；Claude：--model 與
+# --effort）。expected 與 actual 的比對見下方 attestation。
+expected_runtime_identity:    # unresolved
+  provider:
+  model:
   reasoning_effort:
+
+attestation:                  # dispatch 後 best-effort 比對；語意見 WORKFLOW_POLICY.md
+  method:                     # unresolved — /status | worker-show | none
+  observed_provider:          # unresolved，或 UNVERIFIED
+  observed_model:             # unresolved，或 UNVERIFIED
+  observed_reasoning_effort:  # unresolved，或 UNVERIFIED
+  attestation_result:         # unresolved — MATCH | UNVERIFIED | DISPATCH_CONTRACT_MISMATCH
+
+# 僅在 selected_stage 為 STAGE_3_FLAGSHIP 時必填（由 operational router 從
+# strategic contract 的 flagship_admission 複製 + 補實際判定）。
+flagship_admission:           # unresolved
+  escalation_reason:
+  why_stage_2_insufficient:
+  prior_stage_2_attempt_failed:
+  human_authorization:        # required_and_provided | not_required | MISSING
 
 implementer_provider:         # unresolved
 implementer_model_family:     # unresolved

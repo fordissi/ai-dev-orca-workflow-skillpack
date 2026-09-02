@@ -20,7 +20,7 @@
 # The candidate order inside each slot is meaningful: it is the registry order
 # that MODEL_ROUTING_POLICY.md preserves when resource states are YELLOW or
 # UNKNOWN. Resource overlay may only reorder candidates that already meet the
-# slot's minimum_tier; it may never lower the capability floor.
+# slot's minimum_tier / stage; it may never lower the capability floor.
 #
 # Evidence honesty rules (see MODEL_ROUTING_POLICY.md and references/):
 #   status: stable        -> the provider/CLI/model mapping has been exercised
@@ -31,11 +31,76 @@
 #                            benchmarks or a small number of local cases. No
 #                            candidate is 'verified' until the local smoke
 #                            cases required by references/MODEL_EVIDENCE.md pass.
+#
+# --------------------------------------------------------------------------
+# 0.5 (2026-09-02) THREE-STAGE CAPABILITY ROUTING + REASONING-EXACT DISPATCH
+#
+# `stages` is a backward-compatible layer ABOVE `capability_tier_order`. The
+# four tiers still exist and every candidate/slot still carries a
+# `capability_tier`; `stage` partitions those tiers so routing reasons about
+# three bands instead of letting risk/importance masquerade as capability:
+#
+#   STAGE_1_DEFAULT  = { CHEAP, DEFAULT }  -> Luna / Gemini Flash low
+#   STAGE_2_ADVANCED = { STRONG }          -> Terra / Sonnet 5 (Gemini high fallback)
+#   STAGE_3_FLAGSHIP = { DEEP }            -> Sol / Opus 5, rare escalation only
+#
+# `stage` on a candidate MUST be the stage that contains its `capability_tier`.
+# Legacy `minimum_tier`-only contracts map deterministically: CHEAP/DEFAULT ->
+# Stage 1 admission, STRONG -> Stage 2, DEEP -> Stage 3. Stage admission logic
+# (what makes a task Stage 2 or Stage 3) is owned by MODEL_ROUTING_POLICY.md.
+#
+# Default reasoning per candidate is `reasoning:`. It is the DEFAULT effort for
+# that candidate; MODEL_ROUTING_POLICY.md defines when it may be raised on
+# task evidence. Sol/Opus default to `medium` and are NEVER defaulted to max.
+# Reasoning effort is part of the execution identity and MUST be dispatched
+# explicitly for Codex; see references/OFFICIAL_COMMANDS.md.
+#
+# 0.4 forced Terra/Sol/Gemini to `stable` ahead of smoke cases by human
+# decision. 0.5 keeps Terra and Sol as the human decided but RETURNS the
+# antigravity/AUTO_GEMINI entries to `status: experimental`: PART G of the
+# 0.5 instruction requires real local qualification, and the non-interactive
+# `agy` path denies-closed on read tools so the reviewer/discovery/permission
+# smoke cases could not be completed. See
+# policies/registry-decisions/2026-09-02-three-stage-routing.md and
+# references/MODEL_EVIDENCE.md.
+# --------------------------------------------------------------------------
 
-version: "0.3"
-verified_at: "2026-09-01"
+version: "0.5"
+verified_at: "2026-09-02"
 
 capability_tier_order: [CHEAP, DEFAULT, STRONG, DEEP]
+
+# Capability stage: a backward-compatible band above capability_tier.
+# Each tier belongs to exactly one stage (a partition), so a candidate's
+# stage is fully derivable from its capability_tier and the explicit `stage`
+# field on each candidate/slot is a redundant assertion the checker verifies.
+stages:
+  STAGE_1_DEFAULT:
+    tiers: [CHEAP, DEFAULT]
+    admission: default
+    admission_note: >-
+      The default for the majority of tasks. Used unless there is concrete
+      evidence Stage 1 is insufficient. Risk, production-relatedness, security
+      sensitivity and test volume do NOT by themselves raise the stage.
+  STAGE_2_ADVANCED:
+    tiers: [STRONG]
+    admission: advanced_signal
+    admission_note: >-
+      Requires at least one advanced signal: high complexity, high ambiguity,
+      structural change intensity, architecture reasoning, security/RLS
+      semantic reasoning, high semantic coupling, adversarial verification, or
+      a failed Stage 1 attempt. Risk alone is insufficient. This is the normal
+      escalation tier.
+  STAGE_3_FLAGSHIP:
+    tiers: [DEEP]
+    admission: exceptional_evidence
+    admission_note: >-
+      Rare. Requires exceptional evidence: Stage 2 failed to converge,
+      unresolved disagreement between qualified reviewers, a major irreversible
+      architectural decision with material ambiguity, adversarial security
+      analysis, exceptional multi-stage agentic execution, an exceptional
+      production incident, or explicit human authorization. Sol and Opus are
+      flagship escalation resources, not routine workers.
 
 # Dynamic display names must be resolved at use time, never frozen from one
 # machine. See references/OFFICIAL_COMMANDS.md for the verified invocation.
@@ -43,52 +108,62 @@ resolvers:
   antigravity_models:
     command: "agy models"
     resolves: ["AUTO_GEMINI"]
-    verified_at: "2026-09-01"
+    verified_at: "2026-09-02"
     note: >-
       AUTO_GEMINI is a placeholder. Resolve it against the live model list
       before dispatch. Do not hard-code a display name observed on one host.
-      Verified on 2026-09-01: the command returns a live list. That list also
-      contains NON-Gemini families, so provider does not imply model_family.
-      A resolution that lands outside the candidate's declared model_family
-      is CONFIG_INVALID and must not be dispatched - this is what keeps
+      Verified 2026-09-02: the command returns a live list that also contains
+      NON-Gemini families, so provider does not imply model_family. A
+      resolution outside the candidate's declared model_family is
+      CONFIG_INVALID and must not be dispatched - this is what keeps
       independent-review disjointness honest.
+      Effort is encoded in the id: `reasoning: low` resolves to the
+      `gemini-3.7-flash-low` family entry, `reasoning: high` to
+      `gemini-3.7-flash-high` (observed 2026-09-02). `agy --effort low|medium|high`
+      is the session-level equivalent. Resolve against the live list at
+      dispatch time; this is a hint, not a frozen string.
 
 capability_slots:
 
   ROUTER:
     role: ROUTER
+    stage: STAGE_1_DEFAULT
     minimum_tier: DEFAULT
     max_repair_attempts: 2
     candidates:
+      # Router is Stage 1 work. Do not routinely use Sol/Sonnet/Opus here.
       - provider: codex
         resource_state_key: codex
         model: gpt-5.6-luna
         model_family: gpt-5.6
-        reasoning: low
+        reasoning: max
         capability_tier: DEFAULT
+        stage: STAGE_1_DEFAULT
         status: stable
         evidence_status: provisional
         evidence_scope: bounded_repo_implementation
         confidence: medium
-        source: "local CLI global state, codex-cli 0.151.0"
-        verified_at: "2026-09-01"
+        source: "local CLI global state, codex-cli 0.151.0; reasoning pinned max per 2026-09-02 human decision"
+        verified_at: "2026-09-02"
         expires_at: "2026-12-01"
-      - provider: claude
-        resource_state_key: claude
-        model: sonnet
-        model_family: claude-sonnet
-        reasoning: provider_default
-        capability_tier: DEEP
-        status: stable
+      - provider: antigravity
+        resource_state_key: antigravity.gemini
+        model: AUTO_GEMINI
+        model_family: gemini
+        reasoning: low
+        capability_tier: DEFAULT
+        stage: STAGE_1_DEFAULT
+        status: experimental
         evidence_status: provisional
-        evidence_scope: architecture_and_contract_reasoning
-        confidence: medium
-        source: "local CLI, Claude Code 2.1.252"
-        verified_at: "2026-09-01"
-        expires_at: "2026-12-01"
+        evidence_scope: long_context_reasoning
+        confidence: low
+        source: "quota-relief alternative under Codex pressure; agy resolver verified 2026-09-02; reviewer/permission smoke cases incomplete (headless denies-closed) - see MODEL_EVIDENCE.md"
+        verified_at: null
+        expires_at: null
 
   CHEAP_GENERALIST:
     role: IMPLEMENTATION
+    stage: STAGE_1_DEFAULT
     minimum_tier: CHEAP
     max_repair_attempts: 2
     candidates:
@@ -98,6 +173,7 @@ capability_slots:
         model_family: gpt-5.6
         reasoning: low
         capability_tier: DEFAULT
+        stage: STAGE_1_DEFAULT
         status: stable
         evidence_status: provisional
         evidence_scope: bounded_repo_implementation
@@ -105,129 +181,190 @@ capability_slots:
         source: "local CLI global state, codex-cli 0.151.0"
         verified_at: "2026-09-01"
         expires_at: "2026-12-01"
+      - provider: antigravity
+        resource_state_key: antigravity.gemini
+        model: AUTO_GEMINI
+        model_family: gemini
+        reasoning: low
+        capability_tier: DEFAULT
+        stage: STAGE_1_DEFAULT
+        status: experimental
+        evidence_status: provisional
+        evidence_scope: long_context_reasoning
+        confidence: low
+        source: "quota-relief alternative; agy resolver verified 2026-09-02; local smoke cases incomplete - see MODEL_EVIDENCE.md"
+        verified_at: null
+        expires_at: null
 
   DEFAULT_IMPLEMENTER:
     role: IMPLEMENTATION
+    stage: STAGE_1_DEFAULT
     minimum_tier: DEFAULT
     max_repair_attempts: 2
     candidates:
-      # Luna-first for bounded work with a clear contract and test-backed
-      # acceptance. Exercised locally on 2026-09-01 (contract T2S1): PASS on
-      # the first attempt, zero repairs.
+      # STAGE 1 workhorse. Luna is cheap but capable enough to be the
+      # high-frequency default. Sol is NOT a fallback here just because Luna is
+      # unavailable - if higher capability is truly needed the task is Stage 2
+      # and routes through a Stage 2 slot.
       - provider: codex
         resource_state_key: codex
         model: gpt-5.6-luna
         model_family: gpt-5.6
-        reasoning: medium
+        reasoning: max
         capability_tier: DEFAULT
+        stage: STAGE_1_DEFAULT
         status: stable
         evidence_status: provisional
         evidence_scope: bounded_repo_implementation
         confidence: medium
-        source: "local smoke case T2S1 2026-09-01; 1 of the 3-5 cases required"
-        verified_at: "2026-09-01"
+        source: "local smoke case T2S1 2026-09-01 (at medium effort); reasoning pinned max per 2026-09-02 human decision"
+        verified_at: "2026-09-02"
         expires_at: "2026-12-01"
-      - provider: codex
-        resource_state_key: codex
-        model: gpt-5.6-sol
-        model_family: gpt-5.6
-        reasoning: medium
-        capability_tier: STRONG
-        status: stable
+      - provider: antigravity
+        resource_state_key: antigravity.gemini
+        model: AUTO_GEMINI
+        model_family: gemini
+        reasoning: low
+        capability_tier: DEFAULT
+        stage: STAGE_1_DEFAULT
+        status: experimental
         evidence_status: provisional
-        evidence_scope: structural_implementation
-        confidence: medium
-        source: "local CLI default model, codex-cli 0.151.0 config"
-        verified_at: "2026-09-01"
-        expires_at: "2026-12-01"
+        evidence_scope: long_context_reasoning
+        confidence: low
+        source: "Stage 1 quota-balancing alternative; agy resolver verified 2026-09-02; low-reasoning + identity smoke PASS, reviewer/permission smoke incomplete - see MODEL_EVIDENCE.md"
+        verified_at: null
+        expires_at: null
 
   STRONG_IMPLEMENTER:
     role: IMPLEMENTATION
+    stage: STAGE_2_ADVANCED
     minimum_tier: STRONG
     max_repair_attempts: 2
     candidates:
-      # Sol for structural repair, complex migration, and work that needs
-      # several rounds of interaction.
+      # STAGE 2 advanced. Terra and Sonnet 5 are peers; the resource overlay
+      # chooses between them by long-horizon quota health. Gemini high is a
+      # quota-pressure fallback only, not an automatic outranker of a healthy
+      # Terra/Sonnet.
       - provider: codex
         resource_state_key: codex
-        model: gpt-5.6-sol
+        model: gpt-5.6-terra
         model_family: gpt-5.6
-        reasoning: medium
+        reasoning: high
         capability_tier: STRONG
+        stage: STAGE_2_ADVANCED
         status: stable
         evidence_status: provisional
         evidence_scope: structural_implementation
-        confidence: medium
-        source: "local CLI default model, codex-cli 0.151.0 config"
-        verified_at: "2026-09-01"
+        confidence: low
+        source: "promoted experimental->stable + DEEP->STRONG by human decision 2026-09-02 (policies/registry-decisions/2026-09-02-rebalance-implementer-tiers.md); never exercised locally; rollback condition in that note"
+        verified_at: "2026-09-02"
         expires_at: "2026-12-01"
       - provider: claude
         resource_state_key: claude
         model: sonnet
         model_family: claude-sonnet
-        reasoning: provider_default
-        capability_tier: DEEP
+        reasoning: high
+        capability_tier: STRONG
+        stage: STAGE_2_ADVANCED
         status: stable
         evidence_status: provisional
         evidence_scope: architecture_and_contract_reasoning
         confidence: medium
-        source: "local CLI, Claude Code 2.1.252"
-        verified_at: "2026-09-01"
+        source: "local CLI, Claude Code 2.1.258; capability_tier DEEP->STRONG and reasoning pinned high per 2026-09-02 three-stage rebalance; --effort high supported"
+        verified_at: "2026-09-02"
         expires_at: "2026-12-01"
+      - provider: antigravity
+        resource_state_key: antigravity.gemini
+        model: AUTO_GEMINI
+        model_family: gemini
+        reasoning: high
+        capability_tier: STRONG
+        stage: STAGE_2_ADVANCED
+        status: experimental
+        evidence_status: provisional
+        evidence_scope: long_context_reasoning
+        confidence: low
+        source: "Stage 2 quota-pressure fallback only; agy resolver verified 2026-09-02; high-reasoning repo/reviewer smoke incomplete (headless denies-closed) - see MODEL_EVIDENCE.md"
+        verified_at: null
+        expires_at: null
 
   DEEP_REASONER:
     role: ROUTER
-    minimum_tier: DEEP
+    stage: STAGE_2_ADVANCED
+    minimum_tier: STRONG
     max_repair_attempts: 2
     candidates:
-      # Architecture, contract ambiguity, auth/RBAC/RLS, irreversible decisions.
+      # STAGE 2 advanced reasoning: architecture reasoning, contract ambiguity,
+      # security/RLS semantics, hard debugging, high-semantic-coupling review.
+      # This slot is deliberately Stage 2, not Stage 3 - ordinary architecture
+      # reasoning does not need a flagship model. The irreversible-and-ambiguous
+      # subset routes to ESCALATION_MODEL (Stage 3) via the routing policy's
+      # slot decision table.
       - provider: claude
         resource_state_key: claude
         model: sonnet
         model_family: claude-sonnet
-        reasoning: provider_default
-        capability_tier: DEEP
+        reasoning: high
+        capability_tier: STRONG
+        stage: STAGE_2_ADVANCED
         status: stable
         evidence_status: provisional
         evidence_scope: architecture_and_contract_reasoning
         confidence: medium
-        source: "local CLI, Claude Code 2.1.252"
-        verified_at: "2026-09-01"
+        source: "local CLI, Claude Code 2.1.258; Stage 2 architecture/contract/security reasoning; --effort high"
+        verified_at: "2026-09-02"
         expires_at: "2026-12-01"
       - provider: codex
         resource_state_key: codex
         model: gpt-5.6-terra
         model_family: gpt-5.6
         reasoning: high
-        capability_tier: DEEP
+        capability_tier: STRONG
+        stage: STAGE_2_ADVANCED
+        status: stable
+        evidence_status: provisional
+        evidence_scope: structural_implementation
+        confidence: low
+        source: "promoted per 2026-09-02 three-stage rebalance; never exercised locally; rollback condition in the decision note"
+        verified_at: "2026-09-02"
+        expires_at: "2026-12-01"
+      - provider: antigravity
+        resource_state_key: antigravity.gemini
+        model: AUTO_GEMINI
+        model_family: gemini
+        reasoning: high
+        capability_tier: STRONG
+        stage: STAGE_2_ADVANCED
         status: experimental
         evidence_status: provisional
-        evidence_scope: UNKNOWN
+        evidence_scope: long_context_reasoning
         confidence: low
-        source: "model ID present in local CLI global state; never exercised here"
+        source: "Stage 2 quota-pressure fallback only; local smoke cases incomplete - see MODEL_EVIDENCE.md"
         verified_at: null
         expires_at: null
 
   LONG_CONTEXT_DISCOVERY:
     role: LONG_CONTEXT_DISCOVERY
+    stage: STAGE_1_DEFAULT
     minimum_tier: DEFAULT
     max_repair_attempts: 2
     candidates:
-      # Large repository inventory, cross-repo comparison, schema/API sweeps.
-      # Gemini is preferred on long-context evidence but has not passed the
-      # local smoke cases, so it stays experimental and is excluded from
-      # routing unless the task explicitly allows experimental candidates.
+      # Broad repository inspection / cross-repo inventory / schema sweeps is
+      # Stage 1 discovery work. Gemini Flash is the preferred quota-relief
+      # choice on long-context evidence, but stays experimental until the local
+      # discovery smoke case passes.
       - provider: antigravity
         resource_state_key: antigravity.gemini
         model: AUTO_GEMINI
         model_family: gemini
-        reasoning: medium
-        capability_tier: STRONG
+        reasoning: low
+        capability_tier: DEFAULT
+        stage: STAGE_1_DEFAULT
         status: experimental
         evidence_status: provisional
         evidence_scope: long_context_reasoning
         confidence: low
-        source: "external long-context benchmarks; agy models resolver verified 2026-09-01; local smoke cases pending"
+        source: "external long-context evidence E4; agy resolver verified 2026-09-02; local discovery smoke incomplete (headless denies-closed) - see MODEL_EVIDENCE.md"
         verified_at: null
         expires_at: null
       - provider: claude
@@ -235,80 +372,41 @@ capability_slots:
         model: sonnet
         model_family: claude-sonnet
         reasoning: provider_default
-        capability_tier: DEEP
+        capability_tier: STRONG
+        stage: STAGE_2_ADVANCED
         status: stable
         evidence_status: provisional
         evidence_scope: architecture_and_contract_reasoning
         confidence: medium
-        source: "local CLI, Claude Code 2.1.252"
-        verified_at: "2026-09-01"
+        source: "local CLI, Claude Code 2.1.258; stable disjoint discovery fallback"
+        verified_at: "2026-09-02"
         expires_at: "2026-12-01"
 
   INDEPENDENT_REVIEWER:
     role: INDEPENDENT_REVIEWER
+    stage: STAGE_1_DEFAULT
     minimum_tier: DEFAULT
     max_repair_attempts: 1
     candidates:
+      # Reviewer capability should match task need, not default to flagship.
       # The selection algorithm removes any candidate sharing the implementer's
-      # provider or model family, so this list deliberately spans three
-      # providers. With only one provider available, independent review is
-      # BLOCKED rather than faked.
+      # provider OR model family before resource optimization. This list spans
+      # three providers so a disjoint reviewer exists for any single
+      # implementer; with only one provider available, review is BLOCKED, not
+      # faked. Sol/Opus appear nowhere here: a flagship reviewer is admitted
+      # only through ESCALATION_MODEL when Stage 3 review is actually justified.
       - provider: antigravity
         resource_state_key: antigravity.gemini
         model: AUTO_GEMINI
         model_family: gemini
-        reasoning: medium
-        capability_tier: STRONG
+        reasoning: low
+        capability_tier: DEFAULT
+        stage: STAGE_1_DEFAULT
         status: experimental
         evidence_status: provisional
         evidence_scope: long_context_reasoning
         confidence: low
-        source: "external long-context benchmarks; agy models resolver verified 2026-09-01; local smoke cases pending"
-        verified_at: null
-        expires_at: null
-      - provider: claude
-        resource_state_key: claude
-        model: sonnet
-        model_family: claude-sonnet
-        reasoning: provider_default
-        capability_tier: DEEP
-        status: stable
-        evidence_status: provisional
-        evidence_scope: independent_review
-        confidence: medium
-        source: "local CLI, Claude Code 2.1.252"
-        verified_at: "2026-09-01"
-        expires_at: "2026-12-01"
-      - provider: codex
-        resource_state_key: codex
-        model: gpt-5.6-sol
-        model_family: gpt-5.6
-        reasoning: medium
-        capability_tier: STRONG
-        status: stable
-        evidence_status: provisional
-        evidence_scope: structural_implementation
-        confidence: low
-        source: "local CLI default model, codex-cli 0.151.0 config"
-        verified_at: "2026-09-01"
-        expires_at: "2026-12-01"
-
-  REGRESSION_HUNTER:
-    role: REGRESSION_HUNTER
-    minimum_tier: DEFAULT
-    max_repair_attempts: 2
-    candidates:
-      - provider: antigravity
-        resource_state_key: antigravity.gemini
-        model: AUTO_GEMINI
-        model_family: gemini
-        reasoning: medium
-        capability_tier: STRONG
-        status: experimental
-        evidence_status: provisional
-        evidence_scope: long_context_reasoning
-        confidence: low
-        source: "external long-context benchmarks; agy models resolver verified 2026-09-01; local smoke cases pending"
+        source: "target reviewer role; agy resolver verified 2026-09-02; read-only reviewer smoke incomplete (headless denies-closed) - see MODEL_EVIDENCE.md"
         verified_at: null
         expires_at: null
       - provider: codex
@@ -317,6 +415,72 @@ capability_slots:
         model_family: gpt-5.6
         reasoning: medium
         capability_tier: DEFAULT
+        stage: STAGE_1_DEFAULT
+        status: stable
+        evidence_status: provisional
+        evidence_scope: bounded_repo_implementation
+        confidence: low
+        source: "local smoke case T2S1 2026-09-01; Stage 1 reviewer where disjoint"
+        verified_at: "2026-09-01"
+        expires_at: "2026-12-01"
+      - provider: claude
+        resource_state_key: claude
+        model: sonnet
+        model_family: claude-sonnet
+        reasoning: high
+        capability_tier: STRONG
+        stage: STAGE_2_ADVANCED
+        status: stable
+        evidence_status: provisional
+        evidence_scope: independent_review
+        confidence: medium
+        source: "local CLI, Claude Code 2.1.258; Stage 2 review where deeper reasoning is justified and disjoint"
+        verified_at: "2026-09-02"
+        expires_at: "2026-12-01"
+      - provider: codex
+        resource_state_key: codex
+        model: gpt-5.6-terra
+        model_family: gpt-5.6
+        reasoning: high
+        capability_tier: STRONG
+        stage: STAGE_2_ADVANCED
+        status: stable
+        evidence_status: provisional
+        evidence_scope: structural_implementation
+        confidence: low
+        source: "Stage 2 structural review where disjoint from a Claude implementer; promoted per 2026-09-02 rebalance, not exercised locally"
+        verified_at: "2026-09-02"
+        expires_at: "2026-12-01"
+
+  REGRESSION_HUNTER:
+    role: REGRESSION_HUNTER
+    stage: STAGE_1_DEFAULT
+    minimum_tier: DEFAULT
+    max_repair_attempts: 2
+    candidates:
+      # Regression hunting is Stage 1 by default. Gemini Flash preferred for
+      # quota relief; Luna is the stable disjoint fallback.
+      - provider: antigravity
+        resource_state_key: antigravity.gemini
+        model: AUTO_GEMINI
+        model_family: gemini
+        reasoning: low
+        capability_tier: DEFAULT
+        stage: STAGE_1_DEFAULT
+        status: experimental
+        evidence_status: provisional
+        evidence_scope: long_context_reasoning
+        confidence: low
+        source: "target regression-hunter role; agy resolver verified 2026-09-02; local smoke incomplete - see MODEL_EVIDENCE.md"
+        verified_at: null
+        expires_at: null
+      - provider: codex
+        resource_state_key: codex
+        model: gpt-5.6-luna
+        model_family: gpt-5.6
+        reasoning: medium
+        capability_tier: DEFAULT
+        stage: STAGE_1_DEFAULT
         status: stable
         evidence_status: provisional
         evidence_scope: bounded_repo_implementation
@@ -327,21 +491,41 @@ capability_slots:
 
   ESCALATION_MODEL:
     role: ESCALATION
+    stage: STAGE_3_FLAGSHIP
     minimum_tier: DEEP
     max_repair_attempts: 1
     candidates:
-      # Exceptional escalation only: qualified candidates failed to converge,
-      # reviewers disagree, or the risk is exceptional.
+      # STAGE 3 flagship. Rare. Sol and Opus 5 are peers here; task-role
+      # preference (terminal-heavy/agentic -> Sol, architecture/reasoning/
+      # review -> Opus) is a tie-break AFTER eligibility/disjointness/resource,
+      # applied by the operational router. Both default to `medium`; neither is
+      # ever defaulted to max. A Stage 3 selection MUST record a flagship
+      # admission reason (see MODEL_ROUTING_POLICY.md, Flagship admission).
+      - provider: codex
+        resource_state_key: codex
+        model: gpt-5.6-sol
+        model_family: gpt-5.6
+        reasoning: medium
+        capability_tier: DEEP
+        stage: STAGE_3_FLAGSHIP
+        status: stable
+        evidence_status: provisional
+        evidence_scope: structural_implementation
+        confidence: medium
+        source: "promoted STRONG->DEEP by human decision 2026-09-02; external evidence E3 + DataCamp Sol/Opus comparison (provisional only); default reasoning lowered to medium per 2026-09-02 three-stage instruction; local smoke cases pending"
+        verified_at: "2026-09-02"
+        expires_at: "2026-12-01"
       - provider: claude
         resource_state_key: claude
         model: opus
         model_family: claude-opus
-        reasoning: provider_default
+        reasoning: medium
         capability_tier: DEEP
+        stage: STAGE_3_FLAGSHIP
         status: stable
         evidence_status: provisional
         evidence_scope: escalation_reasoning
         confidence: medium
-        source: "local CLI, Claude Code 2.1.252"
-        verified_at: "2026-09-01"
+        source: "local CLI, Claude Code 2.1.258; default reasoning medium (was provider_default), raise to high only on task evidence; --effort medium|high supported"
+        verified_at: "2026-09-02"
         expires_at: "2026-12-01"

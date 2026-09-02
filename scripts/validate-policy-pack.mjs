@@ -23,6 +23,109 @@ const RESOURCE_STATES = ["GREEN", "YELLOW", "RED", "UNKNOWN"];
 // only an overlay/cache. Trust levels live in RESOURCE_AWARE_ROUTING.md.
 const RESOURCE_SOURCES = ["ORCA_RUNTIME", "USER_STATEMENT", "UNKNOWN"];
 const CANDIDATE_STATUSES = ["stable", "experimental"];
+
+// Capability stage: a backward-compatible band ABOVE capability_tier. Ordered,
+// but not a ladder you can climb past - the gate is "meet the required stage,
+// and a flagship (STAGE_3) candidate is admitted only when the required stage
+// IS STAGE_3". MODEL_ROUTING_POLICY.md owns the semantics; MODEL_REGISTRY.yaml
+// owns which tier maps to which stage.
+const STAGE_ORDER = ["STAGE_1_DEFAULT", "STAGE_2_ADVANCED", "STAGE_3_FLAGSHIP"];
+
+// Fallback tier->stage partition, used only when the registry omits `stages`.
+const DEFAULT_STAGE_TIERS = {
+  STAGE_1_DEFAULT: ["CHEAP", "DEFAULT"],
+  STAGE_2_ADVANCED: ["STRONG"],
+  STAGE_3_FLAGSHIP: ["DEEP"],
+};
+
+function stageIndex(stage) {
+  return STAGE_ORDER.indexOf(stage);
+}
+
+function stageForTier(registry, tier) {
+  const declared = isPlainObject(registry?.stages) ? registry.stages : null;
+  const table = declared
+    ? Object.fromEntries(
+        Object.entries(declared).map(([name, def]) => [name, Array.isArray(def?.tiers) ? def.tiers : []]),
+      )
+    : DEFAULT_STAGE_TIERS;
+  for (const [name, tiers] of Object.entries(table)) {
+    if (tiers.includes(tier)) return name;
+  }
+  return null;
+}
+
+/**
+ * Task capability difficulty -> capability stage. Risk, production-relatedness,
+ * security sensitivity and test volume are NOT inputs: only complexity,
+ * ambiguity, structural change, architecture/security semantic reasoning,
+ * adversarial verification and prior-stage failure raise the stage.
+ * MODEL_ROUTING_POLICY.md's "Stage admission" section is the normative owner.
+ */
+export function admitStage(classification, signals = {}) {
+  const c = isPlainObject(classification) ? classification : {};
+  const s = isPlainObject(signals) ? signals : {};
+
+  const flagship =
+    s.prior_stage_failed === "STAGE_2_ADVANCED" ||
+    s.reviewer_disagreement_unresolved === true ||
+    (s.irreversible === true && c.ambiguity === "high") ||
+    (s.security_involvement === true && c.verification_need === "adversarial") ||
+    s.exceptional_execution === true ||
+    s.human_authorized_flagship === true;
+  if (flagship) return "STAGE_3_FLAGSHIP";
+
+  const advanced =
+    c.complexity === "high" ||
+    c.ambiguity === "high" ||
+    c.change_intensity === "structural" ||
+    s.architecture_involvement === true ||
+    (s.security_involvement === true && (c.complexity !== "low" || c.ambiguity !== "low")) ||
+    c.verification_need === "adversarial" ||
+    s.high_semantic_coupling === true ||
+    s.prior_stage_failed === "STAGE_1_DEFAULT";
+  if (advanced) return "STAGE_2_ADVANCED";
+
+  return "STAGE_1_DEFAULT";
+}
+
+/**
+ * provider + model + reasoning_effort is the execution identity. For a Codex
+ * dispatch the launch command MUST set reasoning explicitly (never inherit it
+ * from ~/.codex/config.toml). If an observed identity is supplied it must
+ * match the expected one. OFFICIAL_COMMANDS.md owns the exact syntax.
+ */
+export function checkReasoningDispatch(dispatch) {
+  const d = isPlainObject(dispatch) ? dispatch : {};
+  const expected = isPlainObject(d.expected) ? d.expected : {};
+  const actual = isPlainObject(d.actual) ? d.actual : null;
+  const command = isNonEmptyString(d.command) ? d.command : "";
+
+  if (d.provider === "codex" && command) {
+    const hasModel = /(?:^|\s)(?:-m|--model)\s+\S/.test(command);
+    const hasReasoning = /model_reasoning_effort\s*=\s*"[^"]+"/.test(command);
+    if (!hasModel || !hasReasoning) {
+      return {
+        result: "INVALID_DISPATCH",
+        why: "codex dispatch omits an explicit model and/or model_reasoning_effort",
+      };
+    }
+  }
+
+  if (actual !== null) {
+    const modelMismatch = "model" in expected && actual.model !== expected.model;
+    const effortMismatch =
+      "reasoning_effort" in expected && actual.reasoning_effort !== expected.reasoning_effort;
+    if (modelMismatch || effortMismatch) {
+      return {
+        result: "DISPATCH_CONTRACT_MISMATCH",
+        why: `expected ${expected.model ?? "?"}/${expected.reasoning_effort ?? "?"}, observed ${actual.model ?? "?"}/${actual.reasoning_effort ?? "?"}`,
+      };
+    }
+  }
+
+  return { result: "PASS" };
+}
 const REQUIRED_CANDIDATE_FIELDS = [
   "provider",
   "resource_state_key",
@@ -62,6 +165,48 @@ export function validateRegistry(registry) {
     return findings;
   }
 
+  // `stages` is optional for backward compatibility, but when present it must
+  // be a clean partition of capability_tier_order into the three known stages.
+  if ("stages" in registry) {
+    const stages = registry.stages;
+    if (!isPlainObject(stages)) {
+      findings.push("stages: expected a mapping of stage name to definition");
+    } else {
+      const seenTiers = new Set();
+      for (const name of Object.keys(stages)) {
+        if (!STAGE_ORDER.includes(name)) {
+          findings.push(`stages.${name}: not one of ${STAGE_ORDER.join("|")}`);
+        }
+      }
+      for (const stageName of STAGE_ORDER) {
+        const def = stages[stageName];
+        if (!isPlainObject(def)) {
+          findings.push(`stages.${stageName}: expected a mapping`);
+          continue;
+        }
+        if (!Array.isArray(def.tiers) || def.tiers.length === 0) {
+          findings.push(`stages.${stageName}.tiers: expected a non-empty list of tier names`);
+        } else {
+          for (const tier of def.tiers) {
+            if (tierIndex(tierOrder, tier) === -1) {
+              findings.push(`stages.${stageName}.tiers: ${JSON.stringify(tier)} is not in capability_tier_order`);
+            }
+            if (seenTiers.has(tier)) {
+              findings.push(`stages: tier ${JSON.stringify(tier)} appears in more than one stage`);
+            }
+            seenTiers.add(tier);
+          }
+        }
+        if (!isNonEmptyString(def.admission)) {
+          findings.push(`stages.${stageName}.admission: expected a non-empty value`);
+        }
+      }
+      for (const tier of tierOrder) {
+        if (!seenTiers.has(tier)) findings.push(`stages: tier ${JSON.stringify(tier)} is not assigned to any stage`);
+      }
+    }
+  }
+
   const slots = registry.capability_slots;
   if (!isPlainObject(slots) || Object.keys(slots).length === 0) {
     findings.push("capability_slots: expected at least one capability slot");
@@ -78,6 +223,21 @@ export function validateRegistry(registry) {
 
     if (!isNonEmptyString(slot.role)) {
       findings.push(`${at}.role: expected a non-empty role tag`);
+    }
+
+    // A slot's stage, when declared, must be a known stage and must agree
+    // with the stage that contains its minimum_tier.
+    if ("stage" in slot) {
+      if (!STAGE_ORDER.includes(slot.stage)) {
+        findings.push(`${at}.stage: ${JSON.stringify(slot.stage)} is not one of ${STAGE_ORDER.join("|")}`);
+      } else if (isNonEmptyString(slot.minimum_tier)) {
+        const expectedStage = stageForTier(registry, slot.minimum_tier);
+        if (expectedStage !== null && expectedStage !== slot.stage) {
+          findings.push(
+            `${at}.stage: ${slot.stage} disagrees with minimum_tier ${slot.minimum_tier} (expected ${expectedStage})`,
+          );
+        }
+      }
     }
 
     const minimumTier = slot.minimum_tier;
@@ -114,6 +274,21 @@ export function validateRegistry(registry) {
         findings.push(
           `${candidateAt}.status: ${JSON.stringify(candidate.status)} is not one of ${CANDIDATE_STATUSES.join("|")}`,
         );
+      }
+
+      // A candidate's stage, when declared, must be the stage that contains
+      // its capability_tier - stage is derived from tier, never independent.
+      if ("stage" in candidate) {
+        if (!STAGE_ORDER.includes(candidate.stage)) {
+          findings.push(`${candidateAt}.stage: ${JSON.stringify(candidate.stage)} is not one of ${STAGE_ORDER.join("|")}`);
+        } else if (isNonEmptyString(candidate.capability_tier)) {
+          const expectedStage = stageForTier(registry, candidate.capability_tier);
+          if (expectedStage !== null && expectedStage !== candidate.stage) {
+            findings.push(
+              `${candidateAt}.stage: ${candidate.stage} disagrees with capability_tier ${candidate.capability_tier} (expected ${expectedStage})`,
+            );
+          }
+        }
       }
 
       const candidateIndex = tierIndex(tierOrder, candidate.capability_tier);
@@ -633,7 +808,27 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
     allowRed = false,
     preferStrandedCapacity = true,
     now = Date.now(),
+    requiredStage = isNonEmptyString(slot?.stage) ? slot.stage : null,
+    rolePreference = [],
   } = options;
+
+  // Stage gate: a candidate must meet the required stage, and a flagship
+  // (STAGE_3) candidate is admitted only when the required stage IS STAGE_3.
+  // Only enforced when a required stage is known and the candidate declares
+  // one, so legacy minimum_tier-only slots keep working unchanged.
+  const requiredStageIdx = requiredStage === null ? -1 : stageIndex(requiredStage);
+  const stageGate = (candidate) => {
+    if (requiredStageIdx === -1 || !isNonEmptyString(candidate?.stage)) return null;
+    const candIdx = stageIndex(candidate.stage);
+    if (candIdx === -1 || candIdx < requiredStageIdx) {
+      return `capability stage ${candidate.stage} is below the required stage ${requiredStage}`;
+    }
+    const flagshipIdx = stageIndex("STAGE_3_FLAGSHIP");
+    if (candIdx === flagshipIdx && requiredStageIdx !== flagshipIdx) {
+      return `flagship (STAGE_3) candidate is not admitted for ${requiredStage} work`;
+    }
+    return null;
+  };
 
   if (!isPlainObject(slot) || !Array.isArray(slot.candidates) || slot.candidates.length === 0) {
     return { status: "BLOCKED", code: "CONFIG_INVALID", reason: "slot has no ordered candidates" };
@@ -684,6 +879,11 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
         kind: "policy",
         why: `${label}: experimental candidate is not permitted for ${taskRisk}-risk work`,
       });
+    }
+
+    const stageFailure = stageGate(candidate);
+    if (stageFailure !== null) {
+      failures.push({ kind: "policy", why: `${label}: ${stageFailure}` });
     }
 
     const candidateIndex = tierIndex(tierOrder, candidate?.capability_tier);
@@ -737,9 +937,25 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
     const conserve = sameState.filter(({ conservation }) => CONSERVE_PRESSURES.has(conservation.conservation_pressure));
     const sustainable = sameState.filter(({ conservation }) => !CONSERVE_PRESSURES.has(conservation.conservation_pressure));
 
+    // Model-role preference is the LAST tie-break: it reorders inside the
+    // sustainable and conserve groups separately (so conservation stays
+    // dominant), and burst opportunity still runs after it (so opportunity
+    // stays dominant over preference). No preference list -> registry order.
+    const byPreference = (list) => {
+      if (!Array.isArray(rolePreference) || rolePreference.length === 0) return list;
+      const rank = (model) => {
+        const i = rolePreference.indexOf(model);
+        return i === -1 ? Number.POSITIVE_INFINITY : i;
+      };
+      return list
+        .map((entry, index) => ({ entry, index }))
+        .sort((a, b) => rank(a.entry.candidate?.model) - rank(b.entry.candidate?.model) || a.index - b.index)
+        .map(({ entry }) => entry);
+    };
+
     // Conservation expresses a preference, never a refusal: with every
     // candidate under pressure the band still routes, in registry order.
-    const ordered = [...sustainable, ...conserve];
+    const ordered = [...byPreference(sustainable), ...byPreference(conserve)];
 
     const promoted = ordered.find(
       ({ stranded, conservation }) =>
@@ -923,7 +1139,10 @@ export function scanText(text, options = {}) {
  * the case, not the policy.
  * ------------------------------------------------------------------------ */
 
-const CASE_KINDS = ["selection", "multi_stage"];
+const CASE_KINDS = ["selection", "multi_stage", "stage_admission", "reasoning_dispatch"];
+
+const STAGE_ADMISSION_RESULTS = ["STAGE_1_DEFAULT", "STAGE_2_ADVANCED", "STAGE_3_FLAGSHIP"];
+const DISPATCH_RESULTS = ["PASS", "INVALID_DISPATCH", "DISPATCH_CONTRACT_MISMATCH"];
 
 // "Cannot" and "must not" need different handling upstream, so a BLOCKED
 // result always says which it is. Owner: MODEL_ROUTING_POLICY.md.
@@ -1086,6 +1305,37 @@ export function validateRoutingCases(document, registry) {
         }
       }
 
+      // Flagship admission: selecting into a STAGE_3 slot without recording
+      // why Stage 2 was insufficient is not a legal routing decision.
+      if (slot.stage === "STAGE_3_FLAGSHIP") {
+        const fr = testCase.flagship_reason;
+        if (!isPlainObject(fr) || !isNonEmptyString(fr.escalation_reason) || !isNonEmptyString(fr.why_stage_2_insufficient)) {
+          findings.push(
+            `${named}: a STAGE_3_FLAGSHIP selection must record flagship_reason.escalation_reason and .why_stage_2_insufficient`,
+          );
+        }
+      }
+
+      continue;
+    }
+
+    if (testCase.kind === "stage_admission") {
+      const produced = admitStage(testCase.classification, testCase.signals);
+      if (!STAGE_ADMISSION_RESULTS.includes(produced)) {
+        findings.push(`${named}: admitStage produced unknown stage ${JSON.stringify(produced)}`);
+      } else if (produced !== testCase.expect.stage) {
+        findings.push(`${named}: expected stage ${testCase.expect.stage}, got ${produced}`);
+      }
+      continue;
+    }
+
+    if (testCase.kind === "reasoning_dispatch") {
+      const outcome = checkReasoningDispatch(testCase.dispatch);
+      if (!DISPATCH_RESULTS.includes(outcome.result)) {
+        findings.push(`${named}: checkReasoningDispatch produced unknown result ${JSON.stringify(outcome.result)}`);
+      } else if (outcome.result !== testCase.expect.result) {
+        findings.push(`${named}: expected dispatch result ${testCase.expect.result}, got ${outcome.result}`);
+      }
       continue;
     }
 

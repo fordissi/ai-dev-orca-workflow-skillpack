@@ -102,6 +102,8 @@ BLOCKED_REASON:
 RESOURCE_SUMMARY:
   actual_provider:          # 僅在 operational router 已解析時填，否則 UNKNOWN
   actual_model:             # 同上
+  selected_stage:           # STAGE_1_DEFAULT | STAGE_2_ADVANCED | STAGE_3_FLAGSHIP | UNKNOWN
+  attestation_result:       # MATCH | UNVERIFIED | DISPATCH_CONTRACT_MISMATCH | UNKNOWN
   resource_state:           # GREEN | YELLOW | RED | UNKNOWN
 
 HANDOFF_UPDATE:

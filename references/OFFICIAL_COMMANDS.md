@@ -1,6 +1,8 @@
 # Official / Primary Command Reference
 
-Local `--help` verified: **2026-09-01**
+Local `--help` verified: **2026-09-01**; reasoning / dispatch / attestation
+section re-verified **2026-09-02** against `codex-cli 0.151.0`,
+`Claude Code 2.1.258`, `agy 1.1.23`, `orca 1.4.194`.
 
 ## Version verification rule
 
@@ -73,6 +75,57 @@ orca terminal create --worktree active --title "<task>" --command '<command>' --
 orca terminal wait --terminal <handle> --for exit --timeout-ms 600000 --json
 orca terminal read --terminal <handle> --json
 ```
+
+### Dispatch path 與 reasoning 傳遞（實測 2026-09-02，`orca 1.4.194`）
+
+有兩條受支援的 worker 啟動路徑，reasoning 的傳遞方式不同：
+
+**路徑 A — 既有 terminal + `orca orchestration dispatch --inject`。**
+`orca orchestration dispatch --task <id> --to <handle> --inject` 只把 task 文字注入
+既有 terminal，**不帶任何模型或 reasoning 設定**。因此建立該 terminal 的
+`orca terminal create --command "<CLI>"` 中的 `<CLI>` **必須**已包含 `-m <model>` 與
+（Codex）`-c 'model_reasoning_effort="<value>"'` 或（Claude）`--effort <level>`。
+
+**路徑 B — `orca orchestration worker-start`。** 支援：
+
+```bash
+orca orchestration worker-start --task <id> --agent codex \
+  --model gpt-5.6-luna --effort max --worktree current --json
+```
+
+`--help` 明載：`--model` 接受 Claude / Codex / Cursor 的 opaque provider model id；
+**`--effort` 需要同時給 `--model`**；`--model` / `--effort` **不能與 `--terminal`
+併用**（既有 terminal 走路徑 A）。由 Orca 負責把 `--effort` 轉成各 provider 的實際
+機制。「max」對 Codex 的接受度未在本機以此路徑實跑驗證——首次使用時以
+`--dry-run` 或事後 attestation 確認。
+
+**不得假設 Orca 會自動把 effort 傳下去。** 路徑 A 完全不會；路徑 B 只有在明確
+傳 `--model` + `--effort` 時才會。
+
+### Runtime attestation（能力與缺口）
+
+Dispatch 後要驗證 worker 實際的 `provider` / `model` / `reasoning_effort` 是否等於
+contract。目前可用與不可用的部分：
+
+- **可用**：Codex interactive session 的 `/status` 面板會印出
+  `Model: <id> (reasoning <effort> ...)`。透過
+  `orca terminal send --terminal <h> --text "/status"`（注意 shell 的
+  `MSYS_NO_PATHCONV=1`，否則 `/status` 會被 Git-Bash 改寫成 Windows 路徑）再
+  `orca terminal read` 可取回並比對。
+- **可用**：`codex exec` 的結束輸出含 token usage，但**不含 reasoning effort**。
+- **未驗證 / 缺口**：`orca orchestration worker-show --dispatch <id> --json` 的
+  輸出未經驗證包含 `reasoning_effort`；不得假設它有。
+- **缺口**：沒有已驗證的 non-interactive 命令能回報「這個 worker 實際以什麼
+  reasoning effort 執行」。
+
+因此 attestation 步驟為 best-effort：能讀到 `/status` 就比對；讀不到就把
+`attestation_result` 記為 `UNVERIFIED` 並依 `WORKFLOW_POLICY.md` 的
+Execution lifecycle semantics 處置（`DISPATCH_CONTRACT_MISMATCH` 或
+`UNVERIFIED`），**不得**標為 `ROUTING_UNAVAILABLE`，也**不得**假裝比對通過。
+
+值得提出的 upstream feature request：**Expose the launched agent's resolved
+provider / model / reasoning-effort in `worker-show --json` and in a
+non-interactive per-terminal query.**
 
 讀取輸出（已於本機驗證）：
 
@@ -184,6 +237,43 @@ codex --model <model>
 codex -c 'model_reasoning_effort="medium"'
 ```
 
+### Reasoning effort 一律在命令列明確傳入
+
+`provider + model + reasoning_effort` 是 execution identity（見
+[`../policies/MODEL_ROUTING_POLICY.md`](../policies/MODEL_ROUTING_POLICY.md) 的
+*Reasoning effort is part of execution identity*）。Codex 的 dispatch **一律**同時
+明確傳入 `-m <model>` 與 `-c 'model_reasoning_effort="<value>"'`，即使該值等於 registry
+預設。
+
+原因（實測 2026-09-02）：`~/.codex/config.toml` 若含 `model_reasoning_effort = "max"`，
+任何**未在命令列明示** effort 的 `codex` / `codex exec` 呼叫都會靜默以 `max` 執行，
+與 contract 意圖不符。這是 `ROUTER_DROPPED_REASONING` + `CODEX_LOCAL_CONFIG_OVERRIDE`
+兩個問題的組合。`-c` 覆寫優先於 `config.toml`。
+
+Registry 目前使用的 effort 值：`low`、`medium`、`high`、`max`。`max` 已在本機
+`config.toml` 出現、且 `/status` 面板會顯示 `reasoning max`，因此視為受支援；其餘值
+在自動化前仍以已安裝 CLI 重新確認，**不得猜測未驗證的值**。
+
+逐字範例（non-interactive，contract 由 stdin 餵入）：
+
+```bash
+# Luna max（Stage 1 workhorse）
+codex exec -m gpt-5.6-luna -c 'model_reasoning_effort="max"' \
+  -s workspace-write --ask-for-approval on-request --color never -o <last-message-file> -
+
+# Terra high（Stage 2 advanced）
+codex exec -m gpt-5.6-terra -c 'model_reasoning_effort="high"' \
+  -s workspace-write --ask-for-approval on-request --color never -o <last-message-file> -
+
+# Sol medium（Stage 3 flagship — 絕不預設 max）
+codex exec -m gpt-5.6-sol -c 'model_reasoning_effort="medium"' \
+  -s read-only --ask-for-approval on-request --color never -o <last-message-file> -
+```
+
+Interactive terminal 啟動時同樣要帶 `-m` 與 `-c model_reasoning_effort`，因為
+`orca terminal create --command` 之後的 inject 只送 task 文字，不送模型設定（見下方
+Orca 一節）。
+
 非互動式執行（本機驗證可用，contract 由 stdin 餵入）：
 
 ```bash
@@ -237,6 +327,23 @@ claude -p "query" --output-format json
 claude -p --max-turns 3 "query"
 ```
 
+### Reasoning effort（Claude Code）
+
+`Claude Code 2.1.258` 的 `--help` 列出 `--effort <level>`，本機實測可用值：
+`low`、`medium`、`high`、`xhigh`、`max`。這是 **session-level effort**，是這個 CLI
+暴露出來的機制——不是原始 API 的 `reasoning_effort` 參數，但它就是 dispatch 時可控的
+旋鈕。
+
+```bash
+claude --model sonnet --effort high     # Stage 2 advanced
+claude --model opus   --effort medium   # Stage 3 flagship 預設；有 task 證據才 --effort high
+```
+
+Registry 對 Claude 候選的 `reasoning:` 值直接對應此旗標；`provider_default` 表示
+「不傳 `--effort`，用 CLI 預設」，僅用於不需要精確控制的 discovery fallback。
+**不得**假裝 Claude 的 effort 名稱與 Codex 的 `model_reasoning_effort` 值語意等價——
+兩者各自以自己 CLI 支援的方式表達，registry 分別記錄。
+
 `--permission-mode` 本機實測可用值：`acceptEdits`、`auto`、`bypassPermissions`、
 `manual`、`dontAsk`、`plan`。
 
@@ -266,11 +373,31 @@ Executable：`agy`
 ```bash
 agy models
 agy --model "<model id>"
+agy --effort "<low|medium|high>"
 agy -p "<prompt>"
 agy --print "<prompt>"
 ```
 
 **一律以 `agy models` 作為 live model source，不得永久寫死 display name。**
+
+### Reasoning effort（Antigravity / Gemini）
+
+實測 2026-09-02，`agy 1.1.23`：
+
+- Effort 同時以**兩種方式**表達：model id 內嵌（`gemini-3.7-flash-high` /
+  `-medium` / `-low`，見 `agy models`）以及 session 旗標 `--effort low|medium|high`。
+- Registry 的 `AUTO_GEMINI` + `reasoning: low` 應解析到 `gemini-3.7-flash-low` 家族
+  entry；`reasoning: high` 解析到 `gemini-3.7-flash-high`。dispatch 時傳明確的
+  已解析 model id，或 `--model <family> --effort <level>`。
+- `agy -p`（headless / print mode）**對需要 `command` 權限的工具 fail closed**：
+  實測任何在 headless 下要讀檔的呼叫都被 auto-deny（訊息：*"a tool required the
+  'command' permission that headless mode cannot prompt for"*）。因此 read-only
+  reviewer / repo discovery 這類 dispatch **無法**只靠 `agy -p` 完成，需要 interactive
+  per-call 核准，或事先在 `settings.json` 的 `permissions.allow` 放 scoped allow-rule。
+  用 approval-bypass 旗標可以繞過，但那對 read-only 合規驗證沒有意義。這是 Gemini
+  目前在本 pack 維持 `status: experimental` 的具體 blocker，記於
+  [`MODEL_EVIDENCE.md`](MODEL_EVIDENCE.md)。
+- `agy --mode plan` 是 read-only 模式，但**不解除**上述 headless 權限限制。
 
 ### 重要：Antigravity 會提供非 Gemini 模型
 

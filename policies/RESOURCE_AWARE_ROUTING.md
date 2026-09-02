@@ -5,7 +5,7 @@ Status: normative
 
 這份文件是 **resource state、freshness、quota window role（BURST / BUDGET）、conservation pressure、reset proximity / stranded capacity 與候選重排** 的 normative owner。
 
-**Quota 是 routing signal，不是 architecture authority。** 它只能在已達到相同 `minimum_tier` 的候選之間重排順序，永遠不能降低能力門檻、改變架構決策，或繞過 human gate。Slot 與 candidate 演算法屬於 [`MODEL_ROUTING_POLICY.md`](MODEL_ROUTING_POLICY.md)。
+**Quota 是 routing signal，不是 architecture authority。** 它只能在已達到相同 `minimum_tier` **且相同 capability `stage`** 的候選之間重排順序，永遠不能降低能力門檻、把候選拉到 slot 要求的 stage 之下、把 Stage 3 模型拉進 Stage 1/2 的 slot、改變架構決策，或繞過 human gate。Capability stage、stage admission、slot 與 candidate 演算法屬於 [`MODEL_ROUTING_POLICY.md`](MODEL_ROUTING_POLICY.md)；本文件的 overlay 一律在 stage eligibility **之後**才作用。特別是：「快要 reset 的閒置 BURST 額度」**不得**把 flagship（Stage 3）候選帶進 Stage 1/2 的工作。
 
 ## RESOURCE_STATE 是 overlay/cache，不是 source of truth
 

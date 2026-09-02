@@ -44,7 +44,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-sol
+      model: gpt-5.6-terra
 
   - name: unknown_primary_yellow_fallback
     kind: selection
@@ -59,7 +59,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-sol
+      model: gpt-5.6-terra
 
   - name: green_fallback_over_red_primary
     kind: selection
@@ -126,17 +126,15 @@ cases:
     kind: selection
     why: >-
       No qualified candidate must return BLOCKED rather than crossing the
-      capability floor. A candidate literally below its slot minimum cannot
-      exist in a valid registry - validateRegistry rejects that, and
-      tests/fixtures/invalid-model-registry.yaml covers it - so this case
-      exercises the unavailable and experimental exclusion paths. The stable
-      DEEP candidate fails on availability alone, so the honest code is
-      ROUTING_UNAVAILABLE: when that provider returns, routing succeeds
-      without any policy change.
+      capability floor. Both stable Stage 2 candidates (claude/sonnet and
+      codex/gpt-5.6-terra) are unavailable and the third is experimental with
+      allow_experimental false. Because a candidate would qualify the moment its
+      provider returns, the honest code is ROUTING_UNAVAILABLE, not
+      POLICY_BLOCKED.
     slot: DEEP_REASONER
     resource_states:
       claude: { state: GREEN, available: false, source: ORCA_RUNTIME }
-      codex: { state: GREEN, available: true, source: ORCA_RUNTIME }
+      codex: { state: GREEN, available: false, source: ORCA_RUNTIME }
     options: { allowExperimental: false, taskRisk: critical }
     expect:
       status: BLOCKED
@@ -162,8 +160,10 @@ cases:
   - name: auth_contract_requires_deep_reasoner
     kind: multi_stage
     why: >-
-      Auth/RBAC/RLS work is an architecture contract decision. It routes to the
-      DEEP tier and reaches a human gate that quota pressure cannot bypass.
+      Auth/RBAC/RLS work carries Stage 2 advanced signals (high ambiguity,
+      structural change) so it routes to the Stage 2 DEEP_REASONER slot, and it
+      reaches a human gate that quota pressure cannot bypass. Auth/RBAC/RLS is a
+      human-gate trigger, not an automatic Stage 3 admission.
     classification:
       risk: critical
       complexity: high
@@ -176,7 +176,7 @@ cases:
         - stage: decision
           role: ROUTER
           slot: DEEP_REASONER
-          minimum_tier: DEEP
+          minimum_tier: STRONG
         - stage: review
           role: INDEPENDENT_REVIEWER
           slot: INDEPENDENT_REVIEWER
@@ -268,6 +268,7 @@ cases:
     slot: ESCALATION_MODEL
     resource_states:
       claude: { state: GREEN, available: true, source: UNKNOWN }
+      codex: { state: GREEN, available: true, source: UNKNOWN }
     options: { allowExperimental: false, taskRisk: critical }
     expect:
       status: BLOCKED
@@ -283,6 +284,7 @@ cases:
     slot: ESCALATION_MODEL
     resource_states:
       claude: { state: GREEN, available: true }
+      codex: { state: GREEN, available: true }
     options: { allowExperimental: false, taskRisk: critical }
     expect:
       status: BLOCKED
@@ -302,7 +304,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-sol
+      model: gpt-5.6-terra
 
   - name: explicit_allow_experimental_selects
     kind: selection
@@ -354,7 +356,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-sol
+      model: gpt-5.6-terra
       stranded_capacity_risk: HIGH
 
   - name: stranded_capacity_promotes_over_registry_order
@@ -391,10 +393,11 @@ cases:
   - name: stranded_capacity_never_admits_an_excluded_candidate
     kind: selection
     why: >-
-      A DEEP slot whose second candidate is experimental and sits on a pool
-      about to strand most of its capacity. Opportunity cost is a routing
+      The third DEEP_REASONER candidate is experimental and sits on a pool about
+      to strand almost all of its capacity. Opportunity cost is a routing
       signal, never an authorisation: an excluded candidate stays excluded
-      however much quota is about to expire behind it.
+      however much quota is about to expire behind it, so the registry head is
+      selected with no promotion.
     slot: DEEP_REASONER
     resource_states:
       claude:
@@ -402,18 +405,27 @@ cases:
         available: true
         source: ORCA_RUNTIME
         checked_at: "2026-09-01T12:00:00Z"
-        weekly_window: { remaining_ratio: 0.20, reset_at: "2026-09-08T00:00:00Z" }
+        weekly_window: { remaining_ratio: 0.80, reset_at: "2026-09-08T00:00:00Z" }
       codex:
         state: GREEN
         available: true
         source: ORCA_RUNTIME
         checked_at: "2026-09-01T12:00:00Z"
-        short_window: { remaining_ratio: 0.95, reset_at: "2026-09-01T13:00:00Z" }
+        weekly_window: { remaining_ratio: 0.80, reset_at: "2026-09-08T00:00:00Z" }
+      antigravity:
+        pools:
+          gemini:
+            state: GREEN
+            available: true
+            source: ORCA_RUNTIME
+            checked_at: "2026-09-01T12:00:00Z"
+            short_window: { remaining_ratio: 0.95, reset_at: "2026-09-01T13:00:00Z" }
     options: { allowExperimental: false, taskRisk: critical, now: "2026-09-01T12:01:00Z" }
     expect:
       status: SELECTED
       provider: claude
       model: sonnet
+      stranded_promotion: false
 
   - name: stranded_capacity_never_overrides_disjointness
     kind: selection
@@ -479,7 +491,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-sol
+      model: gpt-5.6-terra
       stranded_capacity_risk: UNKNOWN
 
   - name: stranded_capacity_never_promotes_across_bands
@@ -532,7 +544,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-sol
+      model: gpt-5.6-terra
       stranded_capacity_risk: UNKNOWN
 
   - name: untrusted_source_confers_no_opportunity_signal
@@ -559,7 +571,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-sol
+      model: gpt-5.6-terra
 
   # ------------------------------------------------------------------- #
   # Hierarchical quota windows.
@@ -627,7 +639,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-sol
+      model: gpt-5.6-terra
       stranded_capacity_risk: HIGH
       conservation_pressure: LOW
       conservation_demotion: false
@@ -658,7 +670,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-sol
+      model: gpt-5.6-terra
       conservation_pressure: LOW
       conservation_demotion: false
 
@@ -715,7 +727,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-sol
+      model: gpt-5.6-terra
       stranded_promotion: false
       conservation_demotion: false
 
@@ -743,7 +755,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-sol
+      model: gpt-5.6-terra
       stranded_capacity_risk: UNKNOWN
       stranded_promotion: false
 
@@ -894,7 +906,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-sol
+      model: gpt-5.6-terra
       conservation_pressure: UNKNOWN
       conservation_demotion: false
 
@@ -923,7 +935,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-sol
+      model: gpt-5.6-terra
       conservation_pressure: CRITICAL
       conservation_demotion: false
 
@@ -987,3 +999,629 @@ cases:
       conservation_pressure: LOW
       stranded_capacity_risk: HIGH
       conservation_demotion: true
+
+  # =================================================================== #
+  # THREE-STAGE CAPABILITY ROUTING (0.5)
+  #
+  # kind: stage_admission    -> admitStage(classification, signals); expects a
+  #                             STAGE_1_DEFAULT / STAGE_2_ADVANCED / STAGE_3_FLAGSHIP.
+  # kind: reasoning_dispatch -> checkReasoningDispatch(dispatch); expects
+  #                             PASS / INVALID_DISPATCH / DISPATCH_CONTRACT_MISMATCH.
+  # Risk, production-relatedness and test volume are never stage inputs.
+  # =================================================================== #
+
+  # ---- Stage selection ---------------------------------------------- #
+
+  - name: ordinary_bounded_implementation_is_stage_1
+    kind: stage_admission
+    why: A clear contract with test-backed acceptance is the Stage 1 default.
+    classification:
+      risk: low
+      complexity: low
+      context_size: small
+      ambiguity: low
+      change_intensity: localized
+      verification_need: standard
+    expect: { stage: STAGE_1_DEFAULT }
+
+  - name: production_but_mechanically_simple_readonly_is_stage_1
+    kind: stage_admission
+    why: >-
+      Production-related and security-sensitive, but mechanically trivial and
+      read-only. Strict permissions, review and a human gate belong on it; a
+      higher capability stage does not.
+    classification:
+      risk: high
+      complexity: low
+      context_size: small
+      ambiguity: low
+      change_intensity: none
+      verification_need: independent
+    signals:
+      security_involvement: true
+    expect: { stage: STAGE_1_DEFAULT }
+
+  - name: high_risk_alone_is_not_stage_3_or_stage_2
+    kind: stage_admission
+    why: Risk is not capability requirement. Critical risk with nothing hard stays Stage 1.
+    classification:
+      risk: critical
+      complexity: low
+      context_size: small
+      ambiguity: low
+      change_intensity: none
+      verification_need: standard
+    expect: { stage: STAGE_1_DEFAULT }
+
+  - name: test_volume_is_not_a_stage_input
+    kind: stage_admission
+    why: >-
+      "Many tests" is not a classification dimension and must not raise the
+      stage; an ordinary refactor stays Stage 1 regardless of suite size.
+    classification:
+      risk: medium
+      complexity: low
+      context_size: medium
+      ambiguity: low
+      change_intensity: localized
+      verification_need: standard
+    expect: { stage: STAGE_1_DEFAULT }
+
+  - name: difficult_cross_module_implementation_is_stage_2
+    kind: stage_admission
+    why: High complexity and structural change intensity are advanced signals.
+    classification:
+      risk: medium
+      complexity: high
+      context_size: large
+      ambiguity: medium
+      change_intensity: structural
+      verification_need: standard
+    expect: { stage: STAGE_2_ADVANCED }
+
+  - name: architecture_rls_ambiguity_is_stage_2
+    kind: stage_admission
+    why: >-
+      Architecture reasoning plus substantial contract ambiguity is Stage 2.
+      Auth/RBAC/RLS is separately a human-gate trigger, not a Stage 3 signal.
+    classification:
+      risk: high
+      complexity: medium
+      context_size: medium
+      ambiguity: high
+      change_intensity: localized
+      verification_need: independent
+    signals:
+      architecture_involvement: true
+      security_involvement: true
+    expect: { stage: STAGE_2_ADVANCED }
+
+  - name: failed_stage_1_attempt_admits_stage_2
+    kind: stage_admission
+    why: A failed Stage 1 attempt is itself the advanced signal.
+    classification:
+      risk: medium
+      complexity: medium
+      context_size: medium
+      ambiguity: medium
+      change_intensity: localized
+      verification_need: standard
+    signals:
+      prior_stage_failed: STAGE_1_DEFAULT
+    expect: { stage: STAGE_2_ADVANCED }
+
+  - name: failed_stage_2_convergence_admits_stage_3
+    kind: stage_admission
+    why: Stage 2 failing to converge is exceptional evidence for flagship escalation.
+    classification:
+      risk: high
+      complexity: high
+      context_size: large
+      ambiguity: high
+      change_intensity: structural
+      verification_need: adversarial
+    signals:
+      prior_stage_failed: STAGE_2_ADVANCED
+    expect: { stage: STAGE_3_FLAGSHIP }
+
+  - name: irreversible_architecture_with_material_ambiguity_is_stage_3
+    kind: stage_admission
+    why: A major irreversible architectural decision under material ambiguity.
+    classification:
+      risk: critical
+      complexity: high
+      context_size: large
+      ambiguity: high
+      change_intensity: structural
+      verification_need: independent
+    signals:
+      irreversible: true
+      architecture_involvement: true
+    expect: { stage: STAGE_3_FLAGSHIP }
+
+  - name: adversarial_security_analysis_is_stage_3
+    kind: stage_admission
+    why: Security semantics under adversarial verification is flagship reasoning.
+    classification:
+      risk: critical
+      complexity: high
+      context_size: medium
+      ambiguity: medium
+      change_intensity: localized
+      verification_need: adversarial
+    signals:
+      security_involvement: true
+    expect: { stage: STAGE_3_FLAGSHIP }
+
+  - name: reviewer_deadlock_admits_stage_3
+    kind: stage_admission
+    why: Qualified reviewers who cannot resolve a disagreement at Stage 2.
+    classification:
+      risk: high
+      complexity: high
+      context_size: medium
+      ambiguity: high
+      change_intensity: structural
+      verification_need: adversarial
+    signals:
+      reviewer_disagreement_unresolved: true
+    expect: { stage: STAGE_3_FLAGSHIP }
+
+  # ---- Candidate selection ---------------------------------------- #
+
+  - name: healthy_codex_stage_1_selects_luna_max
+    kind: selection
+    why: The Stage 1 workhorse. Gemini is experimental so Luna is the pick.
+    slot: DEFAULT_IMPLEMENTER
+    resource_states:
+      codex: { state: GREEN, available: true, source: ORCA_RUNTIME }
+    options: { allowExperimental: false, taskRisk: low }
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-luna
+
+  - name: codex_budget_constrained_stage_1_falls_to_gemini_low
+    kind: selection
+    why: >-
+      Codex weekly budget is nearly spent five days from reset, so the head is
+      conserved and a qualified healthy Gemini Flash low takes the Stage 1 work.
+    slot: DEFAULT_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.06, reset_at: "2026-09-08T12:00:00Z" }
+      antigravity:
+        pools:
+          gemini:
+            state: GREEN
+            available: true
+            source: ORCA_RUNTIME
+            checked_at: "2026-09-01T12:00:00Z"
+            weekly_window: { remaining_ratio: 0.80, reset_at: "2026-09-08T12:00:00Z" }
+    options: { allowExperimental: true, taskRisk: low, now: "2026-09-01T12:01:00Z" }
+    expect:
+      status: SELECTED
+      provider: antigravity
+      model: AUTO_GEMINI
+      conservation_demotion: true
+
+  - name: stage_2_healthy_peers_take_registry_head
+    kind: selection
+    why: With Terra and Sonnet both healthy the registry head (Terra) is selected.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex: { state: GREEN, available: true, source: ORCA_RUNTIME }
+      claude: { state: GREEN, available: true, source: ORCA_RUNTIME }
+    options: { allowExperimental: false, taskRisk: medium }
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-terra
+
+  - name: stage_2_terra_constrained_selects_sonnet
+    kind: selection
+    why: Terra's weekly budget is critical and distant; the healthy Sonnet takes it.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.06, reset_at: "2026-09-08T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.80, reset_at: "2026-09-08T12:00:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-01T12:01:00Z" }
+    expect:
+      status: SELECTED
+      provider: claude
+      model: sonnet
+      conservation_demotion: true
+
+  - name: stage_2_sonnet_constrained_keeps_terra
+    kind: selection
+    why: >-
+      Sonnet is the conserved one now; the registry head Terra is healthy and
+      keeps the work, with no demotion of the head.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.80, reset_at: "2026-09-08T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.06, reset_at: "2026-09-08T12:00:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-01T12:01:00Z" }
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-terra
+      conservation_demotion: false
+
+  - name: stage_2_both_peers_constrained_falls_to_gemini_high
+    kind: selection
+    why: >-
+      Both Terra and Sonnet are under critical, distant budget pressure and a
+      qualified healthy Gemini Flash high is the quota-relief fallback.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.06, reset_at: "2026-09-08T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.06, reset_at: "2026-09-08T12:00:00Z" }
+      antigravity:
+        pools:
+          gemini:
+            state: GREEN
+            available: true
+            source: ORCA_RUNTIME
+            checked_at: "2026-09-01T12:00:00Z"
+            weekly_window: { remaining_ratio: 0.80, reset_at: "2026-09-08T12:00:00Z" }
+    options: { allowExperimental: true, taskRisk: medium, now: "2026-09-01T12:01:00Z" }
+    expect:
+      status: SELECTED
+      provider: antigravity
+      model: AUTO_GEMINI
+      conservation_demotion: true
+
+  - name: stage_3_terminal_heavy_prefers_sol
+    kind: selection
+    why: >-
+      A flagship terminal-heavy execution task. Role preference keeps Sol (the
+      registry head) ahead of Opus when the two are otherwise equal.
+    slot: ESCALATION_MODEL
+    resource_states:
+      codex: { state: GREEN, available: true, source: ORCA_RUNTIME }
+      claude: { state: GREEN, available: true, source: ORCA_RUNTIME }
+    options:
+      allowExperimental: false
+      taskRisk: critical
+      rolePreference: [gpt-5.6-sol]
+    flagship_reason:
+      escalation_reason: exceptional multi-stage agentic execution
+      why_stage_2_insufficient: >-
+        Stage 2 could not drive the long terminal sequence to a converged,
+        test-green state across two attempts.
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-sol
+
+  - name: stage_3_architecture_reasoning_prefers_opus
+    kind: selection
+    why: >-
+      A flagship architecture-adjudication task. Role preference moves Opus
+      ahead of the registry head Sol, proving the tie-break actually reorders.
+    slot: ESCALATION_MODEL
+    resource_states:
+      codex: { state: GREEN, available: true, source: ORCA_RUNTIME }
+      claude: { state: GREEN, available: true, source: ORCA_RUNTIME }
+    options:
+      allowExperimental: false
+      taskRisk: critical
+      rolePreference: [opus]
+    flagship_reason:
+      escalation_reason: unresolved disagreement between qualified reviewers
+      why_stage_2_insufficient: >-
+        Two Stage 2 reviewers reached opposing conclusions on the irreversible
+        boundary and could not reconcile them.
+    expect:
+      status: SELECTED
+      provider: claude
+      model: opus
+
+  - name: stage_1_task_excludes_flagship_even_with_abundant_quota
+    kind: selection
+    why: >-
+      A Stage 1 requirement against a slot whose only candidates are flagship
+      models sitting on huge about-to-reset windows. The stage gate excludes
+      them on policy - no amount of stranded quota admits a Stage 3 model into
+      Stage 1 work.
+    slot: ESCALATION_MODEL
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        short_window: { remaining_ratio: 0.99, reset_at: "2026-09-01T12:30:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        short_window: { remaining_ratio: 0.99, reset_at: "2026-09-01T12:30:00Z" }
+    options:
+      allowExperimental: false
+      taskRisk: low
+      requiredStage: STAGE_1_DEFAULT
+      now: "2026-09-01T12:01:00Z"
+    expect:
+      status: BLOCKED
+      code: POLICY_BLOCKED
+
+  - name: stage_3_model_with_stranded_quota_cannot_enter_stage_2
+    kind: selection
+    why: >-
+      Same shape, required stage STAGE_2_ADVANCED. A flagship candidate is
+      admitted only when the required stage IS STAGE_3, so a burst window about
+      to strand its whole capacity cannot drag Sol or Opus into Stage 2 work.
+    slot: ESCALATION_MODEL
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        short_window: { remaining_ratio: 0.98, reset_at: "2026-09-01T12:45:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        short_window: { remaining_ratio: 0.98, reset_at: "2026-09-01T12:45:00Z" }
+    options:
+      allowExperimental: false
+      taskRisk: medium
+      requiredStage: STAGE_2_ADVANCED
+      now: "2026-09-01T12:01:00Z"
+    expect:
+      status: BLOCKED
+      code: POLICY_BLOCKED
+
+  - name: stage_1_luna_and_gemini_healthy_keep_registry_order
+    kind: selection
+    why: Two healthy Stage 1 candidates, no signal - registry preference (Luna) decides.
+    slot: DEFAULT_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.75, reset_at: "2026-09-08T12:00:00Z" }
+      antigravity:
+        pools:
+          gemini:
+            state: GREEN
+            available: true
+            source: ORCA_RUNTIME
+            checked_at: "2026-09-01T12:00:00Z"
+            weekly_window: { remaining_ratio: 0.90, reset_at: "2026-09-08T12:00:00Z" }
+    options: { allowExperimental: true, taskRisk: low, now: "2026-09-01T12:01:00Z" }
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-luna
+
+  - name: stage_1_abundant_burst_still_loses_to_scarce_budget
+    kind: selection
+    why: >-
+      Luna has most of a burst window about to reset but its weekly budget is
+      nearly spent five days out. BUDGET scarcity outranks BURST opportunity
+      even for the registry head, so the healthy Gemini takes the work.
+    slot: DEFAULT_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        short_window: { remaining_ratio: 0.90, reset_at: "2026-09-01T13:30:00Z" }
+        weekly_window: { remaining_ratio: 0.06, reset_at: "2026-09-08T12:00:00Z" }
+      antigravity:
+        pools:
+          gemini:
+            state: GREEN
+            available: true
+            source: ORCA_RUNTIME
+            checked_at: "2026-09-01T12:00:00Z"
+            weekly_window: { remaining_ratio: 0.80, reset_at: "2026-09-08T12:00:00Z" }
+    options: { allowExperimental: true, taskRisk: low, now: "2026-09-01T12:01:00Z" }
+    expect:
+      status: SELECTED
+      provider: antigravity
+      model: AUTO_GEMINI
+      conservation_demotion: true
+
+  # ---- Reviewer disjointness ------------------------------------- #
+
+  - name: reviewer_excludes_the_codex_implementer_family
+    kind: selection
+    why: >-
+      Implementer is codex/gpt-5.6, so every codex reviewer candidate is
+      removed and the experimental Gemini is not permitted; Sonnet is the
+      disjoint pick.
+    slot: INDEPENDENT_REVIEWER
+    resource_states:
+      antigravity: { pools: { gemini: { state: GREEN, available: true, source: ORCA_RUNTIME } } }
+      claude: { state: GREEN, available: true, source: ORCA_RUNTIME }
+      codex: { state: GREEN, available: true, source: ORCA_RUNTIME }
+    options:
+      allowExperimental: false
+      taskRisk: high
+      excludeProvider: codex
+      excludeModelFamily: gpt-5.6
+    expect:
+      status: SELECTED
+      provider: claude
+      model: sonnet
+      disjoint_from: { provider: codex, model_family: gpt-5.6 }
+
+  - name: reviewer_excludes_the_claude_implementer_family
+    kind: selection
+    why: >-
+      Implementer is claude/claude-sonnet. The Sonnet reviewer is removed; with
+      experimental candidates authorised the disjoint Gemini reviewer is first.
+    slot: INDEPENDENT_REVIEWER
+    resource_states:
+      antigravity: { pools: { gemini: { state: GREEN, available: true, source: ORCA_RUNTIME } } }
+      claude: { state: GREEN, available: true, source: ORCA_RUNTIME }
+      codex: { state: GREEN, available: true, source: ORCA_RUNTIME }
+    options:
+      allowExperimental: true
+      taskRisk: medium
+      excludeProvider: claude
+      excludeModelFamily: claude-sonnet
+    expect:
+      status: SELECTED
+      provider: antigravity
+      model: AUTO_GEMINI
+      disjoint_from: { provider: claude, model_family: claude-sonnet }
+
+  - name: reviewer_shares_model_family_through_another_provider_is_excluded
+    kind: selection
+    why: >-
+      A Gemini-family implementer routed through a different provider still
+      shares the model family, so the antigravity Gemini reviewer is excluded on
+      family alone and Luna is the disjoint pick.
+    slot: INDEPENDENT_REVIEWER
+    resource_states:
+      antigravity: { pools: { gemini: { state: GREEN, available: true, source: ORCA_RUNTIME } } }
+      claude: { state: GREEN, available: true, source: ORCA_RUNTIME }
+      codex: { state: GREEN, available: true, source: ORCA_RUNTIME }
+    options:
+      allowExperimental: true
+      taskRisk: medium
+      excludeProvider: cursor
+      excludeModelFamily: gemini
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-luna
+      disjoint_from: { provider: cursor, model_family: gemini }
+
+  - name: reviewer_disjointness_survives_a_stranded_quota_pull
+    kind: selection
+    why: >-
+      The implementer's own provider has a burst window about to strand almost
+      all its capacity. Disjointness is a hard filter above resource
+      optimisation, so the reviewer stays on the other provider regardless.
+    slot: INDEPENDENT_REVIEWER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        short_window: { remaining_ratio: 0.99, reset_at: "2026-09-01T12:30:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.60, reset_at: "2026-09-08T12:00:00Z" }
+    options:
+      allowExperimental: false
+      taskRisk: high
+      excludeProvider: codex
+      excludeModelFamily: gpt-5.6
+      now: "2026-09-01T12:01:00Z"
+    expect:
+      status: SELECTED
+      provider: claude
+      model: sonnet
+      disjoint_from: { provider: codex, model_family: gpt-5.6 }
+
+  # ---- Reasoning propagation ------------------------------------- #
+
+  - name: codex_dispatch_without_explicit_effort_is_invalid
+    kind: reasoning_dispatch
+    why: >-
+      Registry says Luna max. A codex launch command that omits
+      model_reasoning_effort would silently inherit local config, so the
+      dispatch itself is invalid before it runs.
+    dispatch:
+      provider: codex
+      expected: { model: gpt-5.6-luna, reasoning_effort: max }
+      command: "codex exec -m gpt-5.6-luna -s workspace-write --color never -o out -"
+    expect: { result: INVALID_DISPATCH }
+
+  - name: codex_sol_medium_run_as_sol_max_is_a_contract_mismatch
+    kind: reasoning_dispatch
+    why: The incident from Company Platform. Model id matches, reasoning effort does not.
+    dispatch:
+      provider: codex
+      expected: { model: gpt-5.6-sol, reasoning_effort: medium }
+      command: >-
+        codex exec -m gpt-5.6-sol -c 'model_reasoning_effort="medium"' -s read-only --color never -o out -
+      actual: { model: gpt-5.6-sol, reasoning_effort: max }
+    expect: { result: DISPATCH_CONTRACT_MISMATCH }
+
+  - name: codex_terra_high_run_as_terra_high_passes
+    kind: reasoning_dispatch
+    why: Explicit model and reasoning on the command line, and the runtime agrees.
+    dispatch:
+      provider: codex
+      expected: { model: gpt-5.6-terra, reasoning_effort: high }
+      command: >-
+        codex exec -m gpt-5.6-terra -c 'model_reasoning_effort="high"' -s workspace-write --color never -o out -
+      actual: { model: gpt-5.6-terra, reasoning_effort: high }
+    expect: { result: PASS }
+
+  - name: explicit_dispatch_effort_wins_over_local_config
+    kind: reasoning_dispatch
+    why: >-
+      Local config says max, the registry says medium, the command sets medium
+      explicitly, and the observed run is medium. The explicit dispatch is what
+      counts.
+    dispatch:
+      provider: codex
+      expected: { model: gpt-5.6-sol, reasoning_effort: medium }
+      command: >-
+        codex exec -m gpt-5.6-sol -c 'model_reasoning_effort="medium"' -s read-only --color never -o out -
+      actual: { model: gpt-5.6-sol, reasoning_effort: medium }
+    expect: { result: PASS }
+
+  - name: matching_model_id_does_not_excuse_a_reasoning_mismatch
+    kind: reasoning_dispatch
+    why: A right model at the wrong effort is still the wrong execution identity.
+    dispatch:
+      provider: codex
+      expected: { model: gpt-5.6-luna, reasoning_effort: high }
+      command: >-
+        codex exec -m gpt-5.6-luna -c 'model_reasoning_effort="high"' -s workspace-write --color never -o out -
+      actual: { model: gpt-5.6-luna, reasoning_effort: max }
+    expect: { result: DISPATCH_CONTRACT_MISMATCH }
