@@ -80,8 +80,10 @@ cases:
     kind: selection
     why: >-
       The reviewer must differ from the implementer in BOTH provider and model
-      family. Here the implementer is codex/gpt-5.6, so every codex candidate
-      is removed and the experimental antigravity candidate is not permitted.
+      family. The implementer is codex/gpt-5.6, so every codex candidate is
+      removed. The user-enabled antigravity Gemini reviewer is disjoint and
+      GREEN, so it is the pick - its `status: experimental` label is
+      informational and does not block it.
     slot: INDEPENDENT_REVIEWER
     resource_states:
       antigravity: { pools: { gemini: { state: GREEN, available: true, source: ORCA_RUNTIME } } }
@@ -94,21 +96,21 @@ cases:
       excludeModelFamily: gpt-5.6
     expect:
       status: SELECTED
-      provider: claude
-      model: sonnet
+      provider: antigravity
+      model: AUTO_GEMINI
       disjoint_from:
         provider: codex
         model_family: gpt-5.6
 
-  - name: experimental_high_risk_is_blocked
+  - name: experimental_label_does_not_block_enabled_candidate
     kind: selection
     why: >-
-      A regression hunt on high-risk work must be disjoint from the
-      implementer, which removes every codex candidate. The only remaining
-      candidate is experimental, and experimental may not take high-risk work
-      unless a human explicitly allows the experiment. Both exclusions are
-      policy, so no amount of waiting helps: this is POLICY_BLOCKED, and only a
-      human can lift it.
+      A high-risk regression hunt, disjoint from a codex implementer, leaving
+      only the user-enabled antigravity Gemini. Under the user-authoritative
+      registry, `status: experimental` is informational and `allowExperimental`
+      has no effect on an enabled candidate: Gemini is selected, not blocked.
+      (Runtime execution eligibility for the specific task shape is checked
+      separately at dispatch.)
     slot: REGRESSION_HUNTER
     resource_states:
       antigravity: { pools: { gemini: { state: GREEN, available: true, source: ORCA_RUNTIME } } }
@@ -119,22 +121,24 @@ cases:
       excludeProvider: codex
       excludeModelFamily: gpt-5.6
     expect:
-      status: BLOCKED
-      code: POLICY_BLOCKED
+      status: SELECTED
+      provider: antigravity
+      model: AUTO_GEMINI
 
   - name: no_candidate_meets_minimum
     kind: selection
     why: >-
       No qualified candidate must return BLOCKED rather than crossing the
-      capability floor. Both stable Stage 2 candidates (claude/sonnet and
-      codex/gpt-5.6-terra) are unavailable and the third is experimental with
-      allow_experimental false. Because a candidate would qualify the moment its
+      capability floor. All three user-enabled Stage 2 candidates
+      (claude/sonnet, codex/gpt-5.6-terra, antigravity/AUTO_GEMINI) are
+      unavailable at runtime. Because a candidate would qualify the moment its
       provider returns, the honest code is ROUTING_UNAVAILABLE, not
       POLICY_BLOCKED.
     slot: DEEP_REASONER
     resource_states:
       claude: { state: GREEN, available: false, source: ORCA_RUNTIME }
       codex: { state: GREEN, available: false, source: ORCA_RUNTIME }
+      antigravity: { pools: { gemini: { state: GREEN, available: false, source: ORCA_RUNTIME } } }
     options: { allowExperimental: false, taskRisk: critical }
     expect:
       status: BLOCKED
@@ -152,6 +156,7 @@ cases:
     resource_states:
       codex: { state: RED, available: true, source: ORCA_RUNTIME }
       claude: { state: RED, available: true, source: ORCA_RUNTIME }
+      antigravity: { pools: { gemini: { state: RED, available: true, source: ORCA_RUNTIME } } }
     options: { allowExperimental: false, taskRisk: medium }
     expect:
       status: BLOCKED
@@ -300,6 +305,7 @@ cases:
     resource_states:
       codex: { state: RED, available: true, source: ORCA_RUNTIME }
       claude: { state: RED, available: true, source: ORCA_RUNTIME }
+      antigravity: { pools: { gemini: { state: RED, available: true, source: ORCA_RUNTIME } } }
     options: { allowExperimental: false, allowRed: true, taskRisk: medium }
     expect:
       status: SELECTED
@@ -309,9 +315,9 @@ cases:
   - name: explicit_allow_experimental_selects
     kind: selection
     why: >-
-      allow_experimental is likewise a Strategic Contract authorisation. Granted
-      explicitly, the experimental discovery candidate becomes eligible; the
-      default of false is what makes experimental_high_risk_is_blocked block.
+      Retained for backward compatibility. The user-enabled antigravity Gemini
+      discovery candidate is selected here whether or not allowExperimental is
+      set - the flag has no routing effect on an enabled registry candidate.
     slot: LONG_CONTEXT_DISCOVERY
     resource_states:
       antigravity: { pools: { gemini: { state: GREEN, available: true, source: ORCA_RUNTIME } } }
@@ -393,11 +399,10 @@ cases:
   - name: stranded_capacity_never_admits_an_excluded_candidate
     kind: selection
     why: >-
-      The third DEEP_REASONER candidate is experimental and sits on a pool about
-      to strand almost all of its capacity. Opportunity cost is a routing
-      signal, never an authorisation: an excluded candidate stays excluded
-      however much quota is about to expire behind it, so the registry head is
-      selected with no promotion.
+      The third DEEP_REASONER candidate sits on a pool about to strand almost
+      all of its capacity, but its budget is unread, so it never earns a burst
+      promotion. Opportunity cost only reorders candidates whose own budget is
+      known healthy; the registry head is selected with no promotion.
     slot: DEEP_REASONER
     resource_states:
       claude:
@@ -1472,8 +1477,8 @@ cases:
     kind: selection
     why: >-
       Implementer is codex/gpt-5.6, so every codex reviewer candidate is
-      removed and the experimental Gemini is not permitted; Sonnet is the
-      disjoint pick.
+      removed. The user-enabled Gemini reviewer is disjoint and GREEN, so it is
+      the pick; its experimental label does not block it.
     slot: INDEPENDENT_REVIEWER
     resource_states:
       antigravity: { pools: { gemini: { state: GREEN, available: true, source: ORCA_RUNTIME } } }
@@ -1486,8 +1491,8 @@ cases:
       excludeModelFamily: gpt-5.6
     expect:
       status: SELECTED
-      provider: claude
-      model: sonnet
+      provider: antigravity
+      model: AUTO_GEMINI
       disjoint_from: { provider: codex, model_family: gpt-5.6 }
 
   - name: reviewer_excludes_the_claude_implementer_family
@@ -1625,3 +1630,303 @@ cases:
         codex exec -m gpt-5.6-luna -c 'model_reasoning_effort="high"' -s workspace-write --color never -o out -
       actual: { model: gpt-5.6-luna, reasoning_effort: max }
     expect: { result: DISPATCH_CONTRACT_MISMATCH }
+
+  # =================================================================== #
+  # USER-AUTHORITATIVE REGISTRY + QUOTA-BASED AUTONOMOUS SELECTION (0.6)
+  #
+  # `enabled: true|false` is human-authoritative. `status` / `evidence_status`
+  # are informational and never gate routing. An explicit human model pin
+  # (options.pinnedCandidate) is the highest routing priority and can only be
+  # refused on hard execution eligibility. `disable_models` on a case flips
+  # `enabled: false` on the named models to exercise operator config.
+  # =================================================================== #
+
+  - name: human_pins_gemini_experimental_and_it_is_selected
+    kind: selection
+    why: >-
+      The human said "use Gemini 3.7 Flash". It is enabled, disjoint, GREEN and
+      stage-compatible, so it is selected - its `status: experimental` label and
+      incomplete qualification are informational, not a veto.
+    slot: INDEPENDENT_REVIEWER
+    resource_states:
+      antigravity: { pools: { gemini: { state: GREEN, available: true, source: ORCA_RUNTIME } } }
+    options:
+      allowExperimental: false
+      taskRisk: medium
+      pinnedCandidate: { provider: antigravity, model: AUTO_GEMINI }
+    expect:
+      status: SELECTED
+      provider: antigravity
+      model: AUTO_GEMINI
+
+  - name: human_pins_terra_ai_cannot_swap_to_sonnet
+    kind: selection
+    why: >-
+      The human said "use Terra high". Terra's weekly budget is under pressure
+      and Sonnet is healthier, so autonomous quota routing would pick Sonnet -
+      but a pinned model is not swapped for quota, benchmark or evidence.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.15, reset_at: "2026-09-08T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.85, reset_at: "2026-09-08T12:00:00Z" }
+    options:
+      allowExperimental: false
+      taskRisk: medium
+      now: "2026-09-01T12:01:00Z"
+      pinnedCandidate: { provider: codex, model: gpt-5.6-terra }
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-terra
+
+  - name: enabled_gemini_provisional_is_eligible_for_quota_routing
+    kind: selection
+    why: >-
+      No pin, no allowExperimental. Both Codex and Claude weekly budgets are
+      critical and distant; the enabled Gemini (evidence_status provisional) is
+      healthy and takes the work through ordinary conservation demotion.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.06, reset_at: "2026-09-08T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.06, reset_at: "2026-09-08T12:00:00Z" }
+      antigravity:
+        pools:
+          gemini:
+            state: GREEN
+            available: true
+            source: ORCA_RUNTIME
+            checked_at: "2026-09-01T12:00:00Z"
+            weekly_window: { remaining_ratio: 0.80, reset_at: "2026-09-08T12:00:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-01T12:01:00Z" }
+    expect:
+      status: SELECTED
+      provider: antigravity
+      model: AUTO_GEMINI
+      conservation_demotion: true
+
+  - name: disabled_candidate_is_excluded_from_autonomous_selection
+    kind: selection
+    why: >-
+      The operator set `enabled: false` on Terra. Even with Terra's provider
+      healthy and first in registry order, the AI cannot autonomously select
+      it; Sonnet takes the Stage 2 work.
+    slot: STRONG_IMPLEMENTER
+    disable_models: [gpt-5.6-terra]
+    resource_states:
+      codex: { state: GREEN, available: true, source: ORCA_RUNTIME }
+      claude: { state: GREEN, available: true, source: ORCA_RUNTIME }
+    options: { allowExperimental: false, taskRisk: medium }
+    expect:
+      status: SELECTED
+      provider: claude
+      model: sonnet
+
+  - name: human_pins_unavailable_model_blocks_honestly
+    kind: selection
+    why: >-
+      The human pinned Gemini but its runtime pool is unavailable. The block is
+      honest and names the real reason: ROUTING_UNAVAILABLE, cleared when the
+      provider returns - not silently swapped for another model.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      antigravity: { pools: { gemini: { state: GREEN, available: false, source: ORCA_RUNTIME } } }
+    options:
+      allowExperimental: false
+      taskRisk: medium
+      pinnedCandidate: { provider: antigravity, model: AUTO_GEMINI }
+    expect:
+      status: BLOCKED
+      code: ROUTING_UNAVAILABLE
+
+  - name: human_selected_reasoning_effort_unsupported_is_config_invalid
+    kind: reasoning_dispatch
+    why: >-
+      The human asked for a reasoning effort the provider's CLI cannot express.
+      That is a real capability gap; even an explicit directive cannot make it
+      possible.
+    dispatch:
+      provider: claude
+      expected: { model: sonnet, reasoning_effort: ultra }
+      supported_efforts: [low, medium, high, xhigh, max]
+    expect: { result: CONFIG_INVALID }
+
+  - name: quota_differentiates_two_enabled_stage_2_peers
+    kind: selection
+    why: >-
+      Two enabled Stage 2 peers, no pin. Claude's weekly budget is scarce and
+      distant, Codex's is healthy, so quota - not model quality - keeps the
+      work on the registry head Terra.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.80, reset_at: "2026-09-08T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.15, reset_at: "2026-09-08T12:00:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-01T12:01:00Z" }
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-terra
+      conservation_demotion: false
+
+  - name: evidence_status_difference_does_not_influence_ranking
+    kind: selection
+    why: >-
+      All Stage 2 peers healthy, no pin, no pressure. Sonnet's candidate entry
+      carries higher `confidence` than Terra's, but candidate order is
+      human-authoritative: the registry head Terra is selected.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex: { state: GREEN, available: true, source: ORCA_RUNTIME }
+      claude: { state: GREEN, available: true, source: ORCA_RUNTIME }
+    options: { allowExperimental: false, taskRisk: medium }
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-terra
+
+  - name: benchmark_preference_does_not_influence_ranking
+    kind: selection
+    why: >-
+      External comparison articles (MODEL_EVIDENCE E7/E8) are not in the
+      selection chain. With peers healthy, the registry candidate order decides
+      and Terra - first in the slot - is selected.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex: { state: GREEN, available: true, source: ORCA_RUNTIME }
+      claude: { state: GREEN, available: true, source: ORCA_RUNTIME }
+    options: { allowExperimental: false, taskRisk: high }
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-terra
+
+  - name: incomplete_smoke_case_does_not_disable_gemini
+    kind: selection
+    why: >-
+      Gemini's local qualification (E6) is incomplete. It stays enabled and is
+      selected as the registry-head discovery candidate on a GREEN pool.
+    slot: LONG_CONTEXT_DISCOVERY
+    resource_states:
+      antigravity: { pools: { gemini: { state: GREEN, available: true, source: ORCA_RUNTIME } } }
+      claude: { state: UNKNOWN, available: true, source: ORCA_RUNTIME }
+    options: { allowExperimental: false, taskRisk: medium }
+    expect:
+      status: SELECTED
+      provider: antigravity
+      model: AUTO_GEMINI
+
+  - name: disjointness_overrides_a_pinned_reviewer
+    kind: selection
+    why: >-
+      The human pinned the Gemini reviewer, but the implementer is a
+      Gemini-family model, so provider/model-family disjointness removes it.
+      Disjointness is a hard filter no pin, quota or evidence_status can lift.
+    slot: INDEPENDENT_REVIEWER
+    resource_states:
+      antigravity: { pools: { gemini: { state: GREEN, available: true, source: ORCA_RUNTIME } } }
+      claude: { state: GREEN, available: true, source: ORCA_RUNTIME }
+      codex: { state: GREEN, available: true, source: ORCA_RUNTIME }
+    options:
+      allowExperimental: false
+      taskRisk: high
+      excludeProvider: antigravity
+      excludeModelFamily: gemini
+      pinnedCandidate: { provider: antigravity, model: AUTO_GEMINI }
+    expect:
+      status: BLOCKED
+      code: POLICY_BLOCKED
+
+  - name: human_model_selection_overrides_critical_quota_pressure
+    kind: selection
+    why: >-
+      Codex weekly budget is critical and five days from reset - autonomous
+      routing would conserve it and pick Sonnet. The human pinned Terra, so
+      Terra runs.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.06, reset_at: "2026-09-08T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.85, reset_at: "2026-09-08T12:00:00Z" }
+    options:
+      allowExperimental: false
+      taskRisk: medium
+      now: "2026-09-01T12:01:00Z"
+      pinnedCandidate: { provider: codex, model: gpt-5.6-terra }
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-terra
+
+  - name: pinned_model_not_a_slot_candidate_is_config_invalid
+    kind: selection
+    why: >-
+      The human pinned Opus for a Stage 1 implementation slot. Opus is a
+      flagship model that the slot / stage does not list, so the pin is
+      technically impossible here: CONFIG_INVALID, not a silent substitution.
+    slot: DEFAULT_IMPLEMENTER
+    resource_states:
+      codex: { state: GREEN, available: true, source: ORCA_RUNTIME }
+      claude: { state: GREEN, available: true, source: ORCA_RUNTIME }
+    options:
+      allowExperimental: false
+      taskRisk: low
+      pinnedCandidate: { provider: claude, model: opus }
+    expect:
+      status: BLOCKED
+      code: CONFIG_INVALID
+
+  - name: pin_cannot_route_to_a_disabled_candidate
+    kind: selection
+    why: >-
+      The operator disabled Terra. A human pin cannot resurrect a disabled
+      candidate - `enabled: false` is authoritative. The block names policy,
+      and the human is told to re-enable it or choose another model.
+    slot: STRONG_IMPLEMENTER
+    disable_models: [gpt-5.6-terra]
+    resource_states:
+      codex: { state: GREEN, available: true, source: ORCA_RUNTIME }
+    options:
+      allowExperimental: false
+      taskRisk: medium
+      pinnedCandidate: { provider: codex, model: gpt-5.6-terra }
+    expect:
+      status: BLOCKED
+      code: POLICY_BLOCKED

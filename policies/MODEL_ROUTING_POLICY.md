@@ -1,9 +1,9 @@
 # Model Routing Policy
 
-Version: `0.5`
+Version: `0.6`
 Status: normative
 
-這份文件是 **task classification、capability stage 選擇、capability slot 選擇、candidate 演算法、flagship admission 與 escalation** 的 normative owner。
+這份文件是 **task classification、capability stage 選擇、human override precedence、autonomous selection logic、evidence non-authority、flagship admission 與 escalation** 的 normative owner。
 
 它刻意**不含任何模型名稱**。provider、model ID、reasoning value、fallback 次序、capability tier 與 capability stage 的**成員關係**全部屬於 [`MODEL_REGISTRY.yaml`](MODEL_REGISTRY.yaml)；即時 quota 狀態屬於 [`RESOURCE_AWARE_ROUTING.md`](RESOURCE_AWARE_ROUTING.md)；精確的 dispatch 命令語法與 reasoning 傳遞屬於 [`../references/OFFICIAL_COMMANDS.md`](../references/OFFICIAL_COMMANDS.md)。模型汰換只改 registry，不改這份文件——只有 workflow 本身改變時才改這裡。
 
@@ -40,6 +40,86 @@ Task classification 必須把下面四件事**分開評估**，任何一項都�
 - **Production-related 但機械上簡單的 config 驗證**：可以是 `STAGE_1_DEFAULT` capability + 嚴格 read-only permission + independent review + human gate。它**不得**因為「碰到 production」就自動變成 Stage 2/3。
 - **Security-sensitive 但機械上簡單的 task**：可以維持 Stage 1/2，搭配更強的 review 與 gate。只有需要**對安全語意本身做推理**（RLS 設計、adversarial security 分析）才提高 stage。
 - **高 `risk` 本身**、**「這個 task 很重要」**、**「測試很多」**：都**不是** stage 訊號。
+
+## Registry is user-authoritative configuration
+
+**硬性不變式：`Registry membership and enabled status are human-authoritative configuration, not an AI-generated capability verdict.`**
+
+[`MODEL_REGISTRY.yaml`](MODEL_REGISTRY.yaml) 是**使用者配置**。它代表「這些是我允許這套 workflow 使用的候選模型，以及我希望它們在哪些 stage / role / reasoning 下被使用」。
+
+AI（operational router）**不得**因為自己的下列判斷而讓一個 user-enabled 候選失去 routing 資格：
+
+- 該模型 benchmark 是否夠好；
+- 是否做滿 3–5 個 smoke case；
+- `evidence_status` 是否足夠；
+- AI 認為它是否「值得」stable；
+- AI 認為另一個模型比較合理。
+
+只要使用者把模型寫進 registry 並 `enabled: true`（或省略 `enabled`），它就是 **routing eligible**。AI 只能在**真正的 execution impossibility** 時拒絕它（見下方 *Hard execution eligibility*）。
+
+### `enabled` 與 `status`
+
+| 欄位 | 語意 |
+|---|---|
+| `enabled: true \| false` | **Human-authoritative。** `false` = 不要路由到這裡。缺欄位 → 視為 `true`（backward compatible）。這是**唯一**的 config gate。 |
+| `status: stable \| experimental` | **Informational evidence metadata。** **不決定 execution eligibility。** `experimental` **不得**阻擋 user-enabled 的模型。 |
+| `evidence_status` / `confidence` / `source` / `verified_at` | Informational。協助人類**未來**調整 registry，永遠不是 AI 的 routing gate。 |
+
+`Evidence informs the human; it does not override human registry configuration.`
+
+### `allow_experimental` 重新定義
+
+`allow_experimental` 保留於 contract 中僅為 backward compatibility，**對 enabled 的 registry 候選沒有 routing 效果**。一個 `enabled: true`（或無 `enabled` 欄位）的候選不需要 `allow_experimental` 就可被選中。`allow_red` 不受影響——`RED` 是 resource state，不是 config gate。
+
+### AI 不重排 model quality
+
+AI **不得**：看 benchmark 後重排 registry、因某次任務失敗就永久降級模型、因 smoke case 結果把候選移出、因 evidence 不足標記不可用。AI **可以**：把 observation 記進 [`../references/MODEL_EVIDENCE.md`](../references/MODEL_EVIDENCE.md) 或 decision note。若 AI 認為 registry 應調整，走 `STRATEGIC_RETURN` 提出建議並進 **human gate**——只有 human 能改模型政策。
+
+## Routing precedence（overall）
+
+從 human 意圖到最終候選，precedence 固定為十層，**下層不得推翻上層**：
+
+```text
+1.  latest explicit human model instruction   (pin: provider / model / reasoning)
+2.  hard runtime / execution eligibility       (見下節)
+3.  required capability stage
+4.  functional role compatibility
+5.  permission / security compatibility
+6.  reviewer disjointness                       (provider AND model family)
+7.  user-enabled registry candidates            (enabled: false → 排除)
+8.  resource / quota state
+9.  provider-specific budget pressure
+10. registry role preference / candidate order
+```
+
+**Evidence / benchmark 不在這條 chain 裡。** 第 3–10 層由 operational router 以下方 *Candidate 選擇演算法* 執行（該演算法的內部八層是這裡第 3–10 層的展開）。
+
+### Hard execution eligibility
+
+AI 可以且必須檢查、且**只有這些**能讓 AI 拒絕一個 user-enabled 候選：
+
+- provider CLI 是否存在；
+- model ID 是否真的能解析 / 呼叫；
+- 要求的 reasoning control 是否被 runtime / CLI 支援；
+- authentication 是否有效；
+- permission ceiling 是否相容；
+- runtime 是否能啟動；
+- reviewer disjointness 是否可滿足；
+- provider / model family identity 是否正確；
+- user-requested configuration 是否技術上可實現。
+
+任一項真的不可能 → `CONFIG_INVALID` / `ROUTING_UNAVAILABLE` / `PERMISSION_BLOCKED` 或其他既有正確的 blocked outcome。這是 AI 唯一可以拒絕執行的範圍。
+
+## Human explicit model selection
+
+若 human 在 **current instruction** 明確指定 provider / model（可含 reasoning），例如「Use Gemini 3.7 Flash low」或「Use Terra high」，operational router **必須**使用該模型（precedence 第 1 層），**除非 hard execution eligibility 失敗**。
+
+**不得**因為 quota 不理想、benchmark、`evidence_status`、smoke-case 不足、AI preference 或 registry ranking 而換成其他模型。
+
+- pin 的模型不在該 slot 的 candidate list → `CONFIG_INVALID`（技術上不可能，不是 silent substitution）。
+- pin 的模型 runtime 不可用 → `ROUTING_UNAVAILABLE`（誠實回報，不換模型）。
+- pin 的模型與 implementer 不 disjoint（independent review）→ `POLICY_BLOCKED`（disjointness 是硬 filter，pin 不能覆蓋）。
+- pin 的模型被 `enabled: false` → `POLICY_BLOCKED`（`enabled` 是 authoritative；交回 human 決定要 re-enable 或改選）。
 
 ## Capability tier
 
@@ -181,7 +261,8 @@ Role 與 slot 名稱**永遠不得**被當成 capability tier 或 capability sta
 排序優先級固定為八層，**下層永遠不能推翻上層**：
 
 ```text
-1. policy eligibility            (status / allow_experimental / allow_red / minimum capability tier)
+0. explicit human model pin       (見上方 Human explicit model selection；命中且通過 hard eligibility 即直接選中)
+1. policy eligibility            (enabled: false → 排除；allow_red；minimum capability tier)
 2. required capability stage     (candidate.stage 索引 >= slot.stage；flagship 只在 required stage 為 STAGE_3 時可入)
 3. security / permission constraints
 4. independent-review disjointness   (provider AND model family)
@@ -196,11 +277,11 @@ Role 與 slot 名稱**永遠不得**被當成 capability tier 或 capability sta
 
 第 6、7 層只在前五層都已滿足的候選之間比較，且**第 6 層優先於第 7 層**——scarcity first, utilization second。**Model-role preference 是第 8 層的一部分**：在 registry order 之前、conservation 與 opportunity 之後，作為最後一層 tie-break。window role、conservation pressure、stranded capacity 的推導規則、門檻與可重排範圍由 [`RESOURCE_AWARE_ROUTING.md`](RESOURCE_AWARE_ROUTING.md) 定義，此處不重複。
 
-1. 從指定 slot 讀取 registry 的 ordered `candidates`（順序具有意義）。
-2. 檢查每個候選的 resource entry 是否通過 **source trust invariant**（見 [`RESOURCE_AWARE_ROUTING.md`](RESOURCE_AWARE_ROUTING.md)）：沒有宣告 `source`、`source` 不在允許集合、或 `source: UNKNOWN` 卻宣告非 `UNKNOWN` 的 state，一律 **fail closed**。完全沒有 entry 是「沒有讀數」，視為 `UNKNOWN`，正常參與排序。
+1. 若 contract 帶 explicit human model pin：先確認該 model 在此 slot 的 candidate list（否則 `CONFIG_INVALID`），再走第 2–3 步的 hard eligibility；通過即直接回傳該候選（不進 band / conservation / opportunity / preference 排序），否則以該候選自身的失敗原因回傳對應 blocked code。
+2. 從指定 slot 讀取 registry 的 ordered `candidates`（順序具有意義），並檢查每個候選的 resource entry 是否通過 **source trust invariant**（見 [`RESOURCE_AWARE_ROUTING.md`](RESOURCE_AWARE_ROUTING.md)）：沒有宣告 `source`、`source` 不在允許集合、或 `source: UNKNOWN` 卻宣告非 `UNKNOWN` 的 state，一律 **fail closed**。完全沒有 entry 是「沒有讀數」，視為 `UNKNOWN`，正常參與排序。
 3. 移除下列候選：
+   - `enabled` 為 `false`（human-authoritative；**唯一的 config gate**。`status` / `evidence_status` 不在此列）；
    - `available` 為 false；
-   - `status: experimental` 且 `allow_experimental` 未為 true；
    - `stage` 在 stage 順序上低於 slot 的 `stage`；
    - `capability_tier` 在 ladder 上低於 slot 的 `minimum_tier`；
    - 進行 independent review 時，與 implementer **相同 provider 或相同 model family** 的候選。
@@ -215,9 +296,9 @@ Resource overlay **只能在達到相同 `minimum_tier`、相同 `stage` 的候�
 
 ### 授權旗標歸屬
 
-`allow_experimental` 與 `allow_red` 是 **human 在 strategic contract 中的授權決定**，預設 `false`。`allow_experimental` 為 true 時必須同時載明 `experimental_justification`。
+`allow_red` 是 **human 在 strategic contract 中的授權決定**，預設 `false`：`RED` 候選只有在 `allow_red` 為 true 時才會被選。**Operational router 只讀取它，不得自行翻轉。**
 
-**Operational router 只讀取這兩個值，不得自行決定，也不得為了把 `BLOCKED` 變成 `SELECTED` 而翻轉它們。** 需要授權時交回 human gate。
+`allow_experimental`（與 `experimental_justification`）在 contract schema 中保留供 backward compatibility，但如上方 *`allow_experimental` 重新定義* 所述，**對 enabled 的 registry 候選沒有 routing 效果**——`enabled` 已是唯一的 config gate。舊 contract 帶著它不會出錯，也不需要它。
 
 ## Flagship admission
 
@@ -291,8 +372,19 @@ Reviewer 的 capability stage 依 task 需求（見 Stage admission），不因 
 
 Stage escalation 一律逐級：`STAGE_1 → STAGE_2 → STAGE_3 / human gate`，不得從 Stage 1 直接跳 Stage 3，除非 Stage 3 admission 的例外證據獨立成立（例如 human-authorized flagship）。到達上限時升級 stage 或進 human gate，不得無限重試。Repair 必須交回單一 implementation owner。
 
-## 新模型
+### Execution failure vs task-quality failure
 
-新模型先進 `status: experimental` mapping，只在低風險、可重現、驗收標準清楚的任務上比較 correctness、latency、repair count、review catch rate 與 quota efficiency。
+兩者處置不同，**不得混淆**：
 
-單次結果不能升降 stable mapping；需要多次一致結果、沒有重大回歸，並保留 decision note。從 `experimental` 升 `stable` 另需該 provider/CLI/model 組合通過 `references/MODEL_EVIDENCE.md` 規定的 3–5 個本機 smoke case。這些調整只改 `MODEL_REGISTRY.yaml`，不改 stable workflow。
+| 類型 | 例子 | 處置 |
+|---|---|---|
+| **Execution failure** | model ID 不存在、CLI 不支援要求的 reasoning、authentication 失敗、runtime crash | 可標 runtime unavailable / `CONFIG_INVALID` / `ROUTING_UNAVAILABLE` |
+| **Task-quality failure** | 模型第一次 implementation 做錯、review 沒抓到 bug、需要 repair | 正常 `failed_repair_count` / escalation 流程 |
+
+Task-quality failure **不得**造成把模型標 `experimental`、把 `enabled` 改成 `false`、或從 registry 移除。AI 可以在 `MODEL_EVIDENCE.md` 或 decision note 記錄 observation（例如「Terra 在兩次 migration task 需要多次 repair」），並可在 `STRATEGIC_RETURN` 中**建議** registry 調整——但實際修改只由 human 決定。
+
+## 新模型 / registry 演進
+
+registry 是使用者配置。加入或移除模型、改 `enabled`、改 `stage` / `reasoning` / candidate order 都是 **human 的決定**，只改 [`MODEL_REGISTRY.yaml`](MODEL_REGISTRY.yaml)，不改 stable workflow。
+
+Smoke case 仍有價值——用來驗證 invocation、permission、reasoning propagation、runtime compatibility，並記錄模型實際表現——但**不是**「做滿 3–5 次之前不能使用」的門檻，`evidence_status: provisional` 也**不**造成 routing exclusion。`status: experimental → stable` 是 human 依累積 evidence 做的 **informational** 標籤更新，不影響已 `enabled` 候選的 eligibility。

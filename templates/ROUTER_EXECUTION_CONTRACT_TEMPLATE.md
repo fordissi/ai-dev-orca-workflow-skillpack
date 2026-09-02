@@ -53,6 +53,12 @@ flagship_admission:
   prior_stage_2_attempt_failed: # true | false
   human_authorization:       # required_and_provided | not_required | MISSING
 
+# Explicit human model directive (0.6). 只有在 human 於 current instruction
+# 明確指名時填寫；否則留空。填了就是 precedence 第 1 層：operational router
+# 必須用這個模型，除非 hard execution eligibility 失敗。strategic router
+# 平時不指名模型——這裡記的是 HUMAN 的話，不是 strategic router 的選擇。
+human_model_directive:        # 例：{ provider: antigravity, model: AUTO_GEMINI, reasoning: low }，或留空
+
 review_role:
 review_slot:
 review_disjointness_required: # verification_need 為 independent/adversarial 時為 true
@@ -60,11 +66,12 @@ review_disjointness_required: # verification_need 為 independent/adversarial �
 discovery_role:               # 不需要 discovery 階段時填 none
 discovery_slot:
 
-# 授權旗標。這兩項是 human 的授權決定，由 strategic contract 載明；
-# operational router 只讀取，不得自行決定，也不得為了讓 BLOCKED 變成
-# SELECTED 而翻轉它們。預設 false 是正確的。
-allow_experimental: false     # true 才允許 status: experimental 的候選
-experimental_justification:   # allow_experimental 為 true 時必填，說明為何可接受
+# 授權旗標。
+# allow_red 是 human 的授權決定：operational router 只讀取，不得自行翻轉。
+# allow_experimental / experimental_justification 保留供 backward compatibility；
+# 0.6 起對 enabled 的 registry 候選沒有 routing 效果（enabled 是唯一 config gate）。
+allow_experimental: false     # 保留欄位；對 enabled 候選無效果
+experimental_justification:   # 保留欄位（僅 legacy contract）
 allow_red: false              # true 才允許在只剩 RED 候選時繼續
 
 concurrency_mode:             # SEQUENTIAL | PARALLEL_INDEPENDENT | COMPETITIVE_DESIGN
@@ -133,6 +140,10 @@ minimum_tier_satisfied:       # unresolved — true 時才可派工
 
 selected_stage:               # unresolved — STAGE_1_DEFAULT | STAGE_2_ADVANCED | STAGE_3_FLAGSHIP
 stage_admission_reason:       # unresolved — 為何是這個 stage（advanced signal / exceptional evidence / default）
+
+selection_mode:               # unresolved — human_pinned | autonomous
+                              # human_pinned 時 candidate 直接來自 human_model_directive，
+                              # 未經 quota / preference 排序；只驗 hard execution eligibility
 
 selected_candidate:           # unresolved
   actual_provider:

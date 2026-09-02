@@ -100,6 +100,17 @@ export function checkReasoningDispatch(dispatch) {
   const expected = isPlainObject(d.expected) ? d.expected : {};
   const actual = isPlainObject(d.actual) ? d.actual : null;
   const command = isNonEmptyString(d.command) ? d.command : "";
+  const supported = Array.isArray(d.supported_efforts) ? d.supported_efforts : null;
+
+  // A user-selected reasoning effort the provider's CLI cannot express is a
+  // genuine capability gap, not a routing preference. Even an explicit human
+  // directive cannot make it possible.
+  if (supported !== null && "reasoning_effort" in expected && !supported.includes(expected.reasoning_effort)) {
+    return {
+      result: "CONFIG_INVALID",
+      why: `reasoning effort ${expected.reasoning_effort} is not supported by ${d.provider ?? "the provider"} (supported: ${supported.join("|")})`,
+    };
+  }
 
   if (d.provider === "codex" && command) {
     const hasModel = /(?:^|\s)(?:-m|--model)\s+\S/.test(command);
@@ -274,6 +285,12 @@ export function validateRegistry(registry) {
         findings.push(
           `${candidateAt}.status: ${JSON.stringify(candidate.status)} is not one of ${CANDIDATE_STATUSES.join("|")}`,
         );
+      }
+
+      // `enabled` is human-authoritative configuration. Optional (absence means
+      // enabled); when present it must be a boolean.
+      if ("enabled" in candidate && typeof candidate.enabled !== "boolean") {
+        findings.push(`${candidateAt}.enabled: expected true or false`);
       }
 
       // A candidate's stage, when declared, must be the stage that contains
@@ -810,6 +827,7 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
     now = Date.now(),
     requiredStage = isNonEmptyString(slot?.stage) ? slot.stage : null,
     rolePreference = [],
+    pinnedCandidate = null,
   } = options;
 
   // Stage gate: a candidate must meet the required stage, and a flagship
@@ -874,12 +892,19 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
       failures.push({ kind: "unavailable", why: `${label}: provider or pool is unavailable` });
     }
 
-    if (candidate?.status === "experimental" && !allowExperimental) {
+    // Registry membership + `enabled` are human-authoritative. `enabled: false`
+    // is the operator saying "do not route here" and is the only config gate.
+    // A missing `enabled` field means enabled (backward compatible). `status`
+    // (stable / experimental) and `evidence_status` are informational and
+    // MUST NOT gate execution eligibility; `allowExperimental` is accepted for
+    // backward compatibility and has no effect on an enabled candidate.
+    if (candidate?.enabled === false) {
       failures.push({
         kind: "policy",
-        why: `${label}: experimental candidate is not permitted for ${taskRisk}-risk work`,
+        why: `${label}: disabled in the registry (enabled: false)`,
       });
     }
+    void allowExperimental;
 
     const stageFailure = stageGate(candidate);
     if (stageFailure !== null) {
@@ -916,6 +941,63 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
       // True when waiting for the provider to come back would be enough.
       onlyUnavailable: failures.every(({ kind }) => kind === "unavailable"),
     });
+  }
+
+  // Explicit human model selection is the highest routing priority. If the
+  // human named a provider/model in the current instruction, the router uses
+  // it - never swapped out for quota, benchmark, evidence_status or AI
+  // preference. It still has to clear hard execution eligibility (enabled,
+  // stage, tier, disjointness, availability, source trust); if it does not,
+  // the block is honest and names that candidate's own reason.
+  if (isPlainObject(pinnedCandidate) && isNonEmptyString(pinnedCandidate.model)) {
+    const matches = (providerOrLabelProvider, model) =>
+      model === pinnedCandidate.model &&
+      (pinnedCandidate.provider === undefined || pinnedCandidate.provider === null ||
+        providerOrLabelProvider === pinnedCandidate.provider);
+
+    if (!slot.candidates.some((c) => matches(c?.provider, c?.model))) {
+      return {
+        status: "BLOCKED",
+        code: "CONFIG_INVALID",
+        reason: `pinned model ${pinnedCandidate.provider ?? "?"}/${pinnedCandidate.model} is not a candidate for this slot`,
+      };
+    }
+
+    const hit = qualified.find(({ candidate }) => matches(candidate?.provider, candidate?.model));
+    if (hit !== undefined) {
+      return {
+        status: "SELECTED",
+        candidate: hit.candidate,
+        resource_state: hit.resourceState,
+        reset_proximity: hit.stranded.reset_proximity,
+        stranded_capacity_risk: hit.stranded.stranded_capacity_risk,
+        budget_reset_proximity: hit.conservation.budget_reset_proximity,
+        conservation_pressure: hit.conservation.conservation_pressure,
+        conservation_demotion: null,
+        stranded_promotion: null,
+        pinned: true,
+      };
+    }
+
+    const rej = rejected.find(({ label }) => {
+      const [prov, ...rest] = label.split("/");
+      return matches(prov, rest.join("/"));
+    });
+    const code =
+      rej === undefined
+        ? "CONFIG_INVALID"
+        : rej.failures.some(({ kind }) => kind === "config")
+          ? "CONFIG_INVALID"
+          : rej.onlyUnavailable
+            ? "ROUTING_UNAVAILABLE"
+            : "POLICY_BLOCKED";
+    return {
+      status: "BLOCKED",
+      code,
+      reason: `pinned model ${pinnedCandidate.model} is not eligible: ${
+        (rej?.failures ?? []).map(({ why }) => why).join("; ") || "no qualifying entry"
+      }`,
+    };
   }
 
   // Registry order picks the head of the band. The two resource signals may
@@ -1142,7 +1224,7 @@ export function scanText(text, options = {}) {
 const CASE_KINDS = ["selection", "multi_stage", "stage_admission", "reasoning_dispatch"];
 
 const STAGE_ADMISSION_RESULTS = ["STAGE_1_DEFAULT", "STAGE_2_ADVANCED", "STAGE_3_FLAGSHIP"];
-const DISPATCH_RESULTS = ["PASS", "INVALID_DISPATCH", "DISPATCH_CONTRACT_MISMATCH"];
+const DISPATCH_RESULTS = ["PASS", "INVALID_DISPATCH", "DISPATCH_CONTRACT_MISMATCH", "CONFIG_INVALID"];
 
 // "Cannot" and "must not" need different handling upstream, so a BLOCKED
 // result always says which it is. Owner: MODEL_ROUTING_POLICY.md.
@@ -1221,10 +1303,19 @@ export function validateRoutingCases(document, registry) {
     if ("classification" in testCase) validateClassification(testCase.classification, named, findings);
 
     if (testCase.kind === "selection") {
-      const slot = slots[testCase.slot];
+      let slot = slots[testCase.slot];
       if (slot === undefined) {
         findings.push(`${named}: slot ${JSON.stringify(testCase.slot)} is not defined in the registry`);
         continue;
+      }
+
+      // A case may exercise operator config it cannot express in the shipped
+      // registry: `disable_models` flips `enabled: false` on the named models.
+      if (Array.isArray(testCase.disable_models) && testCase.disable_models.length > 0) {
+        slot = structuredClone(slot);
+        for (const candidate of slot.candidates) {
+          if (testCase.disable_models.includes(candidate.model)) candidate.enabled = false;
+        }
       }
 
       const result = selectCandidate(

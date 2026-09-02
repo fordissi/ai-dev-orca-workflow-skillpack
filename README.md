@@ -110,8 +110,13 @@ classify -> slot -> overlay -> candidate -> contract -> dispatch
 `STAGE_1_DEFAULT`（Luna / Gemini Flash low，大多數日常工作）、
 `STAGE_2_ADVANCED`（Terra / Sonnet 5，正常的 escalation tier）、
 `STAGE_3_FLAGSHIP`（Sol / Opus 5，罕見）。**risk、production 相關性、測試數量
-都不會提高 stage**——只有 capability difficulty 會。stage admission 與
-reasoning-exact dispatch 的規則見
+都不會提高 stage**——只有 capability difficulty 會。
+
+`MODEL_REGISTRY.yaml` 是 **user-authoritative 配置**（`0.6` 起）：`enabled: true`
+的候選就是 routing eligible，AI 不因 benchmark / smoke-case / `evidence_status`
+自行取消它。AI 只能在**真正 execution impossibility** 時拒絕。Human 在 current
+instruction 明確指名的模型有最高 precedence。stage admission、human override、
+autonomous selection 與 reasoning-exact dispatch 的規則見
 [`policies/MODEL_ROUTING_POLICY.md`](policies/MODEL_ROUTING_POLICY.md)。
 
 ## 五個端到端範例

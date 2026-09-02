@@ -98,14 +98,25 @@ test("GREEN candidate is preferred over RED without crossing the minimum", () =>
   assert.equal(selected.candidate.model, "sonnet");
 });
 
-test("high-risk work rejects experimental candidates unless explicitly allowed", () => {
-  const slot = structuredClone(registry.capability_slots.DEFAULT_IMPLEMENTER);
-  slot.candidates[0].status = "experimental";
-  slot.candidates.splice(1);
-  const selected = selectCandidate(slot, { codex: { state: "GREEN", available: true, source: "ORCA_RUNTIME" } }, registry.capability_tier_order, { allowExperimental: false, taskRisk: "high" });
-  assert.equal(selected.status, "BLOCKED");
-  assert.equal(typeof selected.reason, "string");
-  assert.ok(selected.reason.length > 0);
+test("a disabled candidate is excluded; an experimental label alone is not", () => {
+  const green = { codex: { state: "GREEN", available: true, source: "ORCA_RUNTIME" } };
+
+  // enabled: false is the operator saying "do not route here".
+  const disabled = structuredClone(registry.capability_slots.DEFAULT_IMPLEMENTER);
+  disabled.candidates[0].enabled = false;
+  disabled.candidates.splice(1);
+  const blocked = selectCandidate(disabled, green, registry.capability_tier_order, { allowExperimental: false, taskRisk: "high" });
+  assert.equal(blocked.status, "BLOCKED");
+  assert.ok(typeof blocked.reason === "string" && blocked.reason.length > 0);
+
+  // status: experimental is informational and does NOT gate, even on
+  // high-risk work and even with allowExperimental false.
+  const labelled = structuredClone(registry.capability_slots.DEFAULT_IMPLEMENTER);
+  labelled.candidates[0].status = "experimental";
+  labelled.candidates.splice(1);
+  const selected = selectCandidate(labelled, green, registry.capability_tier_order, { allowExperimental: false, taskRisk: "high" });
+  assert.equal(selected.status, "SELECTED");
+  assert.equal(selected.candidate.provider, "codex");
 });
 
 test("independent review excludes the implementer provider and model family", () => {
@@ -169,7 +180,7 @@ test("repository routing cases all conform to the registry", async () => {
     "unknown_primary_yellow_fallback", "auth_contract_requires_deep_reasoner",
     "large_cross_repo_with_independent_review", "green_fallback_over_red_primary",
     "independent_reviewer_is_disjoint", "no_candidate_meets_minimum",
-    "experimental_high_risk_is_blocked", "repair_budget_exhausted",
+    "experimental_label_does_not_block_enabled_candidate", "repair_budget_exhausted",
   ]) {
     assert.ok(names.has(required), `routing cases are missing ${required}`);
   }
@@ -476,28 +487,83 @@ test("routing enforces the resource-source trust invariant, not just the example
   assert.equal(trusted.candidate.provider, "claude");
 });
 
-test("experimental and RED authorisation default to false and are honoured when granted", () => {
+test("enabled is human-authoritative; RED authorisation still defaults to false", () => {
   const tierOrder = registry.capability_tier_order;
   const trustedRed = { state: "RED", available: true, source: "ORCA_RUNTIME" };
-
-  const experimentalSlot = structuredClone(registry.capability_slots.DEFAULT_IMPLEMENTER);
-  experimentalSlot.candidates[0].status = "experimental";
-  experimentalSlot.candidates.splice(1);
   const green = { codex: { state: "GREEN", available: true, source: "ORCA_RUNTIME" } };
 
-  // Defaults: both authorisations absent means both are denied.
-  assert.equal(selectCandidate(experimentalSlot, green, tierOrder, {}).status, "BLOCKED");
+  // enabled: false excludes; an experimental label with no enabled:false does not.
+  const disabledSlot = structuredClone(registry.capability_slots.DEFAULT_IMPLEMENTER);
+  disabledSlot.candidates[0].enabled = false;
+  disabledSlot.candidates.splice(1);
+  assert.equal(selectCandidate(disabledSlot, green, tierOrder, {}).status, "BLOCKED");
+
+  const labelledSlot = structuredClone(registry.capability_slots.DEFAULT_IMPLEMENTER);
+  labelledSlot.candidates[0].status = "experimental";
+  labelledSlot.candidates.splice(1);
+  assert.equal(selectCandidate(labelledSlot, green, tierOrder, {}).status, "SELECTED");
+  // allowExperimental is retained for compatibility and has no effect either way.
+  assert.equal(selectCandidate(labelledSlot, green, tierOrder, { allowExperimental: false }).status, "SELECTED");
+
+  // RED is a resource state, not config: without explicit allow_red it blocks.
   assert.equal(
     selectCandidate(registry.capability_slots.DEFAULT_IMPLEMENTER, { codex: trustedRed, claude: trustedRed }, tierOrder, {}).code,
     "RESOURCE_BLOCKED",
   );
-
-  // Granted explicitly in the Strategic Contract, both proceed.
-  assert.equal(selectCandidate(experimentalSlot, green, tierOrder, { allowExperimental: true }).status, "SELECTED");
   assert.equal(
     selectCandidate(registry.capability_slots.DEFAULT_IMPLEMENTER, { codex: trustedRed, claude: trustedRed }, tierOrder, { allowRed: true }).status,
     "SELECTED",
   );
+});
+
+test("a legacy candidate with no enabled field is treated as enabled", () => {
+  const tierOrder = registry.capability_tier_order;
+  const legacy = structuredClone(registry.capability_slots.DEFAULT_IMPLEMENTER);
+  delete legacy.candidates[0].enabled;
+  delete legacy.candidates[0].status;
+  legacy.candidates.splice(1);
+  const selected = selectCandidate(
+    legacy,
+    { codex: { state: "GREEN", available: true, source: "ORCA_RUNTIME" } },
+    tierOrder,
+    { allowExperimental: false, taskRisk: "low" },
+  );
+  assert.equal(selected.status, "SELECTED");
+  assert.equal(selected.candidate.provider, "codex");
+});
+
+test("an explicit human model pin outranks quota but not hard eligibility", () => {
+  const tierOrder = registry.capability_tier_order;
+  const codexScarce = { state: "GREEN", available: true, source: "ORCA_RUNTIME", checked_at: NOW, ...budget(0.05, at(120 * HOUR)) };
+  const claudeHealthy = { state: "GREEN", available: true, source: "ORCA_RUNTIME", checked_at: NOW, ...healthyBudget() };
+  const slot = registry.capability_slots.DEFAULT_IMPLEMENTER;
+
+  // Without a pin, conservation demotes the scarce head.
+  const auto = selectCandidate(slot, { codex: codexScarce, claude: claudeHealthy }, tierOrder, { allowExperimental: false, taskRisk: "low", now: NOW });
+  assert.equal(auto.candidate.provider, "claude");
+
+  // Pinned, the human's choice is used regardless of quota.
+  const pinned = selectCandidate(slot, { codex: codexScarce, claude: claudeHealthy }, tierOrder, {
+    allowExperimental: false, taskRisk: "low", now: NOW, pinnedCandidate: { provider: "codex", model: "luna" },
+  });
+  assert.equal(pinned.status, "SELECTED");
+  assert.equal(pinned.candidate.provider, "codex");
+  assert.equal(pinned.pinned, true);
+
+  // A pin to a model the slot does not list is impossible, not a substitution.
+  const bad = selectCandidate(slot, { codex: codexScarce, claude: claudeHealthy }, tierOrder, {
+    allowExperimental: false, taskRisk: "low", now: NOW, pinnedCandidate: { provider: "codex", model: "gpt-5.6-sol" },
+  });
+  assert.equal(bad.status, "BLOCKED");
+  assert.equal(bad.code, "CONFIG_INVALID");
+
+  // A pin cannot resurrect a disabled candidate.
+  const disabled = structuredClone(slot);
+  disabled.candidates[0].enabled = false;
+  const pinnedDisabled = selectCandidate(disabled, { codex: codexScarce, claude: claudeHealthy }, tierOrder, {
+    allowExperimental: false, taskRisk: "low", now: NOW, pinnedCandidate: { provider: "codex", model: "luna" },
+  });
+  assert.equal(pinnedDisabled.status, "BLOCKED");
 });
 
 test("contract template defers reason-code semantics to the routing policy", async () => {
@@ -1399,16 +1465,16 @@ test("stranded capacity cannot reach eligibility, tier, disjointness or gates", 
   assert.equal(blocked.status, "BLOCKED");
   assert.equal(blocked.code, "POLICY_BLOCKED");
 
-  // Experimental stays excluded however urgent its pool is.
-  const experimentalSlot = structuredClone(registry.capability_slots.DEFAULT_IMPLEMENTER);
-  experimentalSlot.candidates[0].status = "experimental";
-  const skipsExperimental = selectCandidate(
-    experimentalSlot,
+  // A disabled candidate stays excluded however urgent its pool is.
+  const disabledSlot = structuredClone(registry.capability_slots.DEFAULT_IMPLEMENTER);
+  disabledSlot.candidates[0].enabled = false;
+  const skipsDisabled = selectCandidate(
+    disabledSlot,
     { codex: urgent, claude: dull },
     tierOrder,
     { allowExperimental: false, taskRisk: "high", now: NOW },
   );
-  assert.equal(skipsExperimental.candidate.provider, "claude");
+  assert.equal(skipsDisabled.candidate.provider, "claude");
 
   // Disjointness outranks quota economics.
   const reviewer = selectCandidate(

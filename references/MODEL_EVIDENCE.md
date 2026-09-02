@@ -1,12 +1,25 @@
 # Model Evidence
 
-Version: `0.3`
+Version: `0.4`
 
-這份文件記錄 `MODEL_REGISTRY.yaml` 中 capability tier 所依據的外部證據，以及該證據**不能**支撐的結論。
+這份文件記錄關於 `MODEL_REGISTRY.yaml` 中模型的**觀察性證據**：外部 benchmark、runtime bug、smoke-case 結果、模型實際行為。
 
-## 兩條硬規則
+## 角色：observational only
 
-1. **外部 benchmark 只能建立 `evidence_status: provisional`。** 通過本機 smoke cases 與獨立 review 之前，不得升為 stable mapping。
+**硬性不變式：`Evidence informs the human; it does not override human registry configuration.`**（0.6 起）
+
+`MODEL_REGISTRY.yaml` 的 `enabled` 是 human-authoritative 配置。這份文件**不得**成為 AI 自動禁止使用某模型的 authority：
+
+- `evidence_status: provisional` **不**造成 routing exclusion；
+- smoke case 未做滿 3–5 個 **不**造成 routing exclusion；
+- 某次任務失敗 **不**造成模型被自動降級或 disable；
+- benchmark 分數 **不**進入 candidate 選擇 chain。
+
+它的用途是：記錄實際觀察、協助**人類**未來調整 registry。若 AI 認為 registry 應調整，走 `STRATEGIC_RETURN` + human gate（見 [`../policies/MODEL_ROUTING_POLICY.md`](../policies/MODEL_ROUTING_POLICY.md) 的 *Registry is user-authoritative configuration*）。
+
+## 兩條硬規則（關於證據本身的強度）
+
+1. **外部 benchmark 只能建立 `evidence_status: provisional`。** 它是給人類看的 informational 標籤，不是 routing gate。
 2. **沒有任何公開 benchmark 測量我們實際派工的東西。** 我們派的是「CLI + harness + 模型 + permission 設定」的組合；leaderboard 測的是裸模型。這個落差是所有下列證據共同的 methodology limitation，不是個別項目的瑕疵。
 
 外部證據不足以判定的項目，一律另以本機 smoke case 建立，每個實際的 provider/CLI/model mapping 需要 3–5 個代表性案例：
@@ -257,16 +270,24 @@ supports_tier_claim_for: []
 - `codex / gpt-5.6-sol` → `ESCALATION_MODEL` 唯一 Codex 候選，`capability_tier: DEEP`，
   `stage: STAGE_3_FLAGSHIP`，**預設 reasoning 由 forced 值降為 `medium`**。
   外部佐證 E3 + E7；本機 smoke 待補。
-- `antigravity / AUTO_GEMINI`（所有出現處）→ **由 0.4 的 `stable` 退回
-  `status: experimental`**。理由：PART G 要求真實本機 qualification，E6 只完成 4/8
-  項，reviewer/discovery/permission 檢查被 `agy` headless 權限牆擋住。未通過前
-  只有 `allow_experimental: true` 的 contract 能路由到它。
+- `antigravity / AUTO_GEMINI`（所有出現處）→ `status: experimental`（informational），
+  **`enabled: true`**。0.6 起 `status` 不再 gate routing：E6 的 headless 權限
+  blocker 是**特定 task shape 的 runtime capability 限制**，不是 Gemini 這個模型
+  globally ineligible 的證據。model eligibility 依 execution task 逐一判定；
+  一般 quota routing 可以選中它，read-only reviewer / headless discovery 這類
+  shape 若 runtime 真的做不到，才在該次 dispatch 回 honest blocked outcome。
 
-這些條目全部保留 `evidence_status: provisional`。三階段重構的理由、涵蓋不到的部分與
-rollback 條件見
+- `codex / gpt-5.6-terra` → `status: stable`（informational），`enabled: true`。
+  本機零 smoke case——記為 **evidence limitation**，不是 disable 理由。
+
+這些條目全部保留 `evidence_status: provisional`（informational）。0.6 registry authority
+correction 的理由見
+[`policies/registry-decisions/2026-09-02-user-authoritative-registry.md`](../policies/registry-decisions/2026-09-02-user-authoritative-registry.md)；
+三階段與 tier rebalance 的背景見
 [`policies/registry-decisions/2026-09-02-three-stage-routing.md`](../policies/registry-decisions/2026-09-02-three-stage-routing.md)
 與
 [`policies/registry-decisions/2026-09-02-rebalance-implementer-tiers.md`](../policies/registry-decisions/2026-09-02-rebalance-implementer-tiers.md)。
 
-**待辦：** 補齊 Terra / Sol 的 3–5 個本機 smoke case（記入 E5）；解除 E6 的
-`agy` headless 權限 blocker 後完成 Gemini qualification。`next_revalidation_due: 2026-10-02`。
+**待辦（給人類，非 routing gate）：** 補齊 Terra / Sol 的本機 smoke case（記入 E5）；
+解除 E6 的 `agy` headless blocker 後完成 Gemini 的 reviewer/discovery qualification。
+`next_revalidation_due: 2026-10-02`。
