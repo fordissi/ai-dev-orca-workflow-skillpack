@@ -1930,3 +1930,280 @@ cases:
     expect:
       status: BLOCKED
       code: POLICY_BLOCKED
+
+  # =================================================================== #
+  # BUDGET NEAR-RESET EXPIRY OPPORTUNITY (0.6.1)
+  #
+  # budget_expiry_opportunity is the offensive mirror of conservation_pressure:
+  # a long-horizon BUDGET window with a lot left AND little time before reset is
+  # capacity about to be wasted. It reorders only among same-band candidates
+  # whose own conservation_pressure is not HIGH/CRITICAL, and it runs before
+  # BURST stranded-capacity opportunity. It never touches stage / eligibility /
+  # permission / disjointness.
+  # =================================================================== #
+
+  - name: near_reset_high_remaining_budget_is_expiry_opportunity
+    kind: selection
+    why: >-
+      Candidate A (claude) has 70% of its weekly budget left with 4h to reset;
+      Candidate B (codex, the registry head) has 40% left resetting in 4 days.
+      A's HIGH budget_expiry_opportunity promotes it ahead of the head so the
+      near-reset quota is not wasted.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.40, reset_at: "2026-09-05T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.70, reset_at: "2026-09-01T16:00:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-01T12:00:00Z" }
+    expect:
+      status: SELECTED
+      provider: claude
+      model: sonnet
+      budget_expiry_opportunity: HIGH
+      expiry_promotion: true
+
+  - name: far_reset_high_remaining_budget_is_low_expiry
+    kind: selection
+    why: >-
+      Plenty of weekly budget left but the reset is five days out - nothing is
+      about to be wasted, so budget_expiry_opportunity is LOW and the registry
+      head is kept with no promotion.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.80, reset_at: "2026-09-06T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.75, reset_at: "2026-09-06T12:00:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-01T12:00:00Z" }
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-terra
+      budget_expiry_opportunity: LOW
+      expiry_promotion: false
+
+  - name: low_remaining_near_reset_is_not_high_expiry
+    kind: selection
+    why: >-
+      Candidate A (claude) has only 5% weekly budget left resetting in 2h;
+      Candidate B (codex head) has 30% left resetting in 2 days. There is
+      almost nothing to strand, so A's expiry opportunity is LOW and it is not
+      preferred just to burn the last few percent.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.30, reset_at: "2026-09-03T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.05, reset_at: "2026-09-01T14:00:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-01T12:00:00Z" }
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-terra
+      expiry_promotion: false
+
+  - name: budget_scarcity_overrides_budget_expiry
+    kind: selection
+    why: >-
+      Candidate A (claude) has 70% of its weekly window left resetting in 4h
+      (HIGH expiry) but its monthly cap is at 8% with a distant reset
+      (CRITICAL). Scarcity is defensive and wins: A is NOT promoted; the
+      healthy registry head is kept.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.80, reset_at: "2026-09-06T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        windows:
+          - { key: weekly, role: BUDGET, remaining_ratio: 0.70, reset_at: "2026-09-01T16:00:00Z" }
+          - { key: monthly, role: BUDGET, remaining_ratio: 0.08, reset_at: "2026-09-25T12:00:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-01T12:00:00Z" }
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-terra
+      conservation_pressure: LOW
+      expiry_promotion: false
+
+  - name: budget_expiry_outranks_burst_opportunity
+    kind: selection
+    why: >-
+      Candidate A (claude) has 60% of its weekly budget left resetting in 5h
+      (HIGH expiry) and a nearly spent burst window. Candidate B (codex head)
+      has a distant weekly reset and a 90% burst window about to refill (HIGH
+      stranded). BUDGET expiry runs before BURST opportunity, so A is preferred.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.45, reset_at: "2026-09-06T12:00:00Z" }
+        short_window: { remaining_ratio: 0.90, reset_at: "2026-09-01T13:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.60, reset_at: "2026-09-01T17:00:00Z" }
+        short_window: { remaining_ratio: 0.20, reset_at: "2026-09-01T17:00:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-01T12:00:00Z" }
+    expect:
+      status: SELECTED
+      provider: claude
+      model: sonnet
+      budget_expiry_opportunity: HIGH
+      expiry_promotion: true
+      stranded_promotion: false
+
+  - name: expiry_opportunity_cannot_pull_a_flagship_into_stage_2
+    kind: selection
+    why: >-
+      ESCALATION_MODEL candidates are STAGE_3; the required stage is
+      STAGE_2_ADVANCED. Both flagship pools have a HIGH budget_expiry_opportunity,
+      but the stage gate excludes them on policy - expiry can never change
+      capability stage.
+    slot: ESCALATION_MODEL
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.70, reset_at: "2026-09-01T16:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.70, reset_at: "2026-09-01T16:00:00Z" }
+    options:
+      allowExperimental: false
+      taskRisk: medium
+      requiredStage: STAGE_2_ADVANCED
+      now: "2026-09-01T12:00:00Z"
+    expect:
+      status: BLOCKED
+      code: POLICY_BLOCKED
+
+  - name: expiry_opportunity_cannot_override_reviewer_disjointness
+    kind: selection
+    why: >-
+      The codex reviewer candidates have a HIGH budget_expiry_opportunity, but
+      the implementer is codex/gpt-5.6, so disjointness removes them before any
+      resource signal. The disjoint enabled Gemini reviewer is selected.
+    slot: INDEPENDENT_REVIEWER
+    resource_states:
+      antigravity: { pools: { gemini: { state: GREEN, available: true, source: ORCA_RUNTIME } } }
+      claude: { state: GREEN, available: true, source: ORCA_RUNTIME }
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.70, reset_at: "2026-09-01T16:00:00Z" }
+    options:
+      allowExperimental: false
+      taskRisk: high
+      excludeProvider: codex
+      excludeModelFamily: gpt-5.6
+      now: "2026-09-01T12:00:00Z"
+    expect:
+      status: SELECTED
+      provider: antigravity
+      model: AUTO_GEMINI
+      disjoint_from: { provider: codex, model_family: gpt-5.6 }
+
+  - name: unknown_reset_yields_unknown_expiry_opportunity
+    kind: selection
+    why: >-
+      A BUDGET window with a remaining ratio but no trustworthy reset time
+      cannot say whether anything is about to expire, so
+      budget_expiry_opportunity is UNKNOWN and registry order decides.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.70, reset_at: null }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.70, reset_at: null }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-01T12:00:00Z" }
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-terra
+      budget_expiry_opportunity: UNKNOWN
+      expiry_promotion: false
+
+  - name: longer_horizon_scarcity_suppresses_shorter_horizon_expiry_pull
+    kind: selection
+    why: >-
+      PART E aggregation. Candidate A (claude) weekly 60% remaining resetting in
+      4h; monthly 8% remaining resetting in 20 days. The monthly CRITICAL
+      scarcity is the most restrictive BUDGET window and suppresses the weekly
+      expiry pull - do not consume a nearly-spent monthly budget just because
+      the weekly one is about to refill.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.75, reset_at: "2026-09-06T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        windows:
+          - { key: weekly, role: BUDGET, remaining_ratio: 0.60, reset_at: "2026-09-01T16:00:00Z" }
+          - { key: monthly, role: BUDGET, remaining_ratio: 0.08, reset_at: "2026-09-21T12:00:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-01T12:00:00Z" }
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-terra
+      conservation_pressure: LOW
+      expiry_promotion: false

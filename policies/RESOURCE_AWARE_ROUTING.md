@@ -1,6 +1,6 @@
 # Resource-Aware Routing Policy
 
-Version: `0.3`
+Version: `0.4`
 Status: normative
 
 這份文件是 **resource state、freshness、quota window role（BURST / BUDGET）、conservation pressure、reset proximity / stranded capacity 與候選重排** 的 normative owner。
@@ -109,9 +109,17 @@ Freshness 依**每一筆 provider 或 pool 自己的 `checked_at`** 評估，絕
 
 **`quota opportunity cost is a routing signal, not capability authority`**
 **`short-window opportunity MUST NOT override long-horizon scarcity`**
+**`BUDGET scarcity MUST override BUDGET expiry opportunity`**
 
-本節是 window role、conservation pressure、reset proximity、stranded capacity
-與 window 聚合的 normative owner。
+本節是 window role、conservation pressure、budget expiry opportunity、reset
+proximity、stranded capacity 與 window 聚合的 normative owner。
+
+三個 derived signal 的分工：**conservation pressure 是防守的**（長週期預算稀缺 →
+保留），**budget expiry opportunity 是進攻的**（長週期預算剩很多且即將 reset →
+在同資格候選中優先用掉，以免浪費），**stranded capacity 是更短時間尺度的次要
+最佳化**（BURST 即將 reset 的閒置容量）。防守永遠壓過同尺度的進攻：
+`budget_expiry_opportunity` 不得讓一個自身 `conservation_pressure` 為 `HIGH` /
+`CRITICAL` 的候選被提前。
 
 ### 兩種 window role
 
@@ -175,7 +183,8 @@ Legacy 具名寫法（見下方 backward compatibility）仍然有效，且可�
 ```yaml
 reset_proximity:              # NEAR | MEDIUM | FAR | UNKNOWN
 stranded_capacity_risk:       # HIGH | MEDIUM | LOW | UNKNOWN      ← BURST
-conservation_pressure:        # NONE | LOW | MEDIUM | HIGH | CRITICAL | UNKNOWN  ← BUDGET
+conservation_pressure:        # NONE | LOW | MEDIUM | HIGH | CRITICAL | UNKNOWN  ← BUDGET (defensive)
+budget_expiry_opportunity:    # HIGH | MEDIUM | LOW | UNKNOWN      ← BUDGET (offensive)
 ```
 
 `reset_proximity` 對兩種 role 用同一組門檻：
@@ -222,10 +231,34 @@ conservation_pressure:        # NONE | LOW | MEDIUM | HIGH | CRITICAL | UNKNOWN 
 週預算健康不代表月上限沒有見底——任何一個長期 cap 都可能是真正先撞到的瓶頸。
 `UNKNOWN` 在此排序中低於所有已知值，因此「沒讀到」永遠不會蓋過「讀到了」。
 
-### 何時兩個訊號一律為 UNKNOWN
+### BUDGET → budget_expiry_opportunity（expiry opportunity）
 
-以下任一成立時，`stranded_capacity_risk` 與 `conservation_pressure` 皆為 `UNKNOWN`，
-不參與重排：
+`conservation_pressure` 的進攻鏡像，形狀**完全相反**：需要**剩得多，且快沒時間用**
+——長週期 quota 剩很多、又即將 reset，就是「快浪費掉」的容量，值得在同 stage、同資格
+候選中優先用掉。
+
+| `remaining_ratio` \ proximity | `NEAR` | `MEDIUM` | `FAR` | `UNKNOWN` |
+|---|---|---|---|---|
+| ≥ 0.5 | `HIGH` | `MEDIUM` | `LOW` | `UNKNOWN` |
+| ≥ 0.25 且 < 0.5 | `MEDIUM` | `LOW` | `LOW` | `UNKNOWN` |
+| ≥ 0.1 且 < 0.25 | `LOW` | `LOW` | `LOW` | `UNKNOWN` |
+| < 0.1 | `LOW` | `LOW` | `LOW` | `UNKNOWN` |
+| 無可信讀數 | `UNKNOWN` | `UNKNOWN` | `UNKNOWN` | `UNKNOWN` |
+
+低於 0.25 一律不高於 `LOW`：**剩沒多少就沒什麼可浪費**，不為了用光最後幾 % 而建立
+強烈 preference——那時決策由 scarcity（防守）主導，不由 expiry（進攻）。
+
+**Aggregation（保守）：** 多個 `BUDGET` window 時，`budget_expiry_opportunity`
+取**最高者**（任一近 reset 的長窗剩很多，就是有容量要浪費）；但它**只有在該候選
+自身的 `conservation_pressure` 不是 `HIGH` / `CRITICAL` 時**才會影響排序。因此
+「weekly 剩 60% 、4h 後 reset」＋「monthly 剩 8% 、20d 後 reset」時，monthly 的
+`CRITICAL` scarcity 壓過 weekly 的 expiry opportunity——不得因 weekly 即將 reset
+而消耗已經很稀缺的 monthly budget。
+
+### 何時三個訊號一律為 UNKNOWN
+
+以下任一成立時，`stranded_capacity_risk`、`conservation_pressure` 與
+`budget_expiry_opportunity` 皆為 `UNKNOWN`，不參與重排：
 
 - entry 未通過 source trust invariant；
 - `state` 為 `UNKNOWN`——沒有可信 state 就沒有可信的資源讀數；
@@ -237,14 +270,22 @@ conservation_pressure:        # NONE | LOW | MEDIUM | HIGH | CRITICAL | UNKNOWN 
 
 ### 重排規則：scarcity first, utilization second
 
-Registry 順序先決定該 band 的 head。兩個訊號都**只在與 head 相同 resource state
-的候選之間**作用：
+Registry 順序先決定該 band 的 head。三個訊號都**只在與 head 相同 resource state
+的候選之間**作用，順序固定：
 
 1. **Conservation 先跑，且只會降級。** `conservation_pressure` 為 `HIGH` 或
    `CRITICAL` 的候選排到其餘候選之後。`MEDIUM` / `LOW` / `NONE` / `UNKNOWN` 皆為中性。
-2. **Burst opportunity 後跑，且只會升級。** `stranded_capacity_risk` 為 `HIGH`
-   **且該候選自身的 `conservation_pressure` 為 `NONE` 或 `LOW`** 的候選可以提前。
-3. 都沒有時維持 registry 順序。
+2. **BUDGET expiry opportunity 次跑，且只會升級。** `budget_expiry_opportunity`
+   為 `HIGH` **且該候選自身的 `conservation_pressure` 不是 `HIGH` / `CRITICAL`** 的
+   候選可以提前。這一步在 burst opportunity 之前——長週期 expiry 比短窗 stranded
+   更值得優化。
+3. **Burst opportunity 最後跑，且只會升級。** 僅在 expiry 沒有移動選擇時：
+   `stranded_capacity_risk` 為 `HIGH` **且該候選自身的 `conservation_pressure` 為
+   `NONE` 或 `LOW`** 的候選可以提前。
+4. 都沒有時維持 registry 順序。
+
+`BUDGET scarcity MUST override BUDGET expiry opportunity`：週預算只剩 8%、reset
+為 `FAR` 時，即使其他訊號有 opportunity，仍應 conserve。
 
 Conservation 表達的是偏好，不是拒絕：若群組內每個候選都在壓力下，該 band 依然
 會依 registry 順序選出候選，**不會因此 `BLOCKED`**。
@@ -254,8 +295,9 @@ Conservation 表達的是偏好，不是拒絕：若群組內每個候選都在�
 `UNKNOWN` 不因缺少資料而被懲罰或獎勵：
 
 - **未知的 BUDGET 不得視為 scarce** → 不降級。
-- **未知的 BUDGET 不得視為 healthy** → 不給 burst promotion。
+- **未知的 BUDGET 不得視為 healthy** → 不給 burst promotion，也**不給 expiry promotion**。
 - **未知的 BURST 不扣分** → 只是沒有 promotion 可拿。
+- `budget_expiry_opportunity` 為 `UNKNOWN`（讀不到 remaining 或 reset）→ 不影響排序。
 
 因此 `UNKNOWN` 的淨效果是「維持 registry 順序」，兩個方向都不動。
 
@@ -292,8 +334,11 @@ v0.3 的具名 window 寫法仍然合法，不需要遷移：
 ### 記錄
 
 重排實際改變了選擇時，operational router 必須在 routing evidence 中記錄
-**被跳過的候選**與造成該結果的標籤（`conservation_pressure` 或
+**被跳過的候選**與造成該結果的標籤（`conservation_pressure`、
+`budget_reset_proximity` + `budget_expiry_opportunity`，或
 `reset_proximity` + `stranded_capacity_risk`）。未記錄的重排等同不可稽核的重排。
+expiry 造成的提前記為 `expiry_promotion`，burst 造成的記為 `stranded_promotion`，
+兩者互斥（expiry 優先）。
 
 **只記錄標籤，不記錄數值。** `remaining_ratio`、`reset_at` 與任何原始 quota 讀數
 都不得寫入 execution artifact——這是本文件「不保存原始 quota payload」規則的延伸。

@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { parse } from "yaml";
 import {
   attemptResume,
+  budgetExpiryOpportunity,
   canonicalFingerprint,
   canonicalContinuationFacts,
   classifyCommand,
@@ -1716,6 +1717,45 @@ test("conservation pressure reads remaining and proximity together", () => {
   assert.equal(conservationPressure(0.05, "UNKNOWN"), "UNKNOWN");
   assert.equal(conservationPressure(null, "FAR"), "UNKNOWN");
   assert.equal(conservationPressure(1.5, "FAR"), "UNKNOWN");
+});
+
+test("budget expiry opportunity is the offensive mirror of conservation", () => {
+  // A lot left AND about to reset: HIGH. This is the only combination that
+  // earns a promotion.
+  assert.equal(budgetExpiryOpportunity(0.70, "NEAR"), "HIGH");
+  assert.equal(budgetExpiryOpportunity(0.50, "NEAR"), "HIGH");
+
+  // A lot left but a distant reset strands nothing.
+  assert.equal(budgetExpiryOpportunity(0.70, "MEDIUM"), "MEDIUM");
+  assert.equal(budgetExpiryOpportunity(0.70, "FAR"), "LOW");
+
+  // Middling remaining is at most MEDIUM, and only right at reset.
+  assert.equal(budgetExpiryOpportunity(0.40, "NEAR"), "MEDIUM");
+  assert.equal(budgetExpiryOpportunity(0.40, "MEDIUM"), "LOW");
+
+  // Little left: there is nothing to strand, so never above LOW - no strong
+  // preference for burning the last few percent.
+  assert.equal(budgetExpiryOpportunity(0.05, "NEAR"), "LOW");
+  assert.equal(budgetExpiryOpportunity(0.15, "NEAR"), "LOW");
+
+  // No usable reading is neutral.
+  assert.equal(budgetExpiryOpportunity(0.70, "UNKNOWN"), "UNKNOWN");
+  assert.equal(budgetExpiryOpportunity(null, "NEAR"), "UNKNOWN");
+  assert.equal(budgetExpiryOpportunity(1.5, "NEAR"), "UNKNOWN");
+
+  // resolveConservationPressure surfaces it as the best across BUDGET windows,
+  // while conservation_pressure still takes the most restrictive.
+  const mixed = resolveConservationPressure(
+    pool({
+      windows: [
+        { key: "weekly", role: "BUDGET", remaining_ratio: 0.70, reset_at: at(4 * HOUR) },
+        { key: "monthly", role: "BUDGET", remaining_ratio: 0.08, reset_at: at(480 * HOUR) },
+      ],
+    }),
+    { now: NOW },
+  );
+  assert.equal(mixed.budget_expiry_opportunity, "HIGH");
+  assert.equal(mixed.conservation_pressure, "CRITICAL");
 });
 
 test("the tightest budget window sets the pressure", () => {

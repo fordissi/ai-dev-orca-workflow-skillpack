@@ -183,19 +183,21 @@ review_disjointness_verified: # unresolved — provider 與 model family 都必�
 resource_checked_at:          # unresolved — 每個 pool 各自的時間，或 UNKNOWN
 resource_overlay_applied:     # unresolved — true | false
 
-# 兩個資源訊號。只記標籤，不記數值：remaining_ratio、reset_at 與任何
+# 三個資源訊號。只記標籤，不記數值：remaining_ratio、reset_at 與任何
 # 原始 quota 讀數都不得寫進 artifact。語意見
 # policies/RESOURCE_AWARE_ROUTING.md 的 Hierarchical quota windows。
-# 順序固定：scarcity first, utilization second。
+# 順序固定：conservation（防守）→ budget expiry（進攻）→ burst utilization。
 resource_signals:
-  conservation:               # 長期 BUDGET window：稀缺
+  conservation:               # 長期 BUDGET window：稀缺（防守）
     conservation_pressure:    # unresolved — NONE | LOW | MEDIUM | HIGH | CRITICAL | UNKNOWN
     budget_reset_proximity:   # unresolved — NEAR | MEDIUM | FAR | UNKNOWN
     conservation_demotion:    # none，或因長期預算吃緊而被降級的候選
+    budget_expiry_opportunity:# unresolved — HIGH | MEDIUM | LOW | UNKNOWN（進攻：剩很多且快 reset）
+    expiry_promotion:         # none，或因 BUDGET 即將 reset、剩餘充足而被提前的候選
   opportunity:                # 短期 BURST window：利用率
     reset_proximity:          # unresolved — NEAR | MEDIUM | FAR | UNKNOWN
     stranded_capacity_risk:   # unresolved — HIGH | MEDIUM | LOW | UNKNOWN
-    stranded_promotion:       # none，或被此訊號跳過的候選；提前必須記錄
+    stranded_promotion:       # none，或被此訊號跳過的候選；提前必須記錄（與 expiry_promotion 互斥）
 
 fallback_used:                # unresolved — none，或被跳過的候選及原因
 selection_reason:             # unresolved — 為何選它、為何跳過前面的候選

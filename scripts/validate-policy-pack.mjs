@@ -667,6 +667,32 @@ export function conservationPressure(remainingRatio, proximity) {
 }
 
 /**
+ * How much unused long-horizon BUDGET is at risk of expiring at reset.
+ *
+ * The offensive mirror of conservation_pressure, and the exact opposite shape:
+ * "a lot left AND little time to spend it" is what makes a weekly/monthly cap
+ * worth using before it refills. An almost-spent budget has almost nothing to
+ * strand, so it never rises above LOW - there is no strong preference for
+ * burning the last few percent. RESOURCE_AWARE_ROUTING.md owns this matrix.
+ */
+export function budgetExpiryOpportunity(remainingRatio, proximity) {
+  if (typeof remainingRatio !== "number" || !Number.isFinite(remainingRatio)) return "UNKNOWN";
+  if (remainingRatio < 0 || remainingRatio > 1) return "UNKNOWN";
+  if (!RESET_PROXIMITY_VALUES.includes(proximity) || proximity === "UNKNOWN") return "UNKNOWN";
+
+  if (remainingRatio >= BUDGET_AMPLE) {
+    if (proximity === "NEAR") return "HIGH";
+    return proximity === "MEDIUM" ? "MEDIUM" : "LOW";
+  }
+  if (remainingRatio >= BUDGET_COMFORTABLE) {
+    return proximity === "NEAR" ? "MEDIUM" : "LOW";
+  }
+  // Below BUDGET_COMFORTABLE (0.25) there is too little left to strand: LOW
+  // whatever the proximity, so scarcity - not expiry - drives the decision.
+  return "LOW";
+}
+
+/**
  * The part of a reading that is common to both signals: whether the entry can
  * carry any weight at all.
  *
@@ -760,7 +786,12 @@ export function resolveConservationPressure(entry, options = {}) {
   const readable = readableEntry(entry, now);
 
   if (readable === null) {
-    return { ...UNKNOWN_BASE, budget_reset_proximity: "UNKNOWN", conservation_pressure: "UNKNOWN" };
+    return {
+      ...UNKNOWN_BASE,
+      budget_reset_proximity: "UNKNOWN",
+      conservation_pressure: "UNKNOWN",
+      budget_expiry_opportunity: "UNKNOWN",
+    };
   }
 
   const base = {
@@ -769,23 +800,35 @@ export function resolveConservationPressure(entry, options = {}) {
     stale: readable.stale,
     budget_reset_proximity: "UNKNOWN",
     conservation_pressure: "UNKNOWN",
+    budget_expiry_opportunity: "UNKNOWN",
   };
   if (!readable.usable) return base;
 
+  // conservation takes the most restrictive BUDGET window (any cap can be the
+  // one that runs out first); expiry takes the best one (any near-reset cap
+  // with room left is capacity about to be wasted).
   let tightest = { proximity: "UNKNOWN", pressure: "UNKNOWN" };
+  let bestExpiry = "UNKNOWN";
 
   for (const window of resourceWindows(entry)) {
     if (window.role !== "BUDGET") continue;
 
     const proximity = resetProximity(window.reset_at, now);
     const pressure = conservationPressure(window.remaining_ratio, proximity);
-
     if (conservationRank(pressure) > conservationRank(tightest.pressure)) {
       tightest = { proximity, pressure };
     }
+
+    const expiry = budgetExpiryOpportunity(window.remaining_ratio, proximity);
+    if (riskRank(expiry) > riskRank(bestExpiry)) bestExpiry = expiry;
   }
 
-  return { ...base, budget_reset_proximity: tightest.proximity, conservation_pressure: tightest.pressure };
+  return {
+    ...base,
+    budget_reset_proximity: tightest.proximity,
+    conservation_pressure: tightest.pressure,
+    budget_expiry_opportunity: bestExpiry,
+  };
 }
 
 // A provider argues for conservation only once its long-horizon budget is
@@ -973,7 +1016,9 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
         stranded_capacity_risk: hit.stranded.stranded_capacity_risk,
         budget_reset_proximity: hit.conservation.budget_reset_proximity,
         conservation_pressure: hit.conservation.conservation_pressure,
+        budget_expiry_opportunity: hit.conservation.budget_expiry_opportunity,
         conservation_demotion: null,
+        expiry_promotion: null,
         stranded_promotion: null,
         pinned: true,
       };
@@ -1039,12 +1084,27 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
     // candidate under pressure the band still routes, in registry order.
     const ordered = [...byPreference(sustainable), ...byPreference(conserve)];
 
-    const promoted = ordered.find(
+    // Layer 4: BUDGET expiry opportunity (offensive). Prefer a candidate whose
+    // own long-horizon budget has room left and is about to reset - but only
+    // when that same candidate's BUDGET is not itself under HIGH/CRITICAL
+    // scarcity. Scarcity is defensive and always wins (BUDGET scarcity MUST
+    // override BUDGET expiry opportunity).
+    const expiryPromoted = ordered.find(
+      ({ conservation }) =>
+        conservation.budget_expiry_opportunity === "HIGH" &&
+        !CONSERVE_PRESSURES.has(conservation.conservation_pressure),
+    );
+
+    // Layer 5: BURST stranded-capacity opportunity - shorter-horizon secondary
+    // optimisation, applied only if expiry did not already move the pick.
+    const burstPromoted = ordered.find(
       ({ stranded, conservation }) =>
         stranded.stranded_capacity_risk === "HIGH" && SUSTAINABLE_PRESSURES.has(conservation.conservation_pressure),
     );
 
-    return { pick: promoted ?? ordered[0], head };
+    if (expiryPromoted !== undefined) return { pick: expiryPromoted, head, movedBy: "expiry" };
+    if (burstPromoted !== undefined) return { pick: burstPromoted, head, movedBy: "burst" };
+    return { pick: ordered[0], head, movedBy: null };
   };
 
   const selection =
@@ -1053,7 +1113,7 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
     (allowRed ? pickFromBand(qualified.filter(({ resourceState }) => resourceState === "RED")) : undefined);
 
   if (selection !== undefined) {
-    const { pick, head } = selection;
+    const { pick, head, movedBy } = selection;
     // Non-null only when a resource signal actually moved the choice.
     // Recording it is what keeps these layers auditable rather than invisible.
     const moved = pick !== head;
@@ -1067,6 +1127,7 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
       stranded_capacity_risk: pick.stranded.stranded_capacity_risk,
       budget_reset_proximity: pick.conservation.budget_reset_proximity,
       conservation_pressure: pick.conservation.conservation_pressure,
+      budget_expiry_opportunity: pick.conservation.budget_expiry_opportunity,
       conservation_demotion: demoted
         ? {
             over: head.label,
@@ -1074,8 +1135,16 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
             conservation_pressure: head.conservation.conservation_pressure,
           }
         : null,
+      expiry_promotion:
+        moved && !demoted && movedBy === "expiry"
+          ? {
+              over: head.label,
+              budget_reset_proximity: pick.conservation.budget_reset_proximity,
+              budget_expiry_opportunity: pick.conservation.budget_expiry_opportunity,
+            }
+          : null,
       stranded_promotion:
-        moved && !demoted
+        moved && !demoted && movedBy === "burst"
           ? {
               over: head.label,
               reset_proximity: pick.stranded.reset_proximity,
@@ -1359,6 +1428,22 @@ export function validateRoutingCases(document, registry) {
         findings.push(
           `${named}: expected conservation_pressure ${testCase.expect.conservation_pressure}, got ${result.conservation_pressure}`,
         );
+      }
+
+      if ("budget_expiry_opportunity" in testCase.expect && result.budget_expiry_opportunity !== testCase.expect.budget_expiry_opportunity) {
+        findings.push(
+          `${named}: expected budget_expiry_opportunity ${testCase.expect.budget_expiry_opportunity}, got ${result.budget_expiry_opportunity}`,
+        );
+      }
+
+      if ("expiry_promotion" in testCase.expect) {
+        const promoted = result.expiry_promotion !== null;
+        if (promoted !== testCase.expect.expiry_promotion) {
+          findings.push(`${named}: expected expiry_promotion ${testCase.expect.expiry_promotion}, got ${promoted}`);
+        }
+        if (promoted && !isNonEmptyString(result.expiry_promotion.over)) {
+          findings.push(`${named}: an expiry promotion must record the candidate it moved ahead of`);
+        }
       }
 
       if ("conservation_demotion" in testCase.expect) {
