@@ -116,10 +116,37 @@ AI 可以且必須檢查、且**只有這些**能讓 AI 拒絕一個 user-enable
 
 **不得**因為 quota 不理想、benchmark、`evidence_status`、smoke-case 不足、AI preference 或 registry ranking 而換成其他模型。
 
-- pin 的模型不在該 slot 的 candidate list → `CONFIG_INVALID`（技術上不可能，不是 silent substitution）。
+- `pinnedCandidate` 若宣稱是 registry selection、但模型不在該 slot 的 candidate list → `CONFIG_INVALID`（技術上不可能，不是 silent substitution）。這不限制下方獨立記錄的 current `HUMAN_EXPLICIT_OVERRIDE`。
 - pin 的模型 runtime 不可用 → `ROUTING_UNAVAILABLE`（誠實回報，不換模型）。
 - pin 的模型與 implementer 不 disjoint（independent review）→ `POLICY_BLOCKED`（disjointness 是硬 filter，pin 不能覆蓋）。
 - pin 的模型被 `enabled: false` → `POLICY_BLOCKED`（`enabled` 是 authoritative；交回 human 決定要 re-enable 或改選）。
+
+### Selection provenance and autonomous registry enforcement
+
+模型選擇必須帶有 `model_selection_source`，且只能是：
+
+```text
+REGISTRY_AUTONOMOUS | HUMAN_EXPLICIT_OVERRIDE | HUMAN_RETROACTIVE_ACCEPTANCE
+```
+
+`REGISTRY_AUTONOMOUS` 是唯一的 autonomous model source。選定的
+`provider` / `model` / `model_family` / `reasoning_effort` 必須逐欄對應指定 slot
+中 `enabled`（缺省視為 true）的 registry candidate，並且是在 provider/model-family
+disjointness 等 hard filters 通過之後得到的結果。找不到對應 candidate 必須在
+dispatch 前回傳 `AUTONOMOUS_CANDIDATE_REJECTED`；resource overlay、Orca default、
+Codex local config、既有 terminal、generic reviewer helper 或 Superpowers 都不能
+補入 slot 外模型。
+
+`HUMAN_EXPLICIT_OVERRIDE` 表示 current human instruction 明確指定一個 task-local
+model。它可以位於一般 slot candidate list 之外，但必須記錄 provider、model、
+model_family、reasoning、task id 與 current instruction revision，並仍受 hard
+execution、permission 與 reviewer disjointness 約束。這個 override 不得修改
+`MODEL_REGISTRY.yaml`，也不得被帶到另一個 task；revision 不一致就是
+`HUMAN_OVERRIDE_STALE`。
+
+`HUMAN_RETROACTIVE_ACCEPTANCE` 只可用來記錄一個已完成 dispatch 的歷史裁量。它不會
+將實際模型變成 registry candidate，也不能授權新的 autonomous dispatch。一次已接受
+的 unregistered reviewer 不構成 registry 變更。
 
 ## Capability tier
 
@@ -317,14 +344,18 @@ flagship_admission:
 ## Reasoning effort is part of execution identity
 
 ```text
-provider + model + reasoning_effort is the execution identity.
+provider + model + model_family + reasoning_effort is the execution identity.
 ```
 
-`reasoning_effort` 與 provider、model 同等，是 dispatch 必須明確傳遞的欄位，不是可省略的細節。Registry 的 `reasoning:` 是該候選的**預設** effort；只有在 task evidence 支持時才可調高（例如 Stage 3 從 `medium` 調到 `high`），且**不得**把任何模型預設為 `max`（Luna 例外，由 registry 明確指定）。
+`reasoning_effort` 與 provider、model、model family 同等，是 dispatch 必須明確傳遞的欄位，不是可省略的細節。Registry 的 `reasoning:` 是該候選的**預設** effort；只有在 task evidence 支持時才可調高（例如 Stage 3 從 `medium` 調到 `high`），且**不得**把任何模型預設為 `max`（Luna 例外，由 registry 明確指定）。
 
 **Codex dispatch 一律在命令列明確傳入 reasoning，永不繼承 local config。** 本機 `~/.codex/config.toml` 的 `model_reasoning_effort` 會靜默覆蓋未明示的值（實測：local config 設 `max` 會把 registry 的 `medium` 靜默提升成 `max`）。精確語法、各 provider 的機制差異與 runtime attestation 由 [`../references/OFFICIAL_COMMANDS.md`](../references/OFFICIAL_COMMANDS.md) 定義。
 
-Dispatch 前後的 contract attestation（expected vs actual 的 `provider` / `model` / `reasoning_effort` 比對）與 `DISPATCH_CONTRACT_MISMATCH` 的處置，語意由 [`WORKFLOW_POLICY.md`](WORKFLOW_POLICY.md) 的 Execution lifecycle semantics 定義。它**不是** `ROUTING_UNAVAILABLE`。
+Dispatch 前後的 contract attestation（expected vs actual 的 `provider` / `model` /
+`model_family` / `reasoning_effort` 比對）與
+`DISPATCH_IDENTITY_MATCH` / `DISPATCH_IDENTITY_UNVERIFIED` /
+`DISPATCH_CONTRACT_MISMATCH` 的處置，語意由 [`WORKFLOW_POLICY.md`](WORKFLOW_POLICY.md)
+的 Execution lifecycle semantics 定義。它**不是** `ROUTING_UNAVAILABLE`。
 
 ## Blocked reason codes
 

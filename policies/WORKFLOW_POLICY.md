@@ -228,7 +228,7 @@ routing failure。architecture review、long-context discovery、deep reasoning
 | `HARD_EXECUTION_CEILING` | 達到安全上限而 session 仍活著 | human gate |
 | `PERMISSION_BLOCKED` | 所需操作超出 permission ceiling | 交回 human |
 | `ROUTING_UNAVAILABLE` | session 已不可達且未留下結束紀錄 | 交回 human 或重新路由 |
-| `DISPATCH_CONTRACT_MISMATCH` | worker 實際的 provider/model/reasoning_effort 與 contract 不符 | 見下方 *Dispatch contract attestation* |
+| `DISPATCH_CONTRACT_MISMATCH` | worker 實際的 provider/model/model_family/reasoning_effort 與 contract 不符 | 見下方 *Dispatch contract attestation* |
 
 **這些是觀察狀態，不是 blocked reason code。** 其中 `PERMISSION_BLOCKED` 與
 `ROUTING_UNAVAILABLE` 是唯二會交棒給 canonical blocked reason code 的出口，
@@ -238,19 +238,61 @@ Blocked reason codes 章節定義，此處不重複。`DISPATCH_CONTRACT_MISMATC
 
 ### Dispatch contract attestation
 
-`provider + model + reasoning_effort` 是 execution identity（owner：
+`provider + model + model_family + reasoning_effort` 是 execution identity（owner：
 [`MODEL_ROUTING_POLICY.md`](MODEL_ROUTING_POLICY.md)）。Dispatch 後，operational
-router 應做一次 best-effort attestation：比對 contract 的
-`expected_runtime_identity`（`provider` / `model` / `reasoning_effort`）與
-runtime 實際值。取值方式與能力缺口見
+router 必須記錄並比對：
+
+```yaml
+EXPECTED_IDENTITY:
+  provider:
+  model:
+  model_family:
+  reasoning_effort:
+
+ACTUAL_IDENTITY:
+  provider:
+  model:
+  model_family:
+  reasoning_effort:
+```
+
+比對方式與能力缺口見
 [`../references/OFFICIAL_COMMANDS.md`](../references/OFFICIAL_COMMANDS.md) 的
 *Runtime attestation*。
 
 | attestation_result | 意義 | 動作 |
 |---|---|---|
-| `MATCH` | 三者一致 | 正常繼續 |
-| `UNVERIFIED` | runtime 未提供可讀取的實際值 | 記錄；依 task 風險決定是否要求人工確認，不阻塞低風險工作 |
-| `DISPATCH_CONTRACT_MISMATCH` | 任一欄位不符（例：contract `Sol medium`，實際 `Sol max`） | 見下 |
+| `DISPATCH_IDENTITY_MATCH` | 四者一致，且 provider 支援的 model / reasoning 旗標已明確寫入實際 launch command | 正常繼續 |
+| `DISPATCH_IDENTITY_UNVERIFIED` | runtime 未提供完整可讀取的實際值，或 provider-specific launch contract 無法驗證 | 不得宣稱 exact dispatch；依 task 風險進人工確認或停止 |
+| `DISPATCH_CONTRACT_MISMATCH` | 任一欄位不符，或已知 launch command 省略/改寫了選定的 model / reasoning（例：contract `Sol medium`，實際 `Sol max`） | 見下 |
+
+`ACTUAL_IDENTITY` 只要有一個可觀察欄位已知與 `EXPECTED_IDENTITY` 不同，結果就是
+`DISPATCH_CONTRACT_MISMATCH`，即使其他欄位仍未知。只有完全相同的四個欄位才能是
+`DISPATCH_IDENTITY_MATCH`；不可用 `MATCH`、`PASS` 或 worker 自報取代這三個結果。
+
+### Selection provenance and no silent defaults
+
+每一次正式 dispatch 都必須記錄 `model_selection_source`：
+
+| source | 意義 |
+|---|---|
+| `REGISTRY_AUTONOMOUS` | operational router 在指定 slot、disjointness 與 resource filters 後，從 `MODEL_REGISTRY.yaml` 的 enabled candidate 選出 |
+| `HUMAN_EXPLICIT_OVERRIDE` | current human instruction 明確指定 task-local provider / model / reasoning；必須綁定 task id 與 instruction revision |
+| `HUMAN_RETROACTIVE_ACCEPTANCE` | 只記錄已完成工作的歷史接受；不得授權新的 dispatch 或改變 registry |
+
+`REGISTRY_AUTONOMOUS` 若無法指向指定 slot 中的 enabled candidate，必須在 dispatch
+前拒絕為 `AUTONOMOUS_CANDIDATE_REJECTED`。不得以 Orca default、Codex local
+config、既有 terminal、generic reviewer helper、Superpowers 或環境預設值補上
+model / reasoning。
+
+`HUMAN_EXPLICIT_OVERRIDE` 可以使用不在一般 slot candidate list 的模型，但只能
+適用於 current task，且仍須通過 hard execution、permission 與 reviewer
+disjointness 檢查；它不得寫回 `MODEL_REGISTRY.yaml`。過期、未綁定 current
+instruction 的 override 必須視為 `HUMAN_OVERRIDE_STALE`。
+
+`HUMAN_RETROACTIVE_ACCEPTANCE` 不是 `HUMAN_EXPLICIT_OVERRIDE` 的替代寫法；本次
+Foundation 的已接受 `gpt-5.5 high` review 屬於前者的歷史紀錄，不是未來 autonomous
+candidate。
 
 `DISPATCH_CONTRACT_MISMATCH` 的安全處置：
 
@@ -551,7 +593,7 @@ Repair 必須交回**單一** implementation owner，不得同時派給多個 wo
 
 Worker 結束時回傳 `TASK_RESULT` 與 `RESOURCE_STATUS` 兩段結構化 footer。
 
-**Provider、model、model family 與 reasoning effort 由 router 記錄，不由 worker 自行判定。** Worker 通常無法可靠地內省自己正在以哪個模型執行；要求它自報等於誘導它猜測。這些欄位必須由 router 在 contract 中寫定，worker 只能原樣回填；contract 未載明時填 `UNKNOWN`。
+**Provider、model、model family 與 reasoning effort 由 router 記錄，不由 worker 自行判定。** Worker 通常無法可靠地內省自己正在以哪個模型執行；要求它自報等於誘導它猜測。這些欄位必須由 router 在 contract 中寫定並以 attestation 比對；contract 或 runtime 未載明時填 `UNKNOWN`，不得假裝 exact match。
 
 `RESOURCE_STATUS` 可以整段為 `UNKNOWN`。Worker 不得為了填滿 footer 而猜測 quota 數值。
 
@@ -666,6 +708,8 @@ terminal_inventory_entry:
   role:
   provider:
   model:
+  model_family:
+  reasoning_effort:
   lifecycle_state:                  # 上方六個 state 之一
   human_instruction_revision:       # 綁定值
   objective_fingerprint:            # 綁定值
@@ -675,8 +719,10 @@ terminal_inventory_entry:
 ```
 
 **Unknown 或未綁定（缺少上述 fingerprint 欄位）的 terminal，`resumable` 一律為
-`false`。不得只靠 terminal title 推斷 task ownership**——title 是給人看的提示，
-不是可信的綁定資料。
+`false`。即使 terminal 可 resumable，若 provider、model、model family 或 reasoning
+effort 任一項無法證明與新 contract 相容，也不得重用來宣稱 exact dispatch。不得只
+靠 terminal title、provider 或 role 推斷 task ownership 或 identity**——title 是給人
+看的提示，不是可信的綁定資料。
 
 ### Terminal naming
 

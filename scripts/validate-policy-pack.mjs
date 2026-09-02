@@ -107,53 +107,292 @@ export function admitStage(classification, signals = {}) {
   return "STAGE_1_DEFAULT";
 }
 
-/**
- * provider + model + reasoning_effort is the execution identity. For a Codex
- * dispatch the launch command MUST set reasoning explicitly (never inherit it
- * from ~/.codex/config.toml). If an observed identity is supplied it must
- * match the expected one. OFFICIAL_COMMANDS.md owns the exact syntax.
- */
-export function checkReasoningDispatch(dispatch) {
-  const d = isPlainObject(dispatch) ? dispatch : {};
-  const expected = isPlainObject(d.expected) ? d.expected : {};
-  const actual = isPlainObject(d.actual) ? d.actual : null;
-  const command = isNonEmptyString(d.command) ? d.command : "";
-  const supported = Array.isArray(d.supported_efforts) ? d.supported_efforts : null;
+const DISPATCH_IDENTITY_FIELDS = ["provider", "model", "model_family", "reasoning_effort"];
 
-  // A user-selected reasoning effort the provider's CLI cannot express is a
-  // genuine capability gap, not a routing preference. Even an explicit human
-  // directive cannot make it possible.
-  if (supported !== null && "reasoning_effort" in expected && !supported.includes(expected.reasoning_effort)) {
+function normalizeDispatchIdentity(identity, providerFallback = null) {
+  const source = isPlainObject(identity) ? identity : {};
+  return {
+    provider: source.provider ?? providerFallback ?? null,
+    model: source.model ?? null,
+    model_family: source.model_family ?? source.modelFamily ?? null,
+    reasoning_effort: source.reasoning_effort ?? source.reasoning ?? null,
+  };
+}
+
+function missingIdentityFields(identity) {
+  return DISPATCH_IDENTITY_FIELDS.filter((field) => !isKnownIdentityValue(identity?.[field]));
+}
+
+function isKnownIdentityValue(value) {
+  return isNonEmptyString(value) && !["UNKNOWN", "UNVERIFIED", "UNRESOLVED"].includes(value.trim().toUpperCase());
+}
+
+/**
+ * Compare the identity selected by routing with the identity observed at
+ * runtime. A known difference wins over missing fields so a known default
+ * model (for example gpt-5.5) cannot be hidden by an unavailable provider
+ * field. OFFICIAL_COMMANDS.md owns the provider-specific command syntax.
+ */
+export function attestDispatchIdentity(expectedInput, actualInput) {
+  const expected = normalizeDispatchIdentity(expectedInput);
+  const actual = actualInput === null || actualInput === undefined
+    ? null
+    : normalizeDispatchIdentity(actualInput);
+  const missingExpected = missingIdentityFields(expected);
+
+  if (missingExpected.length > 0) {
     return {
-      result: "CONFIG_INVALID",
-      why: `reasoning effort ${expected.reasoning_effort} is not supported by ${d.provider ?? "the provider"} (supported: ${supported.join("|")})`,
+      attestation_result: "DISPATCH_IDENTITY_UNVERIFIED",
+      expected_identity: expected,
+      actual_identity: actual,
+      missing_fields: missingExpected,
+      why: `expected identity is incomplete: ${missingExpected.join(", ")}`,
     };
   }
 
-  if (d.provider === "codex" && command) {
-    const hasModel = /(?:^|\s)(?:-m|--model)\s+\S/.test(command);
-    const hasReasoning = /model_reasoning_effort\s*=\s*"[^"]+"/.test(command);
-    if (!hasModel || !hasReasoning) {
-      return {
-        result: "INVALID_DISPATCH",
-        why: "codex dispatch omits an explicit model and/or model_reasoning_effort",
-      };
-    }
+  if (actual === null) {
+    return {
+      attestation_result: "DISPATCH_IDENTITY_UNVERIFIED",
+      expected_identity: expected,
+      actual_identity: null,
+      missing_fields: DISPATCH_IDENTITY_FIELDS,
+      why: "runtime did not expose an actual execution identity",
+    };
   }
 
-  if (actual !== null) {
-    const modelMismatch = "model" in expected && actual.model !== expected.model;
-    const effortMismatch =
-      "reasoning_effort" in expected && actual.reasoning_effort !== expected.reasoning_effort;
-    if (modelMismatch || effortMismatch) {
-      return {
-        result: "DISPATCH_CONTRACT_MISMATCH",
-        why: `expected ${expected.model ?? "?"}/${expected.reasoning_effort ?? "?"}, observed ${actual.model ?? "?"}/${actual.reasoning_effort ?? "?"}`,
-      };
-    }
+  const mismatchedFields = DISPATCH_IDENTITY_FIELDS.filter(
+    (field) => isKnownIdentityValue(actual[field]) && actual[field] !== expected[field],
+  );
+  if (mismatchedFields.length > 0) {
+    return {
+      attestation_result: "DISPATCH_CONTRACT_MISMATCH",
+      expected_identity: expected,
+      actual_identity: actual,
+      mismatched_fields: mismatchedFields,
+      why: `identity differs in ${mismatchedFields.join(", ")}`,
+    };
   }
 
-  return { result: "PASS" };
+  const missingActual = missingIdentityFields(actual);
+  if (missingActual.length > 0) {
+    return {
+      attestation_result: "DISPATCH_IDENTITY_UNVERIFIED",
+      expected_identity: expected,
+      actual_identity: actual,
+      missing_fields: missingActual,
+      why: `runtime identity is incomplete: ${missingActual.join(", ")}`,
+    };
+  }
+
+  return {
+    attestation_result: "DISPATCH_IDENTITY_MATCH",
+    expected_identity: expected,
+    actual_identity: actual,
+    mismatched_fields: [],
+  };
+}
+
+function extractFlagValue(command, flags) {
+  const alternatives = flags.map((flag) => flag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+  const match = command.match(
+    new RegExp(`(?:^|\\s)(?:${alternatives})(?:=|\\s+)(?:"([^"]+)"|'([^']+)'|([^\\s]+))`),
+  );
+  return match ? (match[1] ?? match[2] ?? match[3]) : null;
+}
+
+function inspectExplicitDispatchCommand(provider, command) {
+  if (!isNonEmptyString(command)) {
+    return { explicit: false, missing: ["launch_command"], provider_supported: false };
+  }
+
+  if (provider === "codex") {
+    const model = extractFlagValue(command, ["-m", "--model"]);
+    const effortMatch = command.match(/model_reasoning_effort\s*=\s*["']([^"']+)["']/);
+    return {
+      explicit: model !== null && effortMatch !== null,
+      model,
+      reasoning_effort: effortMatch?.[1] ?? null,
+      missing: [
+        ...(model === null ? ["model"] : []),
+        ...(effortMatch === null ? ["reasoning_effort"] : []),
+      ],
+      provider_supported: true,
+    };
+  }
+
+  if (provider === "claude" || provider === "antigravity") {
+    const model = extractFlagValue(command, ["--model"]);
+    const effort = extractFlagValue(command, ["--effort"]);
+    return {
+      explicit: model !== null && effort !== null,
+      model,
+      reasoning_effort: effort,
+      missing: [
+        ...(model === null ? ["model"] : []),
+        ...(effort === null ? ["reasoning_effort"] : []),
+      ],
+      provider_supported: true,
+    };
+  }
+
+  return {
+    explicit: false,
+    missing: ["provider_specific_launch_contract"],
+    provider_supported: false,
+  };
+}
+
+/**
+ * Validate an execution command and, when available, its runtime identity.
+ * A command that omits a supported provider's model/effort flags is not exact
+ * even if local defaults happen to produce the expected values.
+ */
+export function checkReasoningDispatch(dispatch) {
+  const d = isPlainObject(dispatch) ? dispatch : {};
+  const expected = normalizeDispatchIdentity(d.expected, d.provider ?? null);
+  const actual = d.actual === null || d.actual === undefined ? null : normalizeDispatchIdentity(d.actual, d.provider ?? null);
+  const command = isNonEmptyString(d.command) ? d.command : "";
+  const supported = Array.isArray(d.supported_efforts) ? d.supported_efforts : null;
+
+  if (supported !== null && isNonEmptyString(expected.reasoning_effort) && !supported.includes(expected.reasoning_effort)) {
+    return {
+      result: "CONFIG_INVALID",
+      why: `reasoning effort ${expected.reasoning_effort} is not supported by ${expected.provider ?? "the provider"} (supported: ${supported.join("|")})`,
+    };
+  }
+
+  const commandCheck = inspectExplicitDispatchCommand(expected.provider, command);
+  const commandMismatches = [];
+  if (commandCheck.model !== null && commandCheck.model !== expected.model) commandMismatches.push("model");
+  if (commandCheck.reasoning_effort !== null && commandCheck.reasoning_effort !== expected.reasoning_effort) {
+    commandMismatches.push("reasoning_effort");
+  }
+
+  const attestation = attestDispatchIdentity(expected, actual);
+  if (commandMismatches.length > 0 || attestation.attestation_result === "DISPATCH_CONTRACT_MISMATCH") {
+    return {
+      ...attestation,
+      result: "DISPATCH_CONTRACT_MISMATCH",
+      mismatched_fields: [...new Set([...(attestation.mismatched_fields ?? []), ...commandMismatches])],
+      why: commandMismatches.length > 0
+        ? `launch command differs in ${commandMismatches.join(", ")}`
+        : attestation.why,
+    };
+  }
+
+  if (!commandCheck.explicit || !commandCheck.provider_supported) {
+    return {
+      ...attestation,
+      result: "DISPATCH_IDENTITY_UNVERIFIED",
+      why: commandCheck.provider_supported
+        ? `launch command omits explicit ${commandCheck.missing.join(" and ")}`
+        : `provider launch contract is not verified: ${commandCheck.missing.join(", ")}`,
+    };
+  }
+
+  return { ...attestation, result: attestation.attestation_result };
+}
+
+/**
+ * Enforce the model-selection source before a dispatch is started. This is a
+ * pure guard: it never mutates the registry and it does not perform runtime
+ * resource acquisition. Human retroactive acceptance is deliberately not a
+ * routing source.
+ */
+export function validateModelSelection(selection) {
+  const s = isPlainObject(selection) ? selection : {};
+  const source = s.model_selection_source;
+
+  if (source === "HUMAN_RETROACTIVE_ACCEPTANCE") {
+    return {
+      result: "RETROACTIVE_ACCEPTANCE_NOT_ROUTABLE",
+      why: "retroactive acceptance records history only and cannot authorize a dispatch",
+    };
+  }
+
+  if (source === "HUMAN_EXPLICIT_OVERRIDE") {
+    const override = normalizeDispatchIdentity(s.human_override);
+    const currentTask = s.current_task_id ?? s.task_id ?? null;
+    const currentRevision = s.current_instruction_revision ?? s.instruction_revision ?? null;
+    const overrideTask = s.human_override?.task_id ?? null;
+    const overrideRevision = s.human_override?.instruction_revision ?? null;
+    if (!isNonEmptyString(currentTask) || !isNonEmptyString(currentRevision) || currentTask !== overrideTask || currentRevision !== overrideRevision) {
+      return {
+        result: "HUMAN_OVERRIDE_STALE",
+        why: "human override is not bound to the current task and instruction revision",
+      };
+    }
+    const missing = missingIdentityFields(override);
+    if (missing.length > 0) {
+      return {
+        result: "HUMAN_OVERRIDE_INVALID",
+        missing_fields: missing,
+        why: `human override identity is incomplete: ${missing.join(", ")}`,
+      };
+    }
+    return {
+      result: "HUMAN_MODEL_OVERRIDE",
+      model_selection_source: "HUMAN_EXPLICIT_OVERRIDE",
+      identity: override,
+    };
+  }
+
+  if (source !== "REGISTRY_AUTONOMOUS") {
+    return {
+      result: "AUTONOMOUS_CANDIDATE_REJECTED",
+      why: "autonomous dispatch requires model_selection_source=REGISTRY_AUTONOMOUS or a current human override",
+    };
+  }
+
+  const slot = s.registry?.capability_slots?.[s.slot];
+  const selected = normalizeDispatchIdentity(s.selected_identity);
+  if (!isPlainObject(slot) || !Array.isArray(slot.candidates)) {
+    return {
+      result: "AUTONOMOUS_CANDIDATE_REJECTED",
+      why: "selected slot is not present in the authoritative registry",
+    };
+  }
+
+  const candidate = slot.candidates.find((entry) =>
+    entry?.enabled !== false &&
+    entry.provider === selected.provider &&
+    entry.model === selected.model &&
+    entry.model_family === selected.model_family &&
+    entry.reasoning === selected.reasoning_effort,
+  );
+  if (!candidate) {
+    return {
+      result: "AUTONOMOUS_CANDIDATE_REJECTED",
+      why: "selected identity is not an enabled candidate in the authoritative registry slot",
+    };
+  }
+
+  return {
+    result: "REGISTRY_CANDIDATE_ACCEPTED",
+    model_selection_source: "REGISTRY_AUTONOMOUS",
+    candidate,
+  };
+}
+
+/**
+ * Existing terminals are reusable only when their observed identity exactly
+ * matches the incoming contract. A title, role, provider, or terminal handle
+ * alone is not evidence of compatibility.
+ */
+export function canReuseTerminal(expected, terminalOrIdentity) {
+  const actual = isPlainObject(terminalOrIdentity) && "actual_identity" in terminalOrIdentity
+    ? terminalOrIdentity.actual_identity
+    : terminalOrIdentity;
+  const attestation = attestDispatchIdentity(expected, actual);
+  return {
+    reusable: attestation.attestation_result === "DISPATCH_IDENTITY_MATCH",
+    attestation_result: attestation.attestation_result,
+    expected_identity: attestation.expected_identity,
+    actual_identity: attestation.actual_identity,
+    why: attestation.why ?? (attestation.attestation_result === "DISPATCH_IDENTITY_MATCH"
+      ? "terminal identity is compatible"
+      : "terminal identity is not compatible with the incoming contract"),
+  };
 }
 const REQUIRED_CANDIDATE_FIELDS = [
   "provider",
@@ -1475,7 +1714,12 @@ const CASE_KINDS = ["selection", "multi_stage", "stage_admission", "reasoning_di
 const ACQUISITION_SOURCES = ["ORCA_RUNTIME", "PROVIDER_NATIVE_PROBE", "USER_STATEMENT", "UNKNOWN"];
 
 const STAGE_ADMISSION_RESULTS = ["STAGE_1_DEFAULT", "STAGE_2_ADVANCED", "STAGE_3_FLAGSHIP"];
-const DISPATCH_RESULTS = ["PASS", "INVALID_DISPATCH", "DISPATCH_CONTRACT_MISMATCH", "CONFIG_INVALID"];
+const DISPATCH_RESULTS = [
+  "DISPATCH_IDENTITY_MATCH",
+  "DISPATCH_IDENTITY_UNVERIFIED",
+  "DISPATCH_CONTRACT_MISMATCH",
+  "CONFIG_INVALID",
+];
 
 // "Cannot" and "must not" need different handling upstream, so a BLOCKED
 // result always says which it is. Owner: MODEL_ROUTING_POLICY.md.

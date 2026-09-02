@@ -207,7 +207,8 @@ const requiredContractFields = [
 // auditable without storing quota payloads.
 const requiredResolutionFields = [
   "dispatch_command", "capability_slot", "selected_candidate", "registry_version",
-  "resource_overlay_applied", "fallback_used", "selection_reason",
+  "resource_overlay_applied", "fallback_used", "selection_reason", "model_selection_source",
+  "registry_candidate", "expected_runtime_identity", "attestation_result",
 ];
 
 test("execution contract template exposes every required field", async () => {
@@ -226,6 +227,38 @@ test("contract template separates strategic contract from operational resolution
   for (const code of ["CONFIG_INVALID", "ROUTING_UNAVAILABLE", "POLICY_BLOCKED", "RESOURCE_BLOCKED", "PERMISSION_BLOCKED"]) {
     assert.ok(contract.includes(code), `contract template is missing blocked reason code ${code}`);
   }
+});
+
+test("dispatch governance is present in the normative policy and command references", async () => {
+  const workflow = await readFile("policies/WORKFLOW_POLICY.md", "utf8");
+  const routing = await readFile("policies/MODEL_ROUTING_POLICY.md", "utf8");
+  const commands = await readFile("references/OFFICIAL_COMMANDS.md", "utf8");
+  const skill = await readFile("skills/orca-multi-agent-dev/SKILL.md", "utf8");
+  const contract = await readFile("templates/ROUTER_EXECUTION_CONTRACT_TEMPLATE.md", "utf8");
+  const returnTemplate = await readFile("templates/STRATEGIC_RETURN_TEMPLATE.md", "utf8");
+
+  for (const text of [workflow, routing, commands, skill, contract]) {
+    for (const status of [
+      "DISPATCH_IDENTITY_MATCH",
+      "DISPATCH_IDENTITY_UNVERIFIED",
+      "DISPATCH_CONTRACT_MISMATCH",
+      "model_selection_source",
+      "HUMAN_EXPLICIT_OVERRIDE",
+      "HUMAN_RETROACTIVE_ACCEPTANCE",
+    ]) {
+      assert.ok(text.includes(status), `dispatch governance is missing ${status}`);
+    }
+  }
+  for (const path of [
+    "Codex direct invocation",
+    "Claude direct invocation",
+    "Antigravity / `agy` direct invocation",
+    "repo-local `orca-multi-agent-dev` skill",
+  ]) {
+    assert.ok(commands.includes(path), `dispatch path matrix is missing ${path}`);
+  }
+  assert.match(returnTemplate, /DISPATCH_IDENTITY_MATCH/);
+  assert.match(returnTemplate, /DISPATCH_IDENTITY_UNVERIFIED/);
 });
 
 test("handoff and session templates carry their required sections", async () => {

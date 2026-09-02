@@ -46,12 +46,18 @@ classify -> slot -> overlay -> candidate -> contract -> dispatch
    不換掉 disjoint reviewer、不繞 human gate、不改 slot membership**。
    見 [`RESOURCE_AWARE_ROUTING.md`](../../policies/RESOURCE_AWARE_ROUTING.md)。
 4. **candidate** — 依 [`MODEL_REGISTRY.yaml`](../../policies/MODEL_REGISTRY.yaml)
-   的 ordered candidates 選出。不得跨越 `minimum_tier`。
+   的 ordered candidates 選出。不得跨越 `minimum_tier`。Autonomous selection 必須
+   記錄 `model_selection_source: REGISTRY_AUTONOMOUS`，且選出的完整 identity 必須
+   對應該 slot 的 enabled candidate；slot 外模型在 dispatch 前拒絕。
 5. **contract** — 填
    [`templates/ROUTER_EXECUTION_CONTRACT_TEMPLATE.md`](../../templates/ROUTER_EXECUTION_CONTRACT_TEMPLATE.md)。
    Strategic 半部由大腦填，operational 半部保持 `unresolved` 直到 router 解析。
-6. **dispatch** — 逐字命令，**在命令列明確傳入 sandbox 與 approval 旗標**。
-   散文式的權限宣告會被 worker 的本機設定靜默覆蓋。
+6. **contract attestation** — 填入 `EXPECTED_IDENTITY` 與 `ACTUAL_IDENTITY` 的
+   `provider`、`model`、`model_family`、`reasoning_effort`。結果只能是
+   `DISPATCH_IDENTITY_MATCH`、`DISPATCH_CONTRACT_MISMATCH` 或
+   `DISPATCH_IDENTITY_UNVERIFIED`。
+7. **dispatch** — 逐字命令，**在命令列明確傳入 model、reasoning、sandbox 與
+   approval 旗標**。散文式的權限或模型宣告會被 worker 的本機設定靜默覆蓋。
 
 ## 3. Concurrency
 
@@ -68,6 +74,10 @@ model family 都必須**與 implementer 不同。找不到 disjoint 候選就回
 不得以「同 provider 不同模型」充數。
 
 Reviewer 直接看 filesystem、`git diff` 與測試輸出，不採信 worker 摘要。
+Reviewer 的 generic helper（包括 Superpowers / `requesting-code-review`）不是 model
+selection authority；它必須接收已解析的 workflow contract，不能自行挑選未註冊模型。
+Current human instruction 才能產生 `HUMAN_EXPLICIT_OVERRIDE`；一次完成工作的
+`HUMAN_RETROACTIVE_ACCEPTANCE` 只留在 audit history，不會擴充 registry。
 
 ## 5. 執行中：等待、權限、max turns
 
@@ -192,6 +202,7 @@ status: PASS | FAIL | BLOCKED
 blocked_reason_code:
 actual_provider:
 actual_model:
+actual_model_family:
 reasoning_effort:
 attempt_count:
 changed_files:
@@ -206,7 +217,9 @@ provider_states:
 source_summary:
 ```
 
-`actual_provider` / `actual_model` / `reasoning_effort` 由 router 寫定，worker 只回填。
+`actual_provider` / `actual_model` / `actual_model_family` / `reasoning_effort` 由 router
+寫定並以 attestation 比對，worker 只回填。無法觀察時填 `UNKNOWN`，不能宣稱
+`DISPATCH_IDENTITY_MATCH`。
 讀不到 quota 就整段 `UNKNOWN`——**禁止為了填滿欄位而猜測**。
 
 ## 9. Handback（Operational Router → Strategic Router）

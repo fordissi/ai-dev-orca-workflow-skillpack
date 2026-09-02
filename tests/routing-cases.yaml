@@ -1011,7 +1011,9 @@ cases:
   # kind: stage_admission    -> admitStage(classification, signals); expects a
   #                             STAGE_1_DEFAULT / STAGE_2_ADVANCED / STAGE_3_FLAGSHIP.
   # kind: reasoning_dispatch -> checkReasoningDispatch(dispatch); expects
-  #                             PASS / INVALID_DISPATCH / DISPATCH_CONTRACT_MISMATCH.
+  #                             DISPATCH_IDENTITY_MATCH /
+  #                             DISPATCH_IDENTITY_UNVERIFIED /
+  #                             DISPATCH_CONTRACT_MISMATCH.
   # Risk, production-relatedness and test volume are never stage inputs.
   # =================================================================== #
 
@@ -1580,19 +1582,19 @@ cases:
       dispatch itself is invalid before it runs.
     dispatch:
       provider: codex
-      expected: { model: gpt-5.6-luna, reasoning_effort: max }
+      expected: { model: gpt-5.6-luna, model_family: gpt-5.6, reasoning_effort: max }
       command: "codex exec -m gpt-5.6-luna -s workspace-write --color never -o out -"
-    expect: { result: INVALID_DISPATCH }
+    expect: { result: DISPATCH_IDENTITY_UNVERIFIED }
 
   - name: codex_sol_medium_run_as_sol_max_is_a_contract_mismatch
     kind: reasoning_dispatch
     why: The incident from Company Platform. Model id matches, reasoning effort does not.
     dispatch:
       provider: codex
-      expected: { model: gpt-5.6-sol, reasoning_effort: medium }
+      expected: { model: gpt-5.6-sol, model_family: gpt-5.6, reasoning_effort: medium }
       command: >-
         codex exec -m gpt-5.6-sol -c 'model_reasoning_effort="medium"' -s read-only --color never -o out -
-      actual: { model: gpt-5.6-sol, reasoning_effort: max }
+      actual: { model: gpt-5.6-sol, model_family: gpt-5.6, reasoning_effort: max }
     expect: { result: DISPATCH_CONTRACT_MISMATCH }
 
   - name: codex_terra_high_run_as_terra_high_passes
@@ -1600,11 +1602,11 @@ cases:
     why: Explicit model and reasoning on the command line, and the runtime agrees.
     dispatch:
       provider: codex
-      expected: { model: gpt-5.6-terra, reasoning_effort: high }
+      expected: { model: gpt-5.6-terra, model_family: gpt-5.6, reasoning_effort: high }
       command: >-
         codex exec -m gpt-5.6-terra -c 'model_reasoning_effort="high"' -s workspace-write --color never -o out -
-      actual: { model: gpt-5.6-terra, reasoning_effort: high }
-    expect: { result: PASS }
+      actual: { model: gpt-5.6-terra, model_family: gpt-5.6, reasoning_effort: high }
+    expect: { result: DISPATCH_IDENTITY_MATCH }
 
   - name: explicit_dispatch_effort_wins_over_local_config
     kind: reasoning_dispatch
@@ -1614,21 +1616,21 @@ cases:
       counts.
     dispatch:
       provider: codex
-      expected: { model: gpt-5.6-sol, reasoning_effort: medium }
+      expected: { model: gpt-5.6-sol, model_family: gpt-5.6, reasoning_effort: medium }
       command: >-
         codex exec -m gpt-5.6-sol -c 'model_reasoning_effort="medium"' -s read-only --color never -o out -
-      actual: { model: gpt-5.6-sol, reasoning_effort: medium }
-    expect: { result: PASS }
+      actual: { model: gpt-5.6-sol, model_family: gpt-5.6, reasoning_effort: medium }
+    expect: { result: DISPATCH_IDENTITY_MATCH }
 
   - name: matching_model_id_does_not_excuse_a_reasoning_mismatch
     kind: reasoning_dispatch
     why: A right model at the wrong effort is still the wrong execution identity.
     dispatch:
       provider: codex
-      expected: { model: gpt-5.6-luna, reasoning_effort: high }
+      expected: { model: gpt-5.6-luna, model_family: gpt-5.6, reasoning_effort: high }
       command: >-
         codex exec -m gpt-5.6-luna -c 'model_reasoning_effort="high"' -s workspace-write --color never -o out -
-      actual: { model: gpt-5.6-luna, reasoning_effort: max }
+      actual: { model: gpt-5.6-luna, model_family: gpt-5.6, reasoning_effort: max }
     expect: { result: DISPATCH_CONTRACT_MISMATCH }
 
   # =================================================================== #

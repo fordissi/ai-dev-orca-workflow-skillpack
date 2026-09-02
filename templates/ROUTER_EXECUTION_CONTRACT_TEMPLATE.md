@@ -145,26 +145,40 @@ selection_mode:               # unresolved — human_pinned | autonomous
                               # human_pinned 時 candidate 直接來自 human_model_directive，
                               # 未經 quota / preference 排序；只驗 hard execution eligibility
 
+model_selection_source:       # unresolved — REGISTRY_AUTONOMOUS | HUMAN_EXPLICIT_OVERRIDE |
+                              # HUMAN_RETROACTIVE_ACCEPTANCE（後者只可記錄歷史，不可 dispatch）
+registry_candidate:           # unresolved；REGISTRY_AUTONOMOUS 必須可回指指定 slot 的 enabled candidate
+  slot:
+  enabled:
+  provider:
+  model:
+  model_family:
+  reasoning:
+
 selected_candidate:           # unresolved
   actual_provider:
   actual_model:
   actual_model_family:
   reasoning_effort:            # registry 預設，或有 task 證據時調整後的值；絕不預設 max（Luna 例外）
 
-# provider + model + reasoning_effort 是 execution identity。dispatch_command
-# 必須明確傳入三者（Codex：-m 與 -c model_reasoning_effort；Claude：--model 與
-# --effort）。expected 與 actual 的比對見下方 attestation。
+# provider + model + model_family + reasoning_effort 是 execution identity。
+# dispatch_command 必須明確傳入 provider 支援的 model 與 reasoning（Codex：-m 與
+# -c model_reasoning_effort；Claude / Antigravity：--model 與 --effort）。不得依賴
+# local config、Orca default、既有 terminal 或 generic helper。
 expected_runtime_identity:    # unresolved
   provider:
   model:
+  model_family:
   reasoning_effort:
 
-attestation:                  # dispatch 後 best-effort 比對；語意見 WORKFLOW_POLICY.md
+attestation:                  # dispatch 後比對；語意見 WORKFLOW_POLICY.md
   method:                     # unresolved — /status | worker-show | none
   observed_provider:          # unresolved，或 UNVERIFIED
   observed_model:             # unresolved，或 UNVERIFIED
+  observed_model_family:      # unresolved，或 UNVERIFIED
   observed_reasoning_effort:  # unresolved，或 UNVERIFIED
-  attestation_result:         # unresolved — MATCH | UNVERIFIED | DISPATCH_CONTRACT_MISMATCH
+  attestation_result:         # unresolved — DISPATCH_IDENTITY_MATCH |
+                              # DISPATCH_IDENTITY_UNVERIFIED | DISPATCH_CONTRACT_MISMATCH
 
 # 僅在 selected_stage 為 STAGE_3_FLAGSHIP 時必填（由 operational router 從
 # strategic contract 的 flagship_admission 複製 + 補實際判定）。
@@ -261,7 +275,7 @@ session_lifecycle:
   resumable:                   # unresolved — 缺任一 continuation_binding 欄位時一律 false
 
 dispatch_command:             # unresolved
-  # 逐字命令，且必須在命令列明確傳入 sandbox 與 approval 旗標。
+  # 逐字命令，且必須在命令列明確傳入 model、reasoning、sandbox 與 approval 旗標。
   # 只在上面用散文宣告 permission_ceiling 是不夠的：worker 端的 local CLI
   # 設定會靜默覆蓋未明示的預設值，使實際權限高於 contract 意圖。
 ```

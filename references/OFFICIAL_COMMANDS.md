@@ -92,6 +92,9 @@ orca terminal read --terminal <handle> --json
 既有 terminal，**不帶任何模型或 reasoning 設定**。因此建立該 terminal 的
 `orca terminal create --command "<CLI>"` 中的 `<CLI>` **必須**已包含 `-m <model>` 與
 （Codex）`-c 'model_reasoning_effort="<value>"'` 或（Claude）`--effort <level>`。
+若既有 terminal 的 provider、model、model family、reasoning effort 不能逐欄證明與
+contract 相容，該 terminal 不得重用來宣稱 exact dispatch，結果至少是
+`DISPATCH_IDENTITY_UNVERIFIED`。
 
 **路徑 B — `orca orchestration worker-start`。** 支援：
 
@@ -106,13 +109,38 @@ orca orchestration worker-start --task <id> --agent codex \
 機制。「max」對 Codex 的接受度未在本機以此路徑實跑驗證——首次使用時以
 `--dry-run` 或事後 attestation 確認。
 
-**不得假設 Orca 會自動把 effort 傳下去。** 路徑 A 完全不會；路徑 B 只有在明確
-傳 `--model` + `--effort` 時才會。
+**不得假設 Orca 會自動把 model 或 effort 傳下去。** 路徑 A 完全不會；路徑 B 只有
+在明確傳 `--model` + `--effort` 時才會。`worker-start` 的 null model / effort
+結果是 default-fallback risk，不是 exact dispatch。
+
+### Dispatch path classification
+
+| Path | Classification | Condition |
+|---|---|---|
+| `orca orchestration worker-start` | `EXACT_IDENTITY_PRESERVED` | `--agent`, `--model`, `--effort` 均由 current contract 明確提供，並完成 runtime attestation |
+| `orca orchestration dispatch --inject` | `DEFAULT_FALLBACK_RISK` | 只注入 task；只有既有 terminal command 與四欄 identity 都可證明時才可升為 exact |
+| `orca terminal create --command` | `EXACT_IDENTITY_PRESERVED` | command 明確包含 provider 支援的 model / reasoning / permission flags；否則 `DEFAULT_FALLBACK_RISK` |
+| `orca worktree create --agent` | `DEFAULT_FALLBACK_RISK` | agent-first convenience path 不接收 custom model / effort；必須另建明確 command 或回報 unverified |
+| existing terminal + `terminal send` | `DEFAULT_FALLBACK_RISK` | send 只送文字；未證明 terminal identity 不可重用 |
+| Codex direct invocation | `EXACT_IDENTITY_PRESERVED` | `-m <model>` 與 `-c 'model_reasoning_effort="<effort>"'` 均明確傳入並完成 attestation；任一省略即 `DEFAULT_FALLBACK_RISK` |
+| Claude direct invocation | `EXACT_IDENTITY_PRESERVED` | `--model <model>` 與 `--effort <level>` 均明確傳入並完成 attestation；任一省略即 `DEFAULT_FALLBACK_RISK` |
+| Antigravity / `agy` direct invocation | `EXACT_IDENTITY_PRESERVED` | resolver 先得到 exact model，再明確傳入 model / effort 並完成 attestation；否則 `DEFAULT_FALLBACK_RISK` |
+| repo-local `orca-multi-agent-dev` skill | `EXACT_IDENTITY_PRESERVED` | 完整遵循 slot → registry → contract → explicit command → attestation；若 caller bypasses any stage 即 `DEFAULT_FALLBACK_RISK` |
+| generic subagent / Superpowers reviewer helper | `DEFAULT_FALLBACK_RISK` | helper 不是 registry authority；未接收完整 contract 不得 dispatch |
+
+以上是 launch-path 分類，不是對某次 worker 的成功宣告。只有四欄 runtime identity
+完全相同且命令旗標明確時，attestation 才是 `DISPATCH_IDENTITY_MATCH`；任何 runtime
+identity 欄位不可觀察時，結果必須是 `DISPATCH_IDENTITY_UNVERIFIED`。
+命令層的選擇來源仍須由 workflow contract 記錄為
+`model_selection_source`，值只能是
+`REGISTRY_AUTONOMOUS`、`HUMAN_EXPLICIT_OVERRIDE` 或
+`HUMAN_RETROACTIVE_ACCEPTANCE`；本命令參考不會把 helper 或 CLI default 變成
+registry candidate。
 
 ### Runtime attestation（能力與缺口）
 
-Dispatch 後要驗證 worker 實際的 `provider` / `model` / `reasoning_effort` 是否等於
-contract。目前可用與不可用的部分：
+Dispatch 後要驗證 worker 實際的 `provider` / `model` / `model_family` /
+`reasoning_effort` 是否等於 contract。目前可用與不可用的部分：
 
 - **可用**：Codex interactive session 的 `/status` 面板會印出
   `Model: <id> (reasoning <effort> ...)`。透過
@@ -126,9 +154,9 @@ contract。目前可用與不可用的部分：
   reasoning effort 執行」。
 
 因此 attestation 步驟為 best-effort：能讀到 `/status` 就比對；讀不到就把
-`attestation_result` 記為 `UNVERIFIED` 並依 `WORKFLOW_POLICY.md` 的
-Execution lifecycle semantics 處置（`DISPATCH_CONTRACT_MISMATCH` 或
-`UNVERIFIED`），**不得**標為 `ROUTING_UNAVAILABLE`，也**不得**假裝比對通過。
+`attestation_result` 記為 `DISPATCH_IDENTITY_UNVERIFIED` 並依 `WORKFLOW_POLICY.md` 的
+Execution lifecycle semantics 處置，**不得**標為 `ROUTING_UNAVAILABLE`，也**不得**
+假裝比對通過。若任一已知欄位不符，則為 `DISPATCH_CONTRACT_MISMATCH`。
 
 值得提出的 upstream feature request：**Expose the launched agent's resolved
 provider / model / reasoning-effort in `worker-show --json` and in a
@@ -246,7 +274,7 @@ codex -c 'model_reasoning_effort="medium"'
 
 ### Reasoning effort 一律在命令列明確傳入
 
-`provider + model + reasoning_effort` 是 execution identity（見
+`provider + model + model_family + reasoning_effort` 是 execution identity（見
 [`../policies/MODEL_ROUTING_POLICY.md`](../policies/MODEL_ROUTING_POLICY.md) 的
 *Reasoning effort is part of execution identity*）。Codex 的 dispatch **一律**同時
 明確傳入 `-m <model>` 與 `-c 'model_reasoning_effort="<value>"'`，即使該值等於 registry
