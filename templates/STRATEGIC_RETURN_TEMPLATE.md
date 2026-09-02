@@ -121,6 +121,13 @@ HANDOFF_UPDATE:
 | `BLOCKED` | 無法在現有授權或資源下繼續 | `BLOCKED_REASON` 必須帶 canonical reason code |
 | `HUMAN_GATE` | 停在需要人為決策的點 | `HUMAN_DECISIONS_REQUIRED` 必須列出確切待決事項 |
 
+Continuation freshness 判定為 `CONTINUATION_REJECTED_STALE` 或
+`LEGACY_CONTINUATION_REQUIRES_FRESH_CONTRACT` 時（定義見
+[`policies/WORKFLOW_POLICY.md`](../policies/WORKFLOW_POLICY.md) 的
+Continuation freshness），回報為 `status: HUMAN_GATE`，並在 `CONTRACT_DRIFT`
+中列出 continuation eligibility check 找到的變更欄位——這是 lifecycle outcome，
+不是 `BLOCKED_REASON` 的 canonical reason code，本範本不為它新增欄位。
+
 `BLOCKED_REASON` 使用的 reason code 名稱為：
 
 ```text

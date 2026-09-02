@@ -165,6 +165,29 @@ execution_state:              # unresolved — 最後一次輪詢的觀察狀態
   total_elapsed_ms:           # unresolved — 總時長本身不構成失敗
   continuation_count: 0       # execution budget 用盡而續跑的次數
 
+# Continuation freshness binding。resume / MAX_TURNS 後續跑 / retry 同一 worker /
+# reviewer continuation / parked terminal 重用之前，都必須先用這組欄位重新
+# 跑一次 continuation eligibility check。語意見 policies/WORKFLOW_POLICY.md
+# 的 Continuation freshness。只存 fingerprint，不存原始 human message。
+continuation_binding:
+  human_instruction_revision:  # unresolved — 全部 execution-relevant 欄位的雜湊
+  objective_fingerprint:       # unresolved — objective/scope/expected-output 子集的雜湊
+  permission_scope_fingerprint: # unresolved — permission_ceiling 子集的雜湊
+  authoritative_baseline:      # unresolved — 等同 target.{repo,branch,expected_base_head}
+  last_checked_at:             # unresolved，或 UNKNOWN
+
+# Session lifecycle。承載本次工作的 terminal/session 狀態，與 execution_state
+# 是不同層次：execution_state 問「這次執行是否正常進行」，這裡問「這個
+# terminal 接下來該 PARK、CLOSE 還是 KEEP」。語意見 policies/WORKFLOW_POLICY.md
+# 的 Session lifecycle and cleanup。
+session_lifecycle:
+  terminal_id:                 # unresolved
+  title:                       # 建議 <project>:<task-short-id>:<role>:<state>，
+                                # 不得含 credential、PII、完整 prompt
+  lifecycle_state:             # unresolved — ACTIVE | PARKED | SUPERSEDED | STALE | FAILED | CLOSED
+  cleanup_action:               # unresolved — KEEP | PARK | CLOSE
+  resumable:                   # unresolved — 缺任一 continuation_binding 欄位時一律 false
+
 dispatch_command:             # unresolved
   # 逐字命令，且必須在命令列明確傳入 sandbox 與 approval 旗標。
   # 只在上面用散文宣告 permission_ceiling 是不夠的：worker 端的 local CLI
@@ -182,6 +205,11 @@ dispatch_command:             # unresolved
 `resource_signals` 同樣受此限制：只寫 `NEAR` / `HIGH` / `CRITICAL` 這類**標籤**，
 **不寫 `remaining_ratio` 的數值或 `reset_at` 的時間戳**。標籤足以稽核一次重排，
 數值則是帳號用量資料。
+
+`continuation_binding` 的三個 fingerprint 只對 objective、scope、permission ceiling
+等 execution-relevant 欄位做 canonicalization 再雜湊，**不得寫入完整 human
+message 或任何 PII**；`session_lifecycle.title` 同樣不得含 credential、PII 或
+完整 prompt。
 
 ---
 

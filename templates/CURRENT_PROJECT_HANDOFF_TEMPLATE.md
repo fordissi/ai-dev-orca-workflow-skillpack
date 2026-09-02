@@ -49,6 +49,10 @@ active_contract:                # 指向，不複製
   strategic_contract_complete:  # true | false
   operational_resolution_complete:  # true | false | unresolved
   blocked_reason_code:          # 無阻塞時填 none
+  human_instruction_revision:   # 指向 contract 的 continuation_binding，讓新
+                                 # session 不必重算即可比對；語意見
+                                 # policies/WORKFLOW_POLICY.md 的
+                                 # Continuation freshness
 
 resource_snapshot:              # 每個 provider 或獨立限額 pool 各自一筆
   # provider_or_pool:

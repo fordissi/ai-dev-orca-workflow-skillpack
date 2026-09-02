@@ -11,6 +11,7 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -1628,6 +1629,469 @@ export function validateExecutionCases(document) {
 }
 
 /* ------------------------------------------------------------------------ *
+ * Continuation freshness
+ *
+ * A continuation is valid only against the same still-current human intent
+ * and permission scope. WORKFLOW_POLICY.md owns this invariant; this section
+ * only makes it executable. It never inspects raw prompt text - it operates
+ * on the same structured, already-normalized fields the execution contract
+ * already carries, so nothing here needs a transcript to work.
+ * ------------------------------------------------------------------------ */
+
+// Precedence, highest first. A lower layer's value is used only where every
+// higher layer leaves the field unset - it can supply a default, never
+// override an explicit one.
+const INTENT_PRECEDENCE = [
+  "human_instruction",
+  "authoritative_handoff",
+  "active_strategic_contract",
+  "prior_next_gate",
+  "cached_router_context",
+  "worker_local_state",
+];
+
+const CONTINUATION_FACT_FIELDS = [
+  "objective",
+  "allowed_changes",
+  "prohibited_changes",
+  "expected_output",
+  "baseline",
+  "permission_ceiling",
+  "human_gate",
+];
+
+const PERMISSION_CAPABILITY_KEYS = [
+  "filesystem",
+  "command_execution",
+  "network",
+  "database",
+  "production_access",
+  "may_commit",
+  "may_push",
+];
+
+const CONTINUATION_OUTCOMES = [
+  "CONTINUATION_ALLOWED",
+  "CONTINUATION_REJECTED_STALE",
+  "LEGACY_CONTINUATION_REQUIRES_FRESH_CONTRACT",
+];
+
+const SESSION_LIFECYCLE_STATES = ["ACTIVE", "PARKED", "SUPERSEDED", "STALE", "FAILED", "CLOSED"];
+const CLEANUP_ACTIONS = ["KEEP", "PARK", "CLOSE"];
+const CLEANUP_INPUT_STATUSES = ["ACTIVE", "PASS", "FAIL", "BLOCKED", "HUMAN_GATE", "STALE", "SUPERSEDED"];
+
+/**
+ * Deterministic canonical form: object keys sorted, array order preserved.
+ * Two facts compare equal exactly when this string is equal, which is also
+ * what feeds the fingerprint hash below.
+ */
+function canonicalize(value) {
+  return JSON.stringify(sortForCanonicalization(value ?? null));
+}
+
+function sortForCanonicalization(value) {
+  if (Array.isArray(value)) return value.map(sortForCanonicalization);
+  if (isPlainObject(value)) {
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, sortForCanonicalization(value[key])]),
+    );
+  }
+  return value;
+}
+
+/**
+ * A low-cost, deterministic revision marker over structured fields - never
+ * over a transcript. Recomputing it from the same facts always yields the
+ * same value; recomputing it from a superset of unrelated fields (a stray
+ * raw-prompt field, say) yields the SAME value too, because only the named
+ * fields ever enter the canonical form. That is what keeps PII out of it by
+ * construction rather than by discipline.
+ */
+export function canonicalFingerprint(value) {
+  return createHash("sha256").update(canonicalize(value)).digest("hex");
+}
+
+/**
+ * Picks only the execution-relevant fields a continuation is bound to. Any
+ * other field on the input (a raw instruction string, a transcript, an
+ * account identifier) is invisible to every fingerprint and every diff below.
+ */
+export function canonicalContinuationFacts(materials) {
+  const source = isPlainObject(materials) ? materials : {};
+  const facts = {};
+  for (const field of CONTINUATION_FACT_FIELDS) {
+    if (field !== "permission_ceiling") {
+      facts[field] = source[field] ?? null;
+      continue;
+    }
+
+    // `legacy_sandbox` is provenance (how the ceiling was originally spelled),
+    // not scope: `{sandbox: "workspace-write"}` and its fully decomposed
+    // equivalent are the SAME permission scope per WORKFLOW_POLICY's
+    // backward-compatible reading, so it must never register as a
+    // continuation-freshness change. Dropping it also makes this function
+    // idempotent - re-running it on its own output (as resolveCurrentIntent's
+    // result later is, once by the caller and once inside diffContinuationScope)
+    // reproduces the same fingerprint instead of losing the original `sandbox`
+    // key the second time around.
+    const { legacy_sandbox, ...scope } = normalizePermissionCeiling(source[field]);
+    facts[field] = scope;
+  }
+  return facts;
+}
+
+export function objectiveFingerprint(materials) {
+  const { permission_ceiling, human_gate, ...rest } = canonicalContinuationFacts(materials);
+  return canonicalFingerprint(rest);
+}
+
+export function permissionScopeFingerprint(materials) {
+  const { permission_ceiling } = canonicalContinuationFacts(materials);
+  return canonicalFingerprint({ permission_ceiling });
+}
+
+export function humanInstructionRevision(materials) {
+  return canonicalFingerprint(canonicalContinuationFacts(materials));
+}
+
+/**
+ * Merges layered sources of intent under the fixed precedence. Returns both
+ * the resolved facts and which layer each field actually came from, so a
+ * conflict between a higher and lower layer is auditable rather than
+ * silently resolved.
+ *
+ * This is the executable form of "latest explicit human instruction MUST NOT
+ * be overridden by a stale NEXT_GATE or cached continuation state": a lower
+ * layer's value is used only where every higher layer left the field unset.
+ */
+export function resolveCurrentIntent(layers) {
+  const source = isPlainObject(layers) ? layers : {};
+  const resolved = {};
+  const sourceOf = {};
+
+  for (const field of CONTINUATION_FACT_FIELDS) {
+    for (const layer of INTENT_PRECEDENCE) {
+      const layerFacts = source[layer];
+      if (!isPlainObject(layerFacts) || !(field in layerFacts) || layerFacts[field] === undefined) continue;
+      resolved[field] = layerFacts[field];
+      sourceOf[field] = layer;
+      break;
+    }
+  }
+
+  // An explicit stop is a human-instruction-layer fact like any other and
+  // follows the same precedence: only the human_instruction layer may set it.
+  const explicitStop = source.human_instruction?.explicit_stop === true;
+
+  return { resolved: canonicalContinuationFacts(resolved), sourceOf, explicit_stop: explicitStop };
+}
+
+/**
+ * Names every execution-relevant field that differs between a continuation's
+ * bound facts and the currently resolved intent. Permission capabilities are
+ * broken out individually so a rejection can say exactly which one moved
+ * (network, production access, ...) rather than only "permissions changed".
+ */
+export function diffContinuationScope(boundMaterials, currentMaterials) {
+  const bound = canonicalContinuationFacts(boundMaterials);
+  const current = canonicalContinuationFacts(currentMaterials);
+  const changed = [];
+
+  for (const field of CONTINUATION_FACT_FIELDS) {
+    if (field === "permission_ceiling") continue;
+    if (canonicalize(bound[field]) !== canonicalize(current[field])) changed.push(field);
+  }
+
+  for (const key of PERMISSION_CAPABILITY_KEYS) {
+    if (canonicalize(bound.permission_ceiling[key]) !== canonicalize(current.permission_ceiling[key])) {
+      changed.push(`permission_ceiling.${key}`);
+    }
+  }
+
+  return changed;
+}
+
+/**
+ * Coarse fallback when the bound continuation's structured facts are not at
+ * hand and only its fingerprints are - the shape a compact session-binding
+ * record actually persists. Less informative than a field-level diff, but
+ * still correct: a fingerprint mismatch is real evidence of drift even when
+ * it cannot say which field moved.
+ */
+function coarseFingerprintDiff(bound, current) {
+  const changed = [];
+  if (bound.human_instruction_revision !== humanInstructionRevision(current)) changed.push("human_instruction_revision");
+  if (isNonEmptyString(bound.objective_fingerprint) && bound.objective_fingerprint !== objectiveFingerprint(current)) {
+    changed.push("objective_fingerprint");
+  }
+  if (isNonEmptyString(bound.permission_scope_fingerprint) && bound.permission_scope_fingerprint !== permissionScopeFingerprint(current)) {
+    changed.push("permission_scope_fingerprint");
+  }
+  return changed;
+}
+
+/**
+ * The continuation eligibility check. Everything upstream (dispatch,
+ * bounded-continuation, stall intervention, reviewer continuation,
+ * parked-terminal reuse) must call this before resuming anything; it never
+ * resumes on its own.
+ *
+ * `bound.facts` - the bound continuation's own canonical facts - gives a
+ * field-level diagnosis and is what the operational router actually has on
+ * hand: the prior contract document, already on disk. It is never what gets
+ * persisted into a compact session-binding record or terminal-inventory
+ * entry; those carry only the fingerprints computed from it. When only the
+ * fingerprints are available, `coarseFingerprintDiff` is used instead.
+ *
+ * A binding with no fingerprint at all predates this invariant and fails
+ * closed rather than being assumed current - see WORKFLOW_POLICY.md's
+ * backward-compatibility rule for continuation.
+ */
+export function evaluateContinuation(context) {
+  const { bound, layers, legacy_binding: legacyBinding = false } = isPlainObject(context) ? context : {};
+
+  if (legacyBinding || !isPlainObject(bound) || !isNonEmptyString(bound.human_instruction_revision)) {
+    return {
+      outcome: "LEGACY_CONTINUATION_REQUIRES_FRESH_CONTRACT",
+      changed: [],
+      reason: "the prior binding carries no continuation-freshness metadata and cannot be assumed current",
+    };
+  }
+
+  const { resolved: current, explicit_stop: explicitStop } = resolveCurrentIntent(layers);
+
+  if (explicitStop) {
+    return {
+      outcome: "CONTINUATION_REJECTED_STALE",
+      changed: ["explicit_stop"],
+      reason: "the human instruction layer explicitly ended the prior task",
+    };
+  }
+
+  const changed = isPlainObject(bound.facts) ? diffContinuationScope(bound.facts, current) : coarseFingerprintDiff(bound, current);
+
+  if (changed.length > 0) {
+    return {
+      outcome: "CONTINUATION_REJECTED_STALE",
+      changed,
+      reason: `execution-relevant scope changed: ${changed.join(", ")}`,
+    };
+  }
+
+  return { outcome: "CONTINUATION_ALLOWED", changed: [], reason: "bound scope matches the currently resolved intent" };
+}
+
+/**
+ * Cleanup and lifecycle-state decision for one session, applied after a
+ * handback outcome (or a continuation-eligibility outcome fed in as STALE /
+ * SUPERSEDED). This never touches git or worktree state and never
+ * contributes to failed_repair_count - it only classifies what should
+ * happen to the terminal that carried the work.
+ */
+export function classifySessionCleanup(input) {
+  const {
+    handback_status: handbackStatus,
+    evidence_captured: evidenceCaptured = false,
+    explicit_retry_valid: explicitRetryValid = false,
+    likely_same_task_continuation: likelySameTaskContinuation = false,
+    sensitive_context: sensitiveContext = false,
+    resource_cost_acceptable: resourceCostAcceptable = true,
+  } = isPlainObject(input) ? input : {};
+
+  if (!CLEANUP_INPUT_STATUSES.includes(handbackStatus)) {
+    return { lifecycle_state: "ACTIVE", cleanup_action: "KEEP", reason: "unrecognised handback status; default to keeping the session live" };
+  }
+
+  switch (handbackStatus) {
+    case "ACTIVE":
+      // Never closed on elapsed time alone - see Execution lifecycle semantics.
+      return { lifecycle_state: "ACTIVE", cleanup_action: "KEEP", reason: "task is still executing" };
+
+    case "PASS":
+      return evidenceCaptured
+        ? { lifecycle_state: "CLOSED", cleanup_action: "CLOSE", reason: "evidence captured and strategic return produced" }
+        : { lifecycle_state: "ACTIVE", cleanup_action: "KEEP", reason: "PASS handback is pending evidence capture" };
+
+    case "FAIL":
+    case "BLOCKED":
+      if (!evidenceCaptured) {
+        return { lifecycle_state: handbackStatus === "FAIL" ? "FAILED" : "ACTIVE", cleanup_action: "KEEP", reason: "evidence not yet captured" };
+      }
+      return explicitRetryValid
+        ? { lifecycle_state: "ACTIVE", cleanup_action: "KEEP", reason: "an explicit retry remains valid" }
+        : { lifecycle_state: "CLOSED", cleanup_action: "CLOSE", reason: "evidence captured; no valid retry remains" };
+
+    case "HUMAN_GATE":
+      return likelySameTaskContinuation && !sensitiveContext && resourceCostAcceptable
+        ? { lifecycle_state: "PARKED", cleanup_action: "PARK", reason: "likely exact-task continuation, no sensitive context, acceptable resource cost" }
+        : { lifecycle_state: "CLOSED", cleanup_action: "CLOSE", reason: "contract likely to change, sensitive context present, or terminal accumulation pressure" };
+
+    case "STALE":
+      return {
+        lifecycle_state: "STALE",
+        cleanup_action: evidenceCaptured ? "CLOSE" : "KEEP",
+        reason: "continuation fingerprint/revision mismatch",
+      };
+
+    case "SUPERSEDED":
+      return {
+        lifecycle_state: "SUPERSEDED",
+        cleanup_action: evidenceCaptured ? "CLOSE" : "KEEP",
+        reason: "a newer human instruction replaced this task",
+      };
+
+    default:
+      return { lifecycle_state: "ACTIVE", cleanup_action: "KEEP", reason: "unhandled status" };
+  }
+}
+
+/**
+ * Inventory-time check only: does this terminal even carry enough binding
+ * metadata to be considered for resume at all. An unknown or unbound
+ * terminal is never resumable, regardless of what its title suggests - task
+ * ownership is never inferred from a title.
+ */
+export function terminalIsResumable(entry) {
+  if (!isPlainObject(entry)) return false;
+
+  const requiredBindings = ["task_id", "human_instruction_revision", "objective_fingerprint", "permission_scope_fingerprint"];
+  if (!requiredBindings.every((field) => isNonEmptyString(entry[field]))) return false;
+
+  return entry.lifecycle_state === "ACTIVE" || entry.lifecycle_state === "PARKED";
+}
+
+/**
+ * The actual gate a resume attempt must pass. Being PARKED never substitutes
+ * for a fresh continuation-eligibility check - PARKED only means the
+ * terminal was retained; it says nothing about whether the current human
+ * intent still matches what it was retained for.
+ */
+export function attemptResume(entry, evaluation) {
+  if (!terminalIsResumable(entry)) {
+    return { allowed: false, reason: "terminal is unknown, unbound, or in a non-resumable lifecycle state" };
+  }
+  if (!isPlainObject(evaluation) || evaluation.outcome !== "CONTINUATION_ALLOWED") {
+    return { allowed: false, reason: evaluation?.reason ?? "continuation eligibility was not confirmed" };
+  }
+  return { allowed: true, reason: "continuation freshness confirmed" };
+}
+
+/* ------------------------------------------------------------------------ *
+ * Continuation / cleanup conformance cases
+ *
+ * tests/continuation-cases.yaml is a conformance check on the continuation
+ * freshness and session lifecycle sections of WORKFLOW_POLICY.md, which
+ * stays normative.
+ * ------------------------------------------------------------------------ */
+
+const CONTINUATION_CASE_KINDS = ["continuation", "cleanup", "resume", "precedence"];
+
+export function validateContinuationCases(document) {
+  const findings = [];
+
+  if (!isPlainObject(document) || !Array.isArray(document.cases) || document.cases.length === 0) {
+    return ["continuation cases: expected a non-empty `cases` list"];
+  }
+
+  const seen = new Set();
+
+  for (const [index, testCase] of document.cases.entries()) {
+    const named = isNonEmptyString(testCase?.name) ? testCase.name : `cases[${index}]`;
+
+    if (!isPlainObject(testCase)) {
+      findings.push(`${named}: expected a mapping`);
+      continue;
+    }
+    if (!isNonEmptyString(testCase.name)) {
+      findings.push(`${named}: a case needs a name`);
+      continue;
+    }
+    if (seen.has(testCase.name)) findings.push(`${named}: duplicate case name`);
+    seen.add(testCase.name);
+
+    if (!isNonEmptyString(testCase.why)) findings.push(`${named}: a case needs a \`why\``);
+
+    if (!CONTINUATION_CASE_KINDS.includes(testCase.kind)) {
+      findings.push(`${named}: kind ${JSON.stringify(testCase.kind)} is not one of ${CONTINUATION_CASE_KINDS.join("|")}`);
+      continue;
+    }
+
+    if (!isPlainObject(testCase.expect)) {
+      findings.push(`${named}: expected an \`expect\` mapping`);
+      continue;
+    }
+
+    if (testCase.kind === "continuation") {
+      const result = evaluateContinuation({ bound: testCase.bound, layers: testCase.layers, legacy_binding: testCase.legacy_binding });
+
+      if (!CONTINUATION_OUTCOMES.includes(result.outcome)) {
+        findings.push(`${named}: produced unknown outcome ${JSON.stringify(result.outcome)}`);
+      }
+      if (testCase.expect.outcome !== result.outcome) {
+        findings.push(`${named}: expected outcome ${JSON.stringify(testCase.expect.outcome)}, got ${JSON.stringify(result.outcome)}`);
+      }
+      for (const requiredChange of testCase.expect.changed_includes ?? []) {
+        if (!result.changed.includes(requiredChange)) {
+          findings.push(`${named}: expected changed to include ${JSON.stringify(requiredChange)}, got ${JSON.stringify(result.changed)}`);
+        }
+      }
+      if (testCase.expect.changed_is_empty === true && result.changed.length !== 0) {
+        findings.push(`${named}: expected no changed fields, got ${JSON.stringify(result.changed)}`);
+      }
+      continue;
+    }
+
+    if (testCase.kind === "cleanup") {
+      const result = classifySessionCleanup(testCase.input);
+
+      if (!SESSION_LIFECYCLE_STATES.includes(result.lifecycle_state)) {
+        findings.push(`${named}: produced unknown lifecycle_state ${JSON.stringify(result.lifecycle_state)}`);
+      }
+      if (!CLEANUP_ACTIONS.includes(result.cleanup_action)) {
+        findings.push(`${named}: produced unknown cleanup_action ${JSON.stringify(result.cleanup_action)}`);
+      }
+      if (testCase.expect.lifecycle_state !== result.lifecycle_state) {
+        findings.push(`${named}: expected lifecycle_state ${JSON.stringify(testCase.expect.lifecycle_state)}, got ${JSON.stringify(result.lifecycle_state)}`);
+      }
+      if (testCase.expect.cleanup_action !== result.cleanup_action) {
+        findings.push(`${named}: expected cleanup_action ${JSON.stringify(testCase.expect.cleanup_action)}, got ${JSON.stringify(result.cleanup_action)}`);
+      }
+      continue;
+    }
+
+    if (testCase.kind === "precedence") {
+      const { resolved, sourceOf } = resolveCurrentIntent(testCase.layers);
+
+      for (const [field, expectedSource] of Object.entries(testCase.expect.source_of ?? {})) {
+        if (sourceOf[field] !== expectedSource) {
+          findings.push(`${named}: expected ${field} to resolve from ${JSON.stringify(expectedSource)}, got ${JSON.stringify(sourceOf[field])}`);
+        }
+      }
+      for (const [field, expectedValue] of Object.entries(testCase.expect.resolved ?? {})) {
+        if (JSON.stringify(resolved[field]) !== JSON.stringify(expectedValue)) {
+          findings.push(`${named}: expected resolved.${field} to be ${JSON.stringify(expectedValue)}, got ${JSON.stringify(resolved[field])}`);
+        }
+      }
+      continue;
+    }
+
+    // resume
+    const resumable = terminalIsResumable(testCase.entry);
+    if ("resumable" in testCase.expect && testCase.expect.resumable !== resumable) {
+      findings.push(`${named}: expected resumable ${JSON.stringify(testCase.expect.resumable)}, got ${JSON.stringify(resumable)}`);
+    }
+    const decision = attemptResume(testCase.entry, testCase.evaluation);
+    if (testCase.expect.allowed !== decision.allowed) {
+      findings.push(`${named}: expected allowed ${JSON.stringify(testCase.expect.allowed)}, got ${JSON.stringify(decision.allowed)}`);
+    }
+  }
+
+  return findings;
+}
+
+/* ------------------------------------------------------------------------ *
  * Repository validation (direct-run entry point)
  * ------------------------------------------------------------------------ */
 
@@ -1678,7 +2142,7 @@ function readInput(root, relativePath, parseAs, findings) {
 
 export function validateRepository(root = process.cwd()) {
   const findings = [];
-  const summary = { registry: 0, resourceExample: 0, routingCases: 0, executionCases: 0, filesScanned: 0, scanFindings: 0, markdownFilesLinkChecked: 0 };
+  const summary = { registry: 0, resourceExample: 0, routingCases: 0, executionCases: 0, continuationCases: 0, filesScanned: 0, scanFindings: 0, markdownFilesLinkChecked: 0 };
 
   const registry = readInput(root, "policies/MODEL_REGISTRY.yaml", "yaml", findings);
   if (registry !== undefined) {
@@ -1711,6 +2175,14 @@ export function validateRepository(root = process.cwd()) {
       findings.push(`tests/execution-cases.yaml: ${finding}`);
     }
     summary.executionCases = Array.isArray(executionCases?.cases) ? executionCases.cases.length : 0;
+  }
+
+  const continuationCases = readInput(root, "tests/continuation-cases.yaml", "yaml", findings);
+  if (continuationCases !== undefined) {
+    for (const finding of validateContinuationCases(continuationCases)) {
+      findings.push(`tests/continuation-cases.yaml: ${finding}`);
+    }
+    summary.continuationCases = Array.isArray(continuationCases?.cases) ? continuationCases.cases.length : 0;
   }
 
   const invalidFixturePath = join(root, "tests", "fixtures", "invalid-model-registry.yaml");
@@ -1863,6 +2335,7 @@ if (process.argv[1] !== undefined && pathToFileURL(process.argv[1]).href === imp
   console.log(
     `slots: ${summary.registry} | resource examples: ${summary.resourceExample} | ` +
       `routing cases: ${summary.routingCases} | execution cases: ${summary.executionCases} | ` +
+      `continuation cases: ${summary.continuationCases} | ` +
       `files scanned: ${summary.filesScanned} | ` +
       `markdown link-checked: ${summary.markdownFilesLinkChecked}`,
   );

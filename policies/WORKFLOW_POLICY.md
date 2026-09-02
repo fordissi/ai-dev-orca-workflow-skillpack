@@ -19,7 +19,7 @@ SKILL → WORKFLOW_POLICY → CONCURRENCY_POLICY → MODEL_ROUTING_POLICY
 
 | Owner | 負責 | 不負責 |
 |---|---|---|
-| `WORKFLOW_POLICY.md` | 角色、precedence、lifecycle、execution lifecycle、handback、gate、permission ceiling 語意、cross-repo | 具體模型名稱、blocked reason code 語意 |
+| `WORKFLOW_POLICY.md` | 角色、precedence、lifecycle、execution lifecycle、continuation freshness、session lifecycle/cleanup、handback、gate、permission ceiling 語意、cross-repo | 具體模型名稱、blocked reason code 語意 |
 | `CONCURRENCY_POLICY.md` | concurrency mode 與啟用條件 | provider 選擇 |
 | `MODEL_ROUTING_POLICY.md` | task classification、slot 選擇、candidate 演算法、escalation | 即時 quota 數值 |
 | `MODEL_REGISTRY.yaml` | slot 的 ordered candidates、能力下限、repair budget | stable workflow 規則 |
@@ -76,7 +76,7 @@ Strategic router 也不執行 lifecycle 的 `verify` 階段——它不得依賴
 
 ```text
 verify → classify → route → contract → execute → review → repair or escalate → close
-      → handback
+      → handback → session cleanup
 ```
 
 1. **verify** — 確認 repo、HEAD、working tree 乾淨度、current handoff 與既有 authoritative contract。
@@ -88,6 +88,7 @@ verify → classify → route → contract → execute → review → repair or 
 7. **repair or escalate** — 在 repair budget 內修補；超出則升級或進 human gate。
 8. **close** — 回傳完成 footer，更新 handoff 與 worktree metadata。
 9. **handback** — operational router 產出 `STRATEGIC_RETURN`，把本輪的 decision delta 交還 strategic router 或 human（見下方 *Operational → Strategic handback*）。
+10. **session cleanup** — 依 handback 結果分類 terminal/session 的 lifecycle state 並執行對應的 PARK / CLOSE / KEEP（見下方 *Session lifecycle and cleanup*）。
 
 ## New session verification
 
@@ -343,6 +344,166 @@ poll
 [`references/OFFICIAL_COMMANDS.md`](../references/OFFICIAL_COMMANDS.md)，
 本節不記錄具體旗標。
 
+## Continuation freshness
+
+這一節是 **continuation eligibility**（是否可以續跑既有 worker/reviewer/session）的
+normative owner，與上方 Execution lifecycle semantics 是不同層次的問題：那一節回答
+「這次執行是否還在正常進行」，這一節回答「即使正常進行，現在還可不可以續跑它」。
+
+### 核心不變式
+
+```text
+A continuation is valid only against the same still-current human intent
+and permission scope.
+```
+
+一次真實 cycle 曾發生：human 已提出新的 read-only discovery task，Operational
+Router 卻誤續跑了舊的 implementation/canonicalization continuation chain。Worker
+與 reviewer 都正確遵守了它們各自收到的（舊）contract——問題出在 router 續跑前
+沒有比對「現在的 human intent」與「這條 continuation 綁定的 intent」是否仍然一致。
+
+### Continuation binding
+
+每個可續跑的 task/continuation 必須至少綁定：
+
+```yaml
+continuation_binding:
+  task_id:
+  human_instruction_revision:      # 見下方「revision 機制」
+  objective_fingerprint:
+  permission_scope_fingerprint:
+  authoritative_baseline:          # repo / branch / base_head，或等價的 current-state marker
+```
+
+這是**可續跑性的必要條件**，不是完整 contract 的替代品：完整 contract 內容仍在
+`templates/ROUTER_EXECUTION_CONTRACT_TEMPLATE.md` 定義的欄位中，這裡只記錄「續跑前
+要拿什麼來比對」。
+
+### Revision / fingerprint 機制
+
+**低成本、deterministic，不保存完整 human message。** Fingerprint 只對
+execution-relevant 的 contract 欄位做 canonicalization 再雜湊，至少涵蓋：
+
+```text
+objective
+allowed_changes
+prohibited_changes
+expected_output（acceptance criteria / next gate）
+authoritative baseline（repo / branch / base_head）
+permission_ceiling（含 filesystem / command_execution / network / database /
+                    production_access / may_commit / may_push 的分解欄位）
+human_gate 狀態
+```
+
+`human_instruction_revision` 是這整組欄位的雜湊；`objective_fingerprint` 與
+`permission_scope_fingerprint` 是其中兩個子集各自的雜湊，用來在比對時指出**哪一塊**
+改變了，而不只是「整體不一樣」。**不得把 PII 或完整 transcript 寫進這些欄位或任何
+task metadata**——canonicalization 只挑選上述欄位，其餘欄位（含任何原始使用者訊息）
+對 fingerprint 不可見；加入一個與這些欄位無關的巨大欄位不會改變雜湊值。
+
+### Latest-human-instruction precedence
+
+以下優先級是正式規則，**下層不得覆蓋上層**：
+
+```text
+1. latest explicit human instruction
+2. current authoritative project handoff/state
+3. active strategic contract
+4. prior NEXT_GATE
+5. cached router/session context
+6. worker-local continuation state
+```
+
+**Stale NEXT_GATE 或 cached continuation 不得推翻更新的 explicit human
+instruction。** 下層只能在上層完全沒有指定某個欄位時，補上該欄位的預設值——這是
+「補空缺」，不是「覆寫」。
+
+### Continuation eligibility check
+
+以下情況之前，**必須**先跑這個檢查：
+
+- resume；
+- `MAX_TURNS_REACHED` 之後的 continuation；
+- retry 同一個 worker；
+- reviewer continuation；
+- parked terminal 的重用。
+
+檢查方式：把依上述優先級解析出的「目前 human intent」與這條 continuation 綁定的
+fingerprint/facts 比對，至少檢查：
+
+```text
+objective changed?
+allowed changes changed?
+prohibited changes changed?
+permission ceiling changed?
+production / network / database permission changed?
+human gate state changed?
+authoritative baseline / HEAD changed materially?
+requested output / next gate changed?
+```
+
+任一項 materially changed：
+
+```text
+outcome: CONTINUATION_REJECTED_STALE
+action:  NEW TASK CONTRACT REQUIRED
+```
+
+**不得自動 resume 舊的 worker/session。**
+
+#### 允許 continuation 的例子
+
+- 輪詢同一個仍在執行的 worker；
+- 同一個 reviewer 在 `MAX_TURNS_REACHED` 後續跑；
+- bounded continuation 且 human intent 未變；
+- human 說「continue the same review」且沒有更動任何欄位；
+- human 說「wait longer」而未改變範圍。
+
+#### 必須開新 task 的例子
+
+- implementation → read-only discovery；
+- `workspace-write` → `read-only`；
+- production access 被收回；
+- objective 從 fixture repair 變成 DB principal discovery；
+- 新的 authoritative HEAD/baseline 使既有 contract 的假設失效；
+- human 明確表示「不要續跑先前的 task」；
+- human 更動了 expected output 或 next gate。
+
+### Stale continuation 的處置
+
+`CONTINUATION_REJECTED_STALE`（或 backward-compatibility 情境下的
+`LEGACY_CONTINUATION_REQUIRES_FRESH_CONTRACT`，見下）是 **lifecycle outcome，
+不是 blocked reason code**。**不得**標為 `PERMISSION_BLOCKED`、
+`ROUTING_UNAVAILABLE` 或 `PROCESS_EXIT_FAILURE`——這三者描述的是完全不同的失敗
+原因，把 scope drift 塞進其中任何一個都會讓上層誤判該等待、該調整權限，還是該找人。
+
+判定為 stale 後：
+
+1. 停止/拒絕該次 resume；
+2. 保留既有 evidence（見下方 Session lifecycle and cleanup）；
+3. 把原 session 標為 `SUPERSEDED` 或 `STALE`；
+4. 建立新的 task contract；
+5. 只在確認目前 human instruction 後才 dispatch。
+
+Stale continuation 與 repair 的關係由 [`MODEL_ROUTING_POLICY.md`](MODEL_ROUTING_POLICY.md)
+的 Escalation 章節定義，`failed_repair_count` 的計數規則只有那裡一個 owner，
+此處不重述。
+
+### Backward compatibility
+
+沒有 revision fingerprint 的既有 task contract**對它的初次 execution 仍然有效**——
+這條規則只影響 resume/continuation，不影響 initial execution。
+
+但續跑一個沒有 freshness metadata 的舊 task 時：
+
+```text
+outcome: LEGACY_CONTINUATION_REQUIRES_FRESH_CONTRACT
+```
+
+**不得靜默假設它仍然 current。** 這與 `CONTINUATION_REJECTED_STALE` 是同一組
+lifecycle outcome、不同的判定原因：前者是「無法判斷」，後者是「判斷後確認已變」，
+兩者處置方式相同（見上方 Stale continuation 的處置）。
+
 ## Bounded repair
 
 初次 implementation attempt 不計入 repair。失敗的修補累加 `failed_repair_count`，上限由 slot 的 `max_repair_attempts` 決定（預設 2）。達到上限時升級 slot 或進 human gate，不得無限重試。詳細條件見 `MODEL_ROUTING_POLICY.md`。
@@ -399,6 +560,144 @@ Human 複製貼上     → Strategic router
 decision delta**，後者是**跨 session 的 durable project state**。本輪工作若改變
 durable state，operational router 先更新 handoff，再於 `STRATEGIC_RETURN` 指出
 handoff 的哪些部分被更新。
+
+## Session lifecycle and cleanup
+
+這一節是 **terminal/session lifecycle state 與 cleanup 語意**的 normative owner。
+它接在 handback 之後：`STRATEGIC_RETURN` 決定了「這輪工作的結果是什麼」，這一節決定
+「承載這輪工作的 terminal/session 接下來該怎麼處置」。
+
+長期累積未關閉的 terminal 會放大：stale continuation risk、wrong-session resume
+risk、operator 困惑、process/資源累積、殘留的 env/credential context。Cleanup 因此
+是既有 lifecycle 的必要延伸，不是額外的、可省略的清潔工。
+
+### Session lifecycle states
+
+| State | 意義 | 可否 resume |
+|---|---|---|
+| `ACTIVE` | task 正在執行 | 是，前提是通過 continuation freshness check |
+| `PARKED` | 在 human gate 暫留 | 是，**但仍須先通過 continuation freshness check** |
+| `SUPERSEDED` | 更新的 human instruction / task 已取代它 | 否，永不 resume |
+| `STALE` | continuation fingerprint/revision 不符 | 否，永不 resume |
+| `FAILED` | process/task 以無法使用的結果結束 | 否；保留至 evidence 擷取完成 |
+| `CLOSED` | terminal/process 已刻意清理 | 否 |
+
+**`PARKED` 不豁免 continuation freshness check。** `PARKED` 只表示這個 terminal
+被保留下來，不表示目前的 human intent 仍與它綁定的 intent 相符——這兩件事必須分開
+判斷。續跑 `PARKED` session 前仍要跑上方 Continuation freshness 的完整檢查；檢查
+結果為 stale 時，即使該 session 是 `PARKED`，也一樣不得 resume，並依 Stale
+continuation 的處置轉為 `STALE` 或 `SUPERSEDED`。
+
+### Cleanup rules（依 handback 結果）
+
+| Handback / 狀態 | Cleanup action | 條件 |
+|---|---|---|
+| `PASS` / `COMPLETE` | `CLOSE`（自動） | output/evidence 已擷取、commit/result 參照已記錄、`STRATEGIC_RETURN` 已產出 |
+| `FAIL` / `BLOCKED` | `CLOSE` | evidence 已擷取，且沒有仍有效的 explicit retry；否則 `KEEP` |
+| `SUPERSEDED` / `STALE` | `CLOSE`（盡快，evidence 擷取後即可） | — |
+| `HUMAN_GATE` | `PARK` 或 `CLOSE`（見下） | 見 PARK/CLOSE 判準 |
+| `ACTIVE` | `KEEP` | **不因 elapsed wall-clock time 單獨關閉**，與 Execution lifecycle semantics 的 progress-aware waiting 一致 |
+| `MAX_TURNS_REACHED` | `KEEP`，僅限 bounded continuation 仍有效時 | continuation budget 用盡則依 Execution lifecycle semantics 走 human gate，再套用 `HUMAN_GATE` 這一列 |
+
+**Cleanup 不改變 git 或 worktree 狀態，也不計入 `failed_repair_count`。** 它只處置
+承載工作的 terminal/session，不觸碰工作本身留下的 repo 證據；那些證據就是
+Cleanup 動作發生前必須先擷取的東西。
+
+### `HUMAN_GATE` 的 PARK / CLOSE 判準
+
+兩種允許的模式：
+
+**A. PARK** — 僅在以下**全部**成立時：
+- 預期就是同一個 task 會被續跑；
+- 沒有敏感的暫時 credential/session 疑慮；
+- 資源成本可接受。
+
+**B. CLOSE**（保守預設，以下任一成立即優先 CLOSE）：
+- human 的下一個回應很可能改變 task contract；
+- task 可以輕易從 repo artifact 重建/續跑；
+- session 帶有 secrets 或暫時性 DB connection；
+- terminal 累積量已偏高。
+
+### Terminal inventory
+
+Dispatch 新 task 前，operational router 應檢視現有 active/parked terminal
+inventory。至少追蹤：
+
+```yaml
+terminal_inventory_entry:
+  terminal_id:
+  title:
+  task_id:
+  role:
+  provider:
+  model:
+  lifecycle_state:                  # 上方六個 state 之一
+  human_instruction_revision:       # 綁定值
+  objective_fingerprint:            # 綁定值
+  permission_scope_fingerprint:     # 綁定值
+  last_activity_at:
+  resumable:                        # true | false
+```
+
+**Unknown 或未綁定（缺少上述 fingerprint 欄位）的 terminal，`resumable` 一律為
+`false`。不得只靠 terminal title 推斷 task ownership**——title 是給人看的提示，
+不是可信的綁定資料。
+
+### Terminal naming
+
+建議 deterministic 命名：
+
+```text
+<project>:<task-short-id>:<role>:<state>
+```
+
+例如：
+
+```text
+company-platform:d13d-readonly-discovery:reviewer:ACTIVE
+```
+
+**不得**在標題中放入 credential、PII、完整 prompt，或 provider session secret
+identifier。
+
+### Automatic cleanup policy（保守預設）
+
+```text
+PASS / COMPLETE       → handback 後自動 CLOSE
+FAIL / BLOCKED        → evidence 擷取後 CLOSE，除非仍有有效的 explicit retry
+SUPERSEDED / STALE    → 自動 CLOSE
+HUMAN_GATE            → 預期原 task 續跑時 PARK，否則 CLOSE
+ACTIVE                → 永不自動 CLOSE
+MAX_TURNS_REACHED     → bounded continuation 仍有效才保留
+```
+
+**不得只以 elapsed wall-clock time 判斷是否關閉 `ACTIVE` session。** 這條規則必須
+與 Execution lifecycle semantics 的 progress-aware waiting 語意相容——那裡已經
+定義「慢不是 blocked」，這裡延伸為「慢也不是該關閉的理由」。
+
+### 資源與安全衛生（不是安全邊界本身）
+
+Cleanup 的動機包括：避免 stale session 被誤重用、降低 process/RAM 累積、減少
+開啟的 shell 數量、降低殘留 env variable 的曝露面、降低殘留的 DB/network session
+狀態、減少 operator UI 的雜亂。
+
+**但 cleanup 本身不構成安全邊界。** Provider sandbox 與 credential policy 才是
+權威邊界；cleanup 只是降低「累積帶來的額外風險」，不能替代或削弱既有的 permission
+ceiling（見上方 Permission ceiling 的能力分解）與 credential 政策。
+
+### Runtime capability 邊界
+
+`CLOSE` 這個動作要求「關閉單一 terminal」，但目前已驗證的 Orca 命令集**沒有這個
+能力**：`orca terminal stop` 只接受 `--worktree`，會連 router 自己的 terminal 一起
+停掉，也沒有已驗證的 per-terminal close/list 命令。這是 runtime 的能力缺口，
+不是本節政策設計的缺口——**本節不假造不存在的 runtime 行為**。
+
+在該缺口補上之前，`CLOSE` 的實際執行路徑是：operational router 先完成上述分類
+與 evidence 擷取，把該 terminal 標記為 `CLOSED`（lifecycle state，記在 inventory
+與 handoff 中），再視情況交由人在 Orca UI 手動關閉該 tab，或等待同一 worktree 內
+其他 terminal 也都可安全停止後，使用 worktree-scope 的 `orca terminal stop`。
+精確的 upstream 需求記在
+[`references/OFFICIAL_COMMANDS.md`](../references/OFFICIAL_COMMANDS.md)。
 
 ## Human gates
 

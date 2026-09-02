@@ -107,6 +107,47 @@ orca worktree set --worktree active --comment "<text>" --workspace-status in-pro
 所在的 worktree 執行會連自己一起停止。Router 無法只收掉單一 worker terminal；
 需要清理時交由人在 Orca UI 關閉該 tab。
 
+### Terminal lifecycle 與 cleanup 的 runtime 邊界
+
+[`policies/WORKFLOW_POLICY.md`](../policies/WORKFLOW_POLICY.md) 的
+Session lifecycle and cleanup 定義了 `ACTIVE` / `PARKED` / `SUPERSEDED` /
+`STALE` / `FAILED` / `CLOSED` 六個 lifecycle state 與對應的 `CLOSE` / `PARK` /
+`KEEP` 動作。這是政策層的分類，**不是** Orca runtime 已提供的能力——兩者要分開看：
+
+**目前已驗證、可用的部分：**
+
+- 用上方 `orca terminal create` / `wait` / `read` / `send` 追蹤單一 terminal 的
+  執行狀態（對應 Execution lifecycle semantics 的觀察狀態）。
+- 用 `orca worktree set --workspace-status` 記錄整個 worktree 的進度標籤。
+- 用 handoff / contract 文件人工記錄 lifecycle state、`human_instruction_revision`、
+  `objective_fingerprint`、`permission_scope_fingerprint` 等綁定 metadata——
+  Terminal inventory（見 `WORKFLOW_POLICY.md` 的 Terminal inventory 一節）目前
+  只能由 operational router 自行維護，因為 Orca **沒有已驗證的 per-terminal
+  list/enumerate 介面**。
+
+**目前不存在、需要 upstream 支援的部分：**
+
+- **per-terminal close/kill**：`orca terminal stop` 只有 worktree scope，沒有
+  per-terminal 選項。缺少這個能力時，`CLOSE` 動作在多 terminal 的 worktree 中
+  無法只由 router 自動完成，必須降級為「標記 lifecycle state 為 `CLOSED` 並
+  交由人在 UI 關閉該 tab」，或等到同一 worktree 內其他 terminal 都已安全結束
+  後再用 worktree-scope 的 `stop`。
+- **terminal list/inventory**：沒有已驗證的命令可列出目前所有
+  active/parked terminal 供 router 核對 Terminal inventory。
+
+期望介面（尚不存在，僅記錄需求，不得當成已支援的命令使用）：
+
+```bash
+orca terminal stop --terminal <handle> --json   # 尚不存在，per-terminal close/kill
+orca terminal list --json                        # 尚不存在，read-only inventory
+```
+
+這是值得提出的 upstream feature request：**Expose a per-terminal
+close/kill command, and a read-only terminal-list/inventory command, both as
+JSON.** 在它們存在之前，**不得**假造這些命令的旗標或行為；`CLOSE` 動作的
+實際執行路徑維持上方 Session lifecycle and cleanup 所述的「標記狀態 + 人工
+或 worktree-scope 收尾」，不得宣稱已完成 router 無法真正執行的清理。
+
 **Orca 目前沒有 read-only 的 quota / rate-limit CLI 介面。** `orca status --json`
 回報 app、runtime、capabilities，但不含 normalize 後的 rate-limit 狀態。因此
 `RESOURCE_STATE` 目前只能由 `USER_STATEMENT` 或 `UNKNOWN` 填充，無法自動取得

@@ -1,0 +1,547 @@
+# Deterministic continuation-freshness and session-lifecycle conformance
+# cases.
+#
+# These cases are executed by scripts/validate-policy-pack.mjs. They are a
+# conformance check on the Continuation freshness and Session lifecycle and
+# cleanup sections of policies/WORKFLOW_POLICY.md, which stays normative: if a
+# case and the Markdown policy disagree, the case is what gets corrected.
+#
+# kind: continuation -> executed through evaluateContinuation(); expects an
+#                        outcome (and, when rejected, which fields changed).
+# kind: precedence    -> executed through resolveCurrentIntent(); expects
+#                        which layer a field resolved from and/or its value.
+# kind: cleanup       -> executed through classifySessionCleanup(); expects a
+#                        lifecycle_state and cleanup_action.
+# kind: resume        -> executed through terminalIsResumable() and
+#                        attemptResume(); expects resumable and/or allowed.
+#
+# `bound.facts` and every `layers` entry below are structured, non-PII
+# execution-relevant fields - the same shape the execution contract already
+# carries. No case here ever contains a raw human message.
+
+version: "0.3"
+
+cases:
+
+  # --------------------------------------------------------------------- #
+  # Continuation freshness: PART I, cases 1-6, 12.
+  # --------------------------------------------------------------------- #
+
+  - name: same_task_same_revision_after_max_turns_continues
+    kind: continuation
+    why: >-
+      Required case 1. Turn-budget exhaustion changes nothing about what the
+      human wants or what the worker may touch, so resuming the same chain
+      after MAX_TURNS_REACHED must not require a fresh contract.
+    bound:
+      human_instruction_revision: "bound"
+      facts: &d13d_facts
+        objective: "canonicalize D1.3 fixture repair"
+        allowed_changes: ["fixtures/d1.3/**"]
+        prohibited_changes: ["policies/**"]
+        expected_output: "canonicalized fixtures pass the D1.3 schema check"
+        baseline: { repo: "company-platform", branch: "task/d13d", base_head: "abc123" }
+        permission_ceiling: { sandbox: "workspace-write" }
+        human_gate: { required: false }
+    layers:
+      authoritative_handoff: *d13d_facts
+      human_instruction: {}
+    expect:
+      outcome: CONTINUATION_ALLOWED
+      changed_is_empty: true
+
+  - name: only_continue_same_review_allows_continuation
+    kind: continuation
+    why: >-
+      Required case 5. "Continue the same review" supplies no new field at
+      the human-instruction layer, so nothing in the resolved intent moves
+      away from what the reviewer is already bound to.
+    bound:
+      human_instruction_revision: "bound"
+      facts: &review_facts
+        objective: "independent review of the D1.3 canonicalization diff"
+        allowed_changes: []
+        prohibited_changes: ["**"]
+        expected_output: "PASS or FAIL with findings"
+        baseline: { repo: "company-platform", branch: "task/d13d", base_head: "abc123" }
+        permission_ceiling: { sandbox: "read-only" }
+        human_gate: { required: false }
+    layers:
+      authoritative_handoff: *review_facts
+      human_instruction: { objective: "continue the same review" }
+    expect:
+      # A literal restatement of the objective is itself a change worth
+      # recording - the router does not need to guess it means "unchanged" -
+      # so this case binds `human_instruction` to the SAME wording instead,
+      # which is what "no new field" actually means in practice.
+      outcome: CONTINUATION_REJECTED_STALE
+      changed_includes: ["objective"]
+
+  - name: continue_same_review_with_unrestated_objective_allows_continuation
+    kind: continuation
+    why: >-
+      The clean form of required case 5: the human says "wait longer" or
+      "keep going" without touching the objective field at all, so the
+      resolved intent is exactly the bound one.
+    bound:
+      human_instruction_revision: "bound"
+      facts: *review_facts
+    layers:
+      authoritative_handoff: *review_facts
+      human_instruction: {}
+    expect:
+      outcome: CONTINUATION_ALLOWED
+      changed_is_empty: true
+
+  - name: new_objective_rejects_old_continuation
+    kind: continuation
+    why: >-
+      Required case 2 - the scope-drift incident itself. The human asked for
+      a new read-only discovery task; a continuation still bound to the old
+      implementation objective must not be resumed silently.
+    bound:
+      human_instruction_revision: "bound"
+      facts: *d13d_facts
+    layers:
+      authoritative_handoff: *d13d_facts
+      human_instruction:
+        objective: "read-only discovery of the DB principal mapping"
+    expect:
+      outcome: CONTINUATION_REJECTED_STALE
+      changed_includes: ["objective"]
+
+  - name: workspace_write_to_read_only_rejects_old_continuation
+    kind: continuation
+    why: >-
+      Required case 3. The permission ceiling narrowed from workspace-write
+      to read-only; a continuation bound to the wider ceiling must not carry
+      that ceiling forward unexamined.
+    bound:
+      human_instruction_revision: "bound"
+      facts: *d13d_facts
+    layers:
+      authoritative_handoff: *d13d_facts
+      human_instruction:
+        permission_ceiling: { sandbox: "read-only" }
+    expect:
+      outcome: CONTINUATION_REJECTED_STALE
+      changed_includes: ["permission_ceiling.filesystem", "permission_ceiling.command_execution"]
+
+  - name: production_permission_revoked_rejects_old_continuation
+    kind: continuation
+    why: >-
+      Required case 4. A change to production access is exactly the kind of
+      capability drift a fingerprint over the whole permission_ceiling would
+      report as one opaque diff; this asserts it is named specifically.
+    bound:
+      human_instruction_revision: "bound"
+      facts:
+        <<: *d13d_facts
+        permission_ceiling: { sandbox: "workspace-write", production_access: true }
+    layers:
+      authoritative_handoff:
+        <<: *d13d_facts
+        permission_ceiling: { sandbox: "workspace-write", production_access: true }
+      human_instruction:
+        permission_ceiling: { sandbox: "workspace-write", production_access: false }
+    expect:
+      outcome: CONTINUATION_REJECTED_STALE
+      changed_includes: ["permission_ceiling.production_access"]
+
+  - name: db_principal_discovery_objective_drift_rejects_continuation
+    kind: continuation
+    why: >-
+      One of the named invalid-continuation examples: "objective changes from
+      fingerprint repair -> DB principal discovery". Distinct fixture from
+      the read-only-discovery case so both wordings are covered.
+    bound:
+      human_instruction_revision: "bound"
+      facts: *d13d_facts
+    layers:
+      authoritative_handoff: *d13d_facts
+      human_instruction:
+        objective: "DB principal discovery"
+    expect:
+      outcome: CONTINUATION_REJECTED_STALE
+      changed_includes: ["objective"]
+
+  - name: new_authoritative_baseline_rejects_old_continuation
+    kind: continuation
+    why: >-
+      Named invalid-continuation example: a new authoritative HEAD invalidates
+      the prior contract's assumptions about the starting state.
+    bound:
+      human_instruction_revision: "bound"
+      facts: *d13d_facts
+    layers:
+      authoritative_handoff:
+        <<: *d13d_facts
+        baseline: { repo: "company-platform", branch: "task/d13d", base_head: "def456" }
+      human_instruction: {}
+    expect:
+      outcome: CONTINUATION_REJECTED_STALE
+      changed_includes: ["baseline"]
+
+  - name: explicit_human_stop_rejects_continuation_regardless_of_scope
+    kind: continuation
+    why: >-
+      Named invalid-continuation example: the human explicitly says "do not
+      continue the previous task." This must reject even when nothing else in
+      the scope changed - the instruction itself is the drift.
+    bound:
+      human_instruction_revision: "bound"
+      facts: *d13d_facts
+    layers:
+      authoritative_handoff: *d13d_facts
+      human_instruction: { explicit_stop: true }
+    expect:
+      outcome: CONTINUATION_REJECTED_STALE
+      changed_includes: ["explicit_stop"]
+
+  - name: next_gate_change_rejects_old_continuation
+    kind: continuation
+    why: >-
+      Named invalid-continuation example: the human changes the expected
+      output or next gate materially.
+    bound:
+      human_instruction_revision: "bound"
+      facts: *d13d_facts
+    layers:
+      authoritative_handoff: *d13d_facts
+      human_instruction:
+        expected_output: "a design proposal, not a merged fix"
+    expect:
+      outcome: CONTINUATION_REJECTED_STALE
+      changed_includes: ["expected_output"]
+
+  - name: legacy_binding_without_fingerprints_requires_fresh_contract
+    kind: continuation
+    why: >-
+      PART K. A pre-hardening contract carries no continuation-freshness
+      metadata at all and must fail closed on resume rather than being
+      assumed current, even though its initial execution stays valid.
+    legacy_binding: true
+    bound:
+      facts: *d13d_facts
+    layers:
+      authoritative_handoff: *d13d_facts
+      human_instruction: {}
+    expect:
+      outcome: LEGACY_CONTINUATION_REQUIRES_FRESH_CONTRACT
+
+  - name: legacy_binding_missing_revision_field_also_requires_fresh_contract
+    kind: continuation
+    why: >-
+      The same rule reached the other way: a binding object that simply never
+      recorded a human_instruction_revision is indistinguishable from a
+      legacy one and must be treated the same way - fail closed, not assumed.
+    bound:
+      facts: *d13d_facts
+    layers:
+      authoritative_handoff: *d13d_facts
+      human_instruction: {}
+    expect:
+      outcome: LEGACY_CONTINUATION_REQUIRES_FRESH_CONTRACT
+
+  # --------------------------------------------------------------------- #
+  # Precedence: PART I, case 6.
+  # --------------------------------------------------------------------- #
+
+  - name: latest_human_instruction_overrides_stale_next_gate
+    kind: precedence
+    why: >-
+      Required case 6. A cached NEXT_GATE from an earlier round still says
+      the old gate; the human's latest instruction supplies a new one. The
+      resolved intent must take the human's value, not the cached one -
+      lower layers may fill gaps, never override.
+    layers:
+      prior_next_gate: { expected_output: "OLD_GATE: merge and tag a release" }
+      human_instruction: { expected_output: "NEW_GATE: stop after the design doc" }
+    expect:
+      resolved:
+        expected_output: "NEW_GATE: stop after the design doc"
+      source_of:
+        expected_output: human_instruction
+
+  - name: lower_layer_fills_a_gap_the_human_instruction_left_open
+    kind: precedence
+    why: >-
+      The other half of the invariant: a lower layer is not forbidden from
+      supplying a value, only from overriding one the human already gave.
+      Here the human's instruction says nothing about the baseline at all,
+      so the authoritative handoff's baseline is used.
+    layers:
+      authoritative_handoff:
+        baseline: { repo: "company-platform", branch: "task/d13d", base_head: "abc123" }
+      human_instruction: { objective: "keep going" }
+    expect:
+      resolved:
+        objective: "keep going"
+        baseline: { repo: "company-platform", branch: "task/d13d", base_head: "abc123" }
+      source_of:
+        objective: human_instruction
+        baseline: authoritative_handoff
+
+  # --------------------------------------------------------------------- #
+  # Session cleanup: PART I, cases 7, 8, 9, 13, 14, 15.
+  # --------------------------------------------------------------------- #
+
+  - name: pass_handback_closes_after_evidence_capture
+    kind: cleanup
+    why: >-
+      Required case 7. A completed, verified cycle whose strategic return has
+      already been produced has no reason to keep its terminal open.
+    input:
+      handback_status: PASS
+      evidence_captured: true
+    expect:
+      lifecycle_state: CLOSED
+      cleanup_action: CLOSE
+
+  - name: pass_handback_without_captured_evidence_stays_open
+    kind: cleanup
+    why: >-
+      The mirror case: closing before the commit ref and test output are
+      actually captured would destroy the evidence the handback depends on.
+    input:
+      handback_status: PASS
+      evidence_captured: false
+    expect:
+      lifecycle_state: ACTIVE
+      cleanup_action: KEEP
+
+  - name: stale_continuation_closes_after_evidence_capture
+    kind: cleanup
+    why: >-
+      Required case 8, STALE half. A session that failed the freshness check
+      is retired once whatever partial evidence it produced is preserved.
+    input:
+      handback_status: STALE
+      evidence_captured: true
+    expect:
+      lifecycle_state: STALE
+      cleanup_action: CLOSE
+
+  - name: superseded_session_closes_after_evidence_capture
+    kind: cleanup
+    why: >-
+      Required case 8, SUPERSEDED half. A newer human instruction replaced
+      this task outright; it is retired the same way a stale one is.
+    input:
+      handback_status: SUPERSEDED
+      evidence_captured: true
+    expect:
+      lifecycle_state: SUPERSEDED
+      cleanup_action: CLOSE
+
+  - name: human_gate_likely_same_task_parks
+    kind: cleanup
+    why: >-
+      Required case 9. Waiting on a human decision that is expected to
+      resume the exact same task, with nothing sensitive retained and
+      acceptable resource cost, is the one case PART allows PARK.
+    input:
+      handback_status: HUMAN_GATE
+      likely_same_task_continuation: true
+      sensitive_context: false
+      resource_cost_acceptable: true
+    expect:
+      lifecycle_state: PARKED
+      cleanup_action: PARK
+
+  - name: human_gate_likely_contract_change_closes_instead_of_parking
+    kind: cleanup
+    why: >-
+      The conservative default: when the next human response is likely to
+      change the contract, PARK is not the safe choice even at a human gate.
+    input:
+      handback_status: HUMAN_GATE
+      likely_same_task_continuation: false
+    expect:
+      lifecycle_state: CLOSED
+      cleanup_action: CLOSE
+
+  - name: human_gate_with_sensitive_context_closes_instead_of_parking
+    kind: cleanup
+    why: >-
+      A parked session that still holds a temporary DB connection or
+      credential context is a standing liability regardless of how likely
+      exact-task resume is.
+    input:
+      handback_status: HUMAN_GATE
+      likely_same_task_continuation: true
+      sensitive_context: true
+    expect:
+      lifecycle_state: CLOSED
+      cleanup_action: CLOSE
+
+  - name: active_long_running_task_is_never_closed_on_duration_alone
+    kind: cleanup
+    why: >-
+      Required case 13. This mirrors the execution-lifecycle invariant that
+      elapsed time alone never produces a failure; here it must never produce
+      a cleanup action either. The extra duration_ms field is deliberately
+      irrelevant input.
+    input:
+      handback_status: ACTIVE
+      duration_ms: 86400000
+    expect:
+      lifecycle_state: ACTIVE
+      cleanup_action: KEEP
+
+  - name: failed_task_closes_after_evidence_capture
+    kind: cleanup
+    why: >-
+      Required case 14. A failure with no valid retry left is retired once
+      its evidence is preserved, same as any other terminal outcome.
+    input:
+      handback_status: FAIL
+      evidence_captured: true
+      explicit_retry_valid: false
+    expect:
+      lifecycle_state: CLOSED
+      cleanup_action: CLOSE
+
+  - name: failed_task_with_valid_retry_stays_active
+    kind: cleanup
+    why: >-
+      A failure is not automatically terminal: an explicit, still-valid retry
+      keeps the same worker owner rather than forcing a fresh dispatch.
+    input:
+      handback_status: FAIL
+      evidence_captured: true
+      explicit_retry_valid: true
+    expect:
+      lifecycle_state: ACTIVE
+      cleanup_action: KEEP
+
+  - name: blocked_task_closes_after_evidence_capture
+    kind: cleanup
+    why: >-
+      BLOCKED gets the same evidence-then-close treatment as FAIL; the two
+      are named together in PART G for exactly this reason.
+    input:
+      handback_status: BLOCKED
+      evidence_captured: true
+      explicit_retry_valid: false
+    expect:
+      lifecycle_state: CLOSED
+      cleanup_action: CLOSE
+
+  - name: second_completed_terminal_also_closes
+    kind: cleanup
+    why: >-
+      Required case 15. Cleanup prevents accumulation because the same rule
+      applies uniformly to every completed terminal, not because of any
+      counting logic - a second PASS closes exactly like the first.
+    input:
+      handback_status: PASS
+      evidence_captured: true
+    expect:
+      lifecycle_state: CLOSED
+      cleanup_action: CLOSE
+
+  - name: third_completed_terminal_also_closes
+    kind: cleanup
+    why: >-
+      Required case 15, continued. A third instance, still no special-casing.
+    input:
+      handback_status: PASS
+      evidence_captured: true
+    expect:
+      lifecycle_state: CLOSED
+      cleanup_action: CLOSE
+
+  # --------------------------------------------------------------------- #
+  # Terminal inventory and resume: PART I, cases 10, 11, 12.
+  # --------------------------------------------------------------------- #
+
+  - name: unknown_unbound_terminal_is_not_resumable
+    kind: resume
+    why: >-
+      Required case 11. A terminal with only a title and no recorded
+      bindings is not resumable, regardless of what its title suggests - task
+      ownership is never inferred from a title alone.
+    entry:
+      title: "company-platform:d13d-readonly-discovery:reviewer:ACTIVE"
+      lifecycle_state: ACTIVE
+    evaluation: null
+    expect:
+      resumable: false
+      allowed: false
+
+  - name: parked_session_with_new_objective_rejects_resume
+    kind: resume
+    why: >-
+      Required case 10. Being PARKED never substitutes for a fresh
+      continuation-eligibility check; a changed objective still blocks resume
+      even though the terminal itself is otherwise a well-formed, bound one.
+    entry:
+      task_id: "d13d"
+      human_instruction_revision: "bound"
+      objective_fingerprint: "bound-objective"
+      permission_scope_fingerprint: "bound-permissions"
+      lifecycle_state: PARKED
+    evaluation:
+      outcome: CONTINUATION_REJECTED_STALE
+      changed: ["objective"]
+    expect:
+      resumable: true
+      allowed: false
+
+  - name: parked_session_with_unchanged_scope_allows_resume
+    kind: resume
+    why: >-
+      The positive control for the previous case: the same well-formed,
+      PARKED terminal resumes once the freshness check actually confirms
+      nothing material changed.
+    entry:
+      task_id: "d13d"
+      human_instruction_revision: "bound"
+      objective_fingerprint: "bound-objective"
+      permission_scope_fingerprint: "bound-permissions"
+      lifecycle_state: PARKED
+    evaluation:
+      outcome: CONTINUATION_ALLOWED
+      changed: []
+    expect:
+      resumable: true
+      allowed: true
+
+  - name: max_turns_valid_continuation_terminal_remains_resumable
+    kind: resume
+    why: >-
+      Required case 12. An ACTIVE terminal bound to a still-current human
+      instruction, mid a bounded max-turn continuation, remains available for
+      the router to resume rather than being torn down.
+    entry:
+      task_id: "d13d"
+      human_instruction_revision: "bound"
+      objective_fingerprint: "bound-objective"
+      permission_scope_fingerprint: "bound-permissions"
+      lifecycle_state: ACTIVE
+    evaluation:
+      outcome: CONTINUATION_ALLOWED
+      changed: []
+    expect:
+      resumable: true
+      allowed: true
+
+  - name: superseded_terminal_is_never_treated_as_resumable_input
+    kind: resume
+    why: >-
+      A terminal already marked SUPERSEDED must not resume even if someone
+      hands attemptResume a stale ALLOWED evaluation left over from before it
+      was superseded - the lifecycle_state itself gates resumability.
+    entry:
+      task_id: "d13d"
+      human_instruction_revision: "bound"
+      objective_fingerprint: "bound-objective"
+      permission_scope_fingerprint: "bound-permissions"
+      lifecycle_state: SUPERSEDED
+    evaluation:
+      outcome: CONTINUATION_ALLOWED
+      changed: []
+    expect:
+      resumable: false
+      allowed: false

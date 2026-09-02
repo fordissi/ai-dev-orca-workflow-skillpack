@@ -120,7 +120,59 @@ max turns 都不是 `PERMISSION_BLOCKED`。
 Permission ceiling 的能力分解與 Execution lifecycle semantics；命令細節見
 [`OFFICIAL_COMMANDS.md`](../../references/OFFICIAL_COMMANDS.md)。
 
-## 6. 停止
+## 6. Continuation 與 session cleanup
+
+**Resume 前先比對 human intent，不是先看 worker 還活著沒。** 一次真實 cycle 曾經
+續跑舊 task，即使新的 human instruction 早已要求不同的 task——worker 與 reviewer
+都沒錯，錯在 router 續跑前沒有跑這個檢查。
+
+```text
+A continuation is valid only against the same still-current human intent
+and permission scope.
+```
+
+以下情況之前**必須**先跑 continuation eligibility check：resume、
+`MAX_TURNS_REACHED` 續跑、retry 同一 worker、reviewer continuation、
+parked terminal 重用。比對至少涵蓋：objective、allowed/prohibited changes、
+permission ceiling（含 production/network/database）、human gate 狀態、
+baseline/HEAD、expected output/next gate。
+
+任一項改變：
+
+```text
+CONTINUATION_REJECTED_STALE → 新開 task contract，不得自動 resume
+```
+
+沒有 revision fingerprint 的舊 contract 續跑時一律
+`LEGACY_CONTINUATION_REQUIRES_FRESH_CONTRACT`，不假設它仍 current。
+兩者都**不是** `PERMISSION_BLOCKED` / `ROUTING_UNAVAILABLE`，也不計入
+`failed_repair_count`。
+
+Precedence（下層不得覆蓋上層）：
+
+```text
+latest human instruction > handoff/state > active contract
+> prior NEXT_GATE > cached router context > worker-local state
+```
+
+**Session lifecycle：** `ACTIVE` / `PARKED` / `SUPERSEDED` / `STALE` /
+`FAILED` / `CLOSED`。`PARKED` **不豁免**上面的 continuation check——續跑
+`PARKED` terminal 前一樣要重跑一次。
+
+Cleanup 保守預設：`PASS` 自動 `CLOSE`；`FAIL`/`BLOCKED` 擷取 evidence 後
+`CLOSE`（除非有效 retry 仍在）；`SUPERSEDED`/`STALE` 盡快 `CLOSE`；
+`HUMAN_GATE` 只在「預期同一 task 續跑 + 無敏感 context + 資源成本可接受」時
+`PARK`，否則 `CLOSE`；`ACTIVE` 永不因 elapsed time 單獨關閉。
+
+Unknown/未綁定 terminal（缺 fingerprint）一律 `resumable: false`，**不得只看
+title 判斷 task ownership**。
+
+完整語意見 [`WORKFLOW_POLICY.md`](../../policies/WORKFLOW_POLICY.md) 的
+Continuation freshness 與 Session lifecycle and cleanup；目前 Orca 沒有
+per-terminal close/list 的已驗證命令，實際限制見
+[`OFFICIAL_COMMANDS.md`](../../references/OFFICIAL_COMMANDS.md)。
+
+## 7. 停止
 
 `BLOCKED` 必須附 reason code：`CONFIG_INVALID`、`ROUTING_UNAVAILABLE`、
 `POLICY_BLOCKED`、`RESOURCE_BLOCKED`、`PERMISSION_BLOCKED`。
@@ -132,7 +184,7 @@ auth/RBAC/RLS、privileged boundary、production deploy、secrets/security confi
 
 `failed_repair_count >= max_repair_attempts` 時升級或停止。初次 attempt 不算 repair。
 
-## 7. 回報（Worker → Operational Router）
+## 8. 回報（Worker → Operational Router）
 
 ```text
 TASK_RESULT
@@ -157,7 +209,7 @@ source_summary:
 `actual_provider` / `actual_model` / `reasoning_effort` 由 router 寫定，worker 只回填。
 讀不到 quota 就整段 `UNKNOWN`——**禁止為了填滿欄位而猜測**。
 
-## 8. Handback（Operational Router → Strategic Router）
+## 9. Handback（Operational Router → Strategic Router）
 
 回報鏈固定為：
 
@@ -216,7 +268,7 @@ provider conversation ID。
 current project handoff。改到 durable state 時先更新 handoff，再用 `HANDOFF_UPDATE`
 指出改了哪裡。
 
-## 9. 改動這個 pack 之前
+## 10. 改動這個 pack 之前
 
 命令範例以本機 `--help` 為準，見
 [`OFFICIAL_COMMANDS.md`](../../references/OFFICIAL_COMMANDS.md)。

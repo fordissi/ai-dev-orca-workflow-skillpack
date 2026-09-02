@@ -192,6 +192,8 @@ Resource overlay **只能在達到相同 `minimum_tier` 的候選之間重排**�
 
 **Continuation 也不計入 `failed_repair_count`。** 因 execution budget 用盡（例如 `Reached max turns`）而續跑同一條 chain，並不是一次失敗的修補；它由自己的 `max_continuation_attempts` 限制，定義見 [`WORKFLOW_POLICY.md`](WORKFLOW_POLICY.md) 的 Execution lifecycle semantics。只有產生錯誤結果後的修補才累加 `failed_repair_count`。
 
+**Stale continuation 同樣不計入 `failed_repair_count`。** 判定為 `CONTINUATION_REJECTED_STALE` 或 `LEGACY_CONTINUATION_REQUIRES_FRESH_CONTRACT` 時，worker 沒有產生任何結果、更沒有產生錯誤結果——router 只是拒絕在過期的 human intent 或 permission scope 上續跑。這是 continuation freshness 判定的結果，不是 repair；判定規則見 [`WORKFLOW_POLICY.md`](WORKFLOW_POLICY.md) 的 Continuation freshness 章節，此處不重複定義判定邏輯，只重申它不進這個計數。
+
 ## 新模型
 
 新模型先進 `status: experimental` mapping，只在低風險、可重現、驗收標準清楚的任務上比較 correctness、latency、repair count、review catch rate 與 quota efficiency。

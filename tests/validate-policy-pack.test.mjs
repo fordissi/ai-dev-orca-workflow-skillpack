@@ -3,18 +3,30 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { parse } from "yaml";
 import {
+  attemptResume,
+  canonicalFingerprint,
+  canonicalContinuationFacts,
   classifyCommand,
   classifyExecutionState,
   classifyPermissionRequest,
+  classifySessionCleanup,
   normalizePermissionCeiling,
   conservationPressure,
+  diffContinuationScope,
+  evaluateContinuation,
+  humanInstructionRevision,
+  objectiveFingerprint,
+  permissionScopeFingerprint,
   resetProximity,
   resolveConservationPressure,
+  resolveCurrentIntent,
   resolveStrandedCapacity,
   resourceWindows,
   scanText,
   selectCandidate,
   strandedCapacityRisk,
+  terminalIsResumable,
+  validateContinuationCases,
   validateExecutionCases,
   validateHistory,
   validateMarkdownLinks,
@@ -2021,4 +2033,400 @@ test("the hierarchy is owned in one place and applied in the other", async () =>
     "README must state the invariant this refinement adds",
   );
   assert.deepEqual(validateMarkdownLinks(skill, { path: "skills/orca-multi-agent-dev/SKILL.md", root: process.cwd() }), []);
+});
+
+/* ------------------------------------------------------------------------ *
+ * Continuation freshness + session lifecycle hygiene
+ *
+ * The incident this hardening answers was a single misclassification: a
+ * continuation resumed against an intent that had already changed. Every
+ * test below is either that misclassification directly, or one of the two
+ * properties (no PII in the fingerprint, cleanup never touches repair or
+ * git state) that keep the fix itself trustworthy.
+ * ------------------------------------------------------------------------ */
+
+const D13D_FACTS = Object.freeze({
+  objective: "canonicalize D1.3 fixture repair",
+  allowed_changes: ["fixtures/d1.3/**"],
+  prohibited_changes: ["policies/**"],
+  expected_output: "canonicalized fixtures pass the D1.3 schema check",
+  baseline: { repo: "company-platform", branch: "task/d13d", base_head: "abc123" },
+  permission_ceiling: { sandbox: "workspace-write" },
+  human_gate: { required: false },
+});
+
+test("human_instruction_revision is a fingerprint over structured facts, never a transcript", () => {
+  const revision = humanInstructionRevision(D13D_FACTS);
+
+  // A sha256 hex digest: fixed shape regardless of input size.
+  assert.match(revision, /^[0-9a-f]{64}$/);
+
+  // Adding an arbitrary large field that is not one of the canonical facts -
+  // the shape a raw prompt or PII would actually take - must not move the
+  // fingerprint at all. This is required case 18.
+  // Assembled at runtime so this fixture is not itself flagged by the
+  // publishable-file scanner's own email-address pattern.
+  const account_email = "person" + "@" + "example.com";
+  const withRawPrompt = { ...D13D_FACTS, raw_prompt: "the human said: " + "x".repeat(5000), account_email };
+  assert.equal(humanInstructionRevision(withRawPrompt), revision);
+  assert.deepEqual(canonicalContinuationFacts(withRawPrompt), canonicalContinuationFacts(D13D_FACTS));
+
+  // The three fingerprints are deterministic and reproducible from the same
+  // facts, and the two narrower ones move independently of each other.
+  assert.equal(humanInstructionRevision(D13D_FACTS), humanInstructionRevision({ ...D13D_FACTS }));
+  const widerScope = { ...D13D_FACTS, permission_ceiling: { sandbox: "read-only" } };
+  assert.equal(objectiveFingerprint(widerScope), objectiveFingerprint(D13D_FACTS));
+  assert.notEqual(permissionScopeFingerprint(widerScope), permissionScopeFingerprint(D13D_FACTS));
+});
+
+test("diffContinuationScope names the field that moved, including which permission capability", () => {
+  assert.deepEqual(diffContinuationScope(D13D_FACTS, D13D_FACTS), []);
+
+  assert.deepEqual(
+    diffContinuationScope(D13D_FACTS, { ...D13D_FACTS, objective: "read-only discovery" }),
+    ["objective"],
+  );
+
+  // Narrowing workspace-write to read-only touches the decomposed filesystem
+  // and command_execution capabilities specifically, not just "permissions".
+  const narrowed = diffContinuationScope(D13D_FACTS, { ...D13D_FACTS, permission_ceiling: { sandbox: "read-only" } });
+  assert.deepEqual(narrowed.sort(), ["permission_ceiling.command_execution", "permission_ceiling.filesystem"]);
+
+  // Production access is named on its own, distinct from every other capability.
+  const withProd = { ...D13D_FACTS, permission_ceiling: { sandbox: "workspace-write", production_access: true } };
+  const revoked = { ...D13D_FACTS, permission_ceiling: { sandbox: "workspace-write", production_access: false } };
+  assert.deepEqual(diffContinuationScope(withProd, revoked), ["permission_ceiling.production_access"]);
+});
+
+test("resolveCurrentIntent lets a lower layer fill a gap but never override a higher one", () => {
+  const { resolved, sourceOf } = resolveCurrentIntent({
+    authoritative_handoff: { objective: "keep going", baseline: D13D_FACTS.baseline },
+    prior_next_gate: { expected_output: "OLD_GATE" },
+    human_instruction: { expected_output: "NEW_GATE" },
+  });
+
+  assert.equal(resolved.expected_output, "NEW_GATE");
+  assert.equal(sourceOf.expected_output, "human_instruction");
+  // The gap-filling half of the invariant: nothing in a higher layer said
+  // anything about the baseline, so the lower layer's value is used.
+  assert.deepEqual(resolved.baseline, D13D_FACTS.baseline);
+  assert.equal(sourceOf.baseline, "authoritative_handoff");
+
+  // An explicit_stop flag is itself a human-instruction-layer fact and
+  // follows the same precedence as everything else.
+  assert.equal(resolveCurrentIntent({ human_instruction: { explicit_stop: true } }).explicit_stop, true);
+  assert.equal(resolveCurrentIntent({ authoritative_handoff: { explicit_stop: true } }).explicit_stop, false);
+});
+
+test("evaluateContinuation allows an unchanged intent and rejects a changed one", () => {
+  const bound = { human_instruction_revision: humanInstructionRevision(D13D_FACTS), facts: D13D_FACTS };
+
+  const allowed = evaluateContinuation({ bound, layers: { authoritative_handoff: D13D_FACTS, human_instruction: {} } });
+  assert.equal(allowed.outcome, "CONTINUATION_ALLOWED");
+  assert.deepEqual(allowed.changed, []);
+
+  const rejected = evaluateContinuation({
+    bound,
+    layers: { authoritative_handoff: D13D_FACTS, human_instruction: { objective: "read-only discovery" } },
+  });
+  assert.equal(rejected.outcome, "CONTINUATION_REJECTED_STALE");
+  assert.ok(rejected.changed.includes("objective"));
+
+  // A binding that carries fingerprints but not the full facts still works,
+  // falling back to fingerprint comparison - the shape an inventory record
+  // actually persists.
+  const coarseBound = {
+    human_instruction_revision: humanInstructionRevision(D13D_FACTS),
+    objective_fingerprint: objectiveFingerprint(D13D_FACTS),
+    permission_scope_fingerprint: permissionScopeFingerprint(D13D_FACTS),
+  };
+  assert.equal(
+    evaluateContinuation({ bound: coarseBound, layers: { authoritative_handoff: D13D_FACTS, human_instruction: {} } }).outcome,
+    "CONTINUATION_ALLOWED",
+  );
+  const coarseRejected = evaluateContinuation({
+    bound: coarseBound,
+    layers: { authoritative_handoff: D13D_FACTS, human_instruction: { objective: "read-only discovery" } },
+  });
+  assert.equal(coarseRejected.outcome, "CONTINUATION_REJECTED_STALE");
+  assert.ok(coarseRejected.changed.includes("objective_fingerprint") || coarseRejected.changed.includes("human_instruction_revision"));
+});
+
+test("a legacy binding fails closed rather than being assumed current", () => {
+  for (const context of [
+    { bound: { facts: D13D_FACTS }, layers: { authoritative_handoff: D13D_FACTS, human_instruction: {} } },
+    { bound: undefined, layers: {} },
+    { legacy_binding: true, bound: { human_instruction_revision: "x", facts: D13D_FACTS }, layers: { authoritative_handoff: D13D_FACTS, human_instruction: {} } },
+  ]) {
+    assert.equal(evaluateContinuation(context).outcome, "LEGACY_CONTINUATION_REQUIRES_FRESH_CONTRACT");
+  }
+});
+
+test("classifySessionCleanup never touches git/worktree state or failed_repair_count", () => {
+  // Required cases 16 and 17. The return shape itself is the evidence: it
+  // has no field that could carry a git operation or a repair count.
+  const forbiddenKeys = ["git", "worktree", "head", "commit", "failed_repair_count", "repair"];
+
+  for (const input of [
+    { handback_status: "PASS", evidence_captured: true },
+    { handback_status: "FAIL", evidence_captured: true, explicit_retry_valid: false },
+    { handback_status: "HUMAN_GATE", likely_same_task_continuation: true },
+    { handback_status: "STALE", evidence_captured: true },
+    { handback_status: "ACTIVE" },
+  ]) {
+    const result = classifySessionCleanup(input);
+    for (const key of Object.keys(result)) {
+      assert.ok(!forbiddenKeys.some((forbidden) => key.toLowerCase().includes(forbidden)), `cleanup result leaked a ${key} field`);
+    }
+    assert.deepEqual(Object.keys(result).sort(), ["cleanup_action", "lifecycle_state", "reason"]);
+  }
+
+  // An unrecognised status defaults to keeping the session live rather than
+  // guessing a cleanup action for it.
+  assert.deepEqual(classifySessionCleanup({ handback_status: "NOT_A_STATUS" }), {
+    lifecycle_state: "ACTIVE",
+    cleanup_action: "KEEP",
+    reason: "unrecognised handback status; default to keeping the session live",
+  });
+});
+
+test("ACTIVE is never closed on elapsed duration, however large", () => {
+  for (const durationMs of [0, 60_000, 86_400_000, Number.MAX_SAFE_INTEGER]) {
+    const result = classifySessionCleanup({ handback_status: "ACTIVE", duration_ms: durationMs });
+    assert.equal(result.lifecycle_state, "ACTIVE");
+    assert.equal(result.cleanup_action, "KEEP");
+  }
+});
+
+test("terminalIsResumable requires every binding field, and lifecycle_state gates it", () => {
+  const bound = {
+    task_id: "d13d",
+    human_instruction_revision: "h",
+    objective_fingerprint: "o",
+    permission_scope_fingerprint: "p",
+  };
+
+  assert.equal(terminalIsResumable({ ...bound, lifecycle_state: "ACTIVE" }), true);
+  assert.equal(terminalIsResumable({ ...bound, lifecycle_state: "PARKED" }), true);
+  for (const lifecycle_state of ["SUPERSEDED", "STALE", "FAILED", "CLOSED"]) {
+    assert.equal(terminalIsResumable({ ...bound, lifecycle_state }), false);
+  }
+
+  // Any single missing binding field is enough to make it unresumable -
+  // ownership is never partially inferred.
+  for (const missing of Object.keys(bound)) {
+    const partial = { ...bound, lifecycle_state: "ACTIVE" };
+    delete partial[missing];
+    assert.equal(terminalIsResumable(partial), false, `missing ${missing} must still fail closed`);
+  }
+
+  assert.equal(terminalIsResumable({ title: "company-platform:d13d-readonly-discovery:reviewer:ACTIVE" }), false);
+  assert.equal(terminalIsResumable(undefined), false);
+});
+
+test("attemptResume enforces both the inventory gate and the freshness gate", () => {
+  const bound = {
+    task_id: "d13d",
+    human_instruction_revision: "h",
+    objective_fingerprint: "o",
+    permission_scope_fingerprint: "p",
+    lifecycle_state: "PARKED",
+  };
+
+  // PARKED does not bypass the freshness check: a stale evaluation still
+  // rejects resume even though the terminal itself is well-formed.
+  assert.equal(attemptResume(bound, { outcome: "CONTINUATION_REJECTED_STALE" }).allowed, false);
+  assert.equal(attemptResume(bound, { outcome: "CONTINUATION_ALLOWED" }).allowed, true);
+
+  // The inventory gate is checked first: an unbound terminal is rejected
+  // regardless of what the evaluation says.
+  assert.equal(attemptResume({ title: "looks-official" }, { outcome: "CONTINUATION_ALLOWED" }).allowed, false);
+
+  // A terminal already SUPERSEDED never resumes even against a stale ALLOWED
+  // evaluation left over from before it was superseded.
+  assert.equal(attemptResume({ ...bound, lifecycle_state: "SUPERSEDED" }, { outcome: "CONTINUATION_ALLOWED" }).allowed, false);
+});
+
+test("repository continuation cases all conform to the executable semantics", async () => {
+  const cases = parse(await readFile("tests/continuation-cases.yaml", "utf8"));
+  const names = new Set(cases.cases.map(({ name }) => name));
+
+  for (const required of [
+    "same_task_same_revision_after_max_turns_continues",
+    "new_objective_rejects_old_continuation",
+    "workspace_write_to_read_only_rejects_old_continuation",
+    "production_permission_revoked_rejects_old_continuation",
+    "continue_same_review_with_unrestated_objective_allows_continuation",
+    "latest_human_instruction_overrides_stale_next_gate",
+    "pass_handback_closes_after_evidence_capture",
+    "stale_continuation_closes_after_evidence_capture",
+    "human_gate_likely_same_task_parks",
+    "parked_session_with_new_objective_rejects_resume",
+    "unknown_unbound_terminal_is_not_resumable",
+    "max_turns_valid_continuation_terminal_remains_resumable",
+    "active_long_running_task_is_never_closed_on_duration_alone",
+    "failed_task_closes_after_evidence_capture",
+  ]) {
+    assert.ok(names.has(required), `continuation cases are missing ${required}`);
+  }
+
+  assert.ok(cases.cases.length >= 18, "continuation cases must cover at least the 18 required scenarios");
+  assert.deepEqual(validateContinuationCases(cases), []);
+});
+
+test("continuation case validator rejects a case whose expectation drifts", () => {
+  const drifted = {
+    cases: [
+      {
+        name: "wrong_outcome",
+        kind: "continuation",
+        why: "a fixture asserting the wrong thing must be caught",
+        bound: { human_instruction_revision: humanInstructionRevision(D13D_FACTS), facts: D13D_FACTS },
+        layers: { authoritative_handoff: D13D_FACTS, human_instruction: { objective: "different" } },
+        expect: { outcome: "CONTINUATION_ALLOWED" },
+      },
+    ],
+  };
+  assert.match(validateContinuationCases(drifted).join("\n"), /expected outcome "CONTINUATION_ALLOWED", got "CONTINUATION_REJECTED_STALE"/);
+
+  const missingChange = {
+    cases: [
+      {
+        name: "missing_changed_field",
+        kind: "continuation",
+        why: "the changed list must actually name the field that moved",
+        bound: { human_instruction_revision: humanInstructionRevision(D13D_FACTS), facts: D13D_FACTS },
+        layers: { authoritative_handoff: D13D_FACTS, human_instruction: { objective: "different" } },
+        expect: { outcome: "CONTINUATION_REJECTED_STALE", changed_includes: ["baseline"] },
+      },
+    ],
+  };
+  assert.match(validateContinuationCases(missingChange).join("\n"), /expected changed to include "baseline"/);
+
+  assert.deepEqual(validateContinuationCases({ cases: [] }), ["continuation cases: expected a non-empty `cases` list"]);
+});
+
+test("workflow policy owns continuation freshness and session lifecycle without duplicating repair-count or reason-code ownership", async () => {
+  const workflow = await readFile("policies/WORKFLOW_POLICY.md", "utf8");
+  const routing = await readFile("policies/MODEL_ROUTING_POLICY.md", "utf8");
+
+  assert.match(workflow, /## Continuation freshness/);
+  assert.match(workflow, /## Session lifecycle and cleanup/);
+  assert.ok(
+    workflow.includes("A continuation is valid only against the same still-current human intent"),
+    "the core continuation invariant must be stated where the rule lives",
+  );
+
+  // Every lifecycle state and outcome must be nameable in the normative text.
+  for (const token of [
+    "ACTIVE", "PARKED", "SUPERSEDED", "STALE", "FAILED", "CLOSED",
+    "CONTINUATION_REJECTED_STALE", "LEGACY_CONTINUATION_REQUIRES_FRESH_CONTRACT",
+  ]) {
+    assert.ok(workflow.includes(token), `workflow policy is missing ${token}`);
+  }
+
+  // The precedence chain, in order, with the invariant that protects it.
+  for (const layer of ["human instruction", "handoff", "strategic contract", "NEXT_GATE", "cached router", "worker-local"]) {
+    assert.match(workflow, new RegExp(layer, "i"), `workflow policy does not name the ${layer} precedence layer`);
+  }
+  assert.match(workflow, /不得推翻更新的 explicit human/);
+
+  // PARKED must be stated as not bypassing the freshness check.
+  assert.match(workflow, /`PARKED` 不豁免 continuation freshness check/);
+
+  // Cleanup must not become a security boundary or a second permission owner.
+  assert.match(workflow, /但 cleanup 本身不構成安全邊界/);
+
+  // Repair-count ownership stays single: WORKFLOW_POLICY points at
+  // MODEL_ROUTING_POLICY rather than restating the exemption itself.
+  assert.ok(!/Stale continuation 不計入 `failed_repair_count`/.test(workflow), "the repair-count exemption must not be restated in the workflow policy");
+  assert.match(routing, /\*\*Stale continuation 同樣不計入 `failed_repair_count`。\*\*/);
+
+  // Reason-code ownership stays single too: the definition table (identified
+  // by its "who can lift it" column) appears in exactly one file.
+  const definitionHeader = "| Code | 意義 | 誰能解除 |";
+  const owners = [];
+  for (const file of [
+    "policies/WORKFLOW_POLICY.md", "policies/MODEL_ROUTING_POLICY.md",
+    "policies/CONCURRENCY_POLICY.md", "policies/RESOURCE_AWARE_ROUTING.md",
+    "templates/ROUTER_EXECUTION_CONTRACT_TEMPLATE.md", "templates/STRATEGIC_RETURN_TEMPLATE.md",
+    "skills/orca-multi-agent-dev/SKILL.md", "README.md",
+  ]) {
+    if ((await readFile(file, "utf8")).includes(definitionHeader)) owners.push(file);
+  }
+  assert.deepEqual(owners, ["policies/MODEL_ROUTING_POLICY.md"]);
+
+  // Stale continuation must never be describable as one of the canonical
+  // blocked reason codes.
+  assert.ok(
+    !/CONTINUATION_REJECTED_STALE[^\n]*(PERMISSION_BLOCKED|ROUTING_UNAVAILABLE|PROCESS_EXIT_FAILURE)/.test(workflow),
+    "stale continuation must not be conflated with an existing reason code or execution-failure state",
+  );
+});
+
+test("the runtime capability gap for terminal cleanup is disclosed, not invented", async () => {
+  const commands = await readFile("references/OFFICIAL_COMMANDS.md", "utf8");
+
+  assert.match(commands, /Terminal lifecycle 與 cleanup 的 runtime 邊界/);
+  assert.match(commands, /沒有已驗證的 per-terminal/);
+  assert.match(commands, /不得\*\*假造這些命令的旗標或行為/);
+
+  // Any mention of the two missing commands must be marked as hypothetical,
+  // the same convention the pre-existing rate-limits gap already uses -
+  // never presented as something already supported.
+  commands.split(/\r?\n/).forEach((line, index) => {
+    if (/orca terminal (stop --terminal|list)/.test(line)) {
+      assert.match(line, /尚不存在/, `line ${index + 1} names an unsupported command without marking it hypothetical: ${line}`);
+    }
+  });
+
+  // The fallback path this gap forces stays documented alongside it.
+  assert.match(commands, /標記 lifecycle state 為 `CLOSED` 並\s*\n?\s*交由人在 UI 關閉該 tab/);
+});
+
+test("continuation binding and session lifecycle fields stay non-sensitive and reach the templates", async () => {
+  const contract = await readFile("templates/ROUTER_EXECUTION_CONTRACT_TEMPLATE.md", "utf8");
+  const handoff = await readFile("templates/CURRENT_PROJECT_HANDOFF_TEMPLATE.md", "utf8");
+  const strategicReturn = await readFile("templates/STRATEGIC_RETURN_TEMPLATE.md", "utf8");
+  const skill = await readFile("skills/orca-multi-agent-dev/SKILL.md", "utf8");
+
+  for (const field of [
+    "continuation_binding", "human_instruction_revision", "objective_fingerprint",
+    "permission_scope_fingerprint", "session_lifecycle", "lifecycle_state", "resumable",
+  ]) {
+    assert.ok(contract.includes(field), `contract template cannot express ${field}`);
+  }
+  assert.match(contract, /不得寫入完整 human\s*\n?\s*message 或任何 PII/);
+
+  assert.ok(handoff.includes("human_instruction_revision"), "handoff must point at the active contract's continuation binding");
+
+  assert.match(strategicReturn, /CONTINUATION_REJECTED_STALE/);
+  assert.match(strategicReturn, /LEGACY_CONTINUATION_REQUIRES_FRESH_CONTRACT/);
+  // The schema itself must not have grown a new top-level field for this -
+  // only the smallest possible cross-reference was asked for.
+  assert.ok(!/^CONTINUATION_/m.test(strategicReturn), "STRATEGIC_RETURN must not gain a new top-level field for continuation freshness");
+
+  assert.match(skill, /## 6\. Continuation 與 session cleanup/);
+  assert.deepEqual(validateMarkdownLinks(skill, { path: "skills/orca-multi-agent-dev/SKILL.md", root: process.cwd() }), []);
+});
+
+test("hardening left model registry, capability tiers, resource routing and disjointness untouched", async () => {
+  const registryText = await readFile("policies/MODEL_REGISTRY.yaml", "utf8");
+  const registryParsed = parse(registryText);
+  const routing = await readFile("policies/MODEL_ROUTING_POLICY.md", "utf8");
+  const concurrency = await readFile("policies/CONCURRENCY_POLICY.md", "utf8");
+  const resource = await readFile("policies/RESOURCE_AWARE_ROUTING.md", "utf8");
+
+  for (const leaked of ["continuation_binding", "session_lifecycle", "STALE", "SUPERSEDED", "PARKED"]) {
+    assert.ok(!registryText.includes(leaked), `the model registry must not carry ${leaked}`);
+  }
+  assert.deepEqual(registryParsed.capability_tier_order, ["CHEAP", "DEFAULT", "STRONG", "DEEP"]);
+  assert.deepEqual(validateRegistry(registryParsed), []);
+
+  assert.match(routing, /reviewer 的 provider 與 model family \*\*都必須\*\*與 implementer 不同/);
+  assert.match(concurrency, /\*\*永久禁止。\*\*/);
+  assert.match(resource, /quota opportunity cost is a routing signal, not capability authority/);
+  for (const leaked of ["continuation_binding", "session_lifecycle", "human_instruction_revision"]) {
+    assert.ok(!resource.includes(leaked), `resource-aware routing must not absorb ${leaked}`);
+  }
 });

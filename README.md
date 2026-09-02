@@ -106,7 +106,7 @@ visibility, or live quota visibility.** 因此它指定**能力需求**，不指
 classify -> slot -> overlay -> candidate -> contract -> dispatch
 ```
 
-## 四個端到端範例
+## 五個端到端範例
 
 ### A. 規格清楚的局部實作
 
@@ -156,6 +156,29 @@ disjointness、resource state 之後，且只能在**同一 band、同一 state*
 BUDGET 讀不到時兩邊都不動——不當 healthy，也不當 scarce。
 沒有可信讀數時，選擇結果與這兩層不存在時完全相同。
 記錄只寫 `CRITICAL` / `NEAR` 這類標籤，**不寫 quota 數值**。
+
+### E. Human 提出新 task，router 卻續跑舊的 continuation chain
+
+Human 已明確要求新的 read-only discovery task，Operational Router 卻誤續跑了
+舊的 implementation continuation——worker 與 reviewer 都正確執行了各自收到的
+（舊）contract，問題出在 router 續跑前沒有比對 human intent。
+
+```text
+A continuation is valid only against the same still-current human intent
+and permission scope.
+```
+
+→ resume / `MAX_TURNS_REACHED` 續跑 / retry / reviewer continuation / parked
+terminal 重用之前，一律先跑 continuation eligibility check
+→ 比對 objective、permission ceiling（含 production/network/database）、
+baseline、expected output 是否 materially changed
+→ objective 從 implementation 變成 read-only discovery：**changed**
+→ `CONTINUATION_REJECTED_STALE`，不得自動 resume，開新 task contract
+→ 這是 lifecycle outcome，不是 `PERMISSION_BLOCKED` 或
+`ROUTING_UNAVAILABLE`，也不計入 `failed_repair_count`。
+
+`latest explicit human instruction` 永遠贏過 `stale NEXT_GATE` 或 cached
+continuation state；下層只能補空缺，不能覆寫上層已指定的欄位。
 
 ## 停止條件
 
@@ -225,6 +248,6 @@ public repository commit policy。
 | `templates/` | contract、strategic return、handoff、session、benchmark、decision note |
 | `runtime/RESOURCE_STATE.example.json` | 安全的 resource snapshot 範例 |
 | `scripts/validate-policy-pack.mjs` | conformance checker |
-| `tests/` | 政策一致性測試、routing cases 與 execution cases |
+| `tests/` | 政策一致性測試、routing cases、execution cases 與 continuation cases |
 | `docs/superpowers/` | 刻意公開的設計規格與實作計畫 |
 | `experiments/` | optional、non-authoritative |
