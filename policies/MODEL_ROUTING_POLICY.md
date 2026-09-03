@@ -264,6 +264,12 @@ Role 與 slot 名稱**永遠不得**被當成 capability tier 或 capability sta
 
 `auth / RBAC / RLS` 與其他不可逆決策：**它們是 human gate 觸發條件（見 [`WORKFLOW_POLICY.md`](WORKFLOW_POLICY.md)），不自動等於 Stage 3。** 先回 human；capability stage 仍依 Stage admission 判定。
 
+這張表同時是「Operational Router 何時必須派工」的落點：[`WORKFLOW_POLICY.md`](WORKFLOW_POLICY.md)
+的 *Operational Router execution boundary* 把 broad discovery、implementation、
+regression/test execution、domain reasoning 等 worker-shaped 訊號對應到這張表
+既有的 slot，**不新增平行的 slot 架構**；該節是這個對應與派工時機的唯一 owner，
+此處不重複定義。
+
 ## Discovery、implementation 與 review 分開記錄
 
 同一個 task 若符合多個 slot，**discovery slot、implementation slot 與 review slot 必須分開記錄**，不得合併。每個 slot 各自跑一次 Stage admission。

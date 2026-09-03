@@ -274,6 +274,25 @@ session_lifecycle:
   cleanup_action:               # unresolved — KEEP | PARK | CLOSE
   resumable:                   # unresolved — 缺任一 continuation_binding 欄位時一律 false
 
+# Router execution boundary。決定這一步是 Router 自己執行的 bounded
+# control-plane probe，還是必須派工。語意見 policies/WORKFLOW_POLICY.md
+# 的 Operational Router execution boundary。只有實際的 ROUTER slot 適用
+# CONTROL_PLANE / DIRECT_ALLOWED；DEEP_REASONER 等其他標 role: ROUTER 的
+# slot 是被派工的 worker，不適用。
+router_execution:
+  router_execution_class:      # unresolved — CONTROL_PLANE | WORKER_DISCOVERY
+                                # | WORKER_IMPLEMENTATION | WORKER_REGRESSION
+                                # | WORKER_REASONING
+  router_execution_decision:   # unresolved — DIRECT_ALLOWED | DISPATCH_REQUIRED
+                                # | HUMAN_OVERRIDE
+  router_execution_source:     # unresolved — POLICY_DEFAULT | HUMAN_EXPLICIT_OVERRIDE
+  dispatch_slot:                # unresolved，或 none — DISPATCH_REQUIRED 時對應到
+                                # 既有 slot（見 MODEL_ROUTING_POLICY.md 的 Slot
+                                # decision table），不建立新 slot 架構
+  human_override:               # unresolved，或 none — 綁定 task_id/instruction_revision，
+                                # 語意同 MODEL_ROUTING_POLICY.md 的 HUMAN_EXPLICIT_OVERRIDE
+                                # / HUMAN_OVERRIDE_STALE
+
 dispatch_command:             # unresolved
   # 逐字命令，且必須在命令列明確傳入 model、reasoning、sandbox 與 approval 旗標。
   # 只在上面用散文宣告 permission_ceiling 是不夠的：worker 端的 local CLI
@@ -296,6 +315,11 @@ dispatch_command:             # unresolved
 等 execution-relevant 欄位做 canonicalization 再雜湊，**不得寫入完整 human
 message 或任何 PII**；`session_lifecycle.title` 同樣不得含 credential、PII 或
 完整 prompt。
+
+`router_execution.router_execution_class` 為任一 `WORKER_*` 時，
+`router_execution_decision` 只能是 `DISPATCH_REQUIRED`，除非
+`human_override` 存在且通過 task_id / instruction_revision 綁定驗證；
+這個組合的合法性由 conformance checker 驗證，見下方測試。
 
 ---
 

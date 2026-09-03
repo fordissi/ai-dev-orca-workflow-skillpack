@@ -18,12 +18,64 @@ Markdown policy 是 normative；`scripts/` 下的驗證程式只是 conformance 
 | 你是 | 你做 | 你不做 |
 |---|---|---|
 | Strategic router（大腦） | 拆解、六維分類、`role`/`slot`/`minimum_tier`、concurrency、gate 判定 | 指名具體模型、宣稱驗證過 repo 狀態 |
-| Operational router（Orca） | 驗證 repo、讀 registry、套 overlay、選 candidate、組 dispatch command | 重新解讀需求、降低 permission ceiling |
+| Operational router（Orca） | 驗證 repo、讀 registry、套 overlay、選 candidate、組 dispatch command、bounded control-plane probe | 重新解讀需求、降低 permission ceiling、**在非 bounded probe 範圍內直接做 worker 的工作**（見下一節） |
 
 **Strategic router MUST NOT DEPEND ON direct filesystem access, local registry
 visibility, or live quota visibility.** 你若讀不到，就不要假裝讀到了。
 
-## 2. 六階段路由
+## 2. Control plane ≠ workload plane
+
+**你是 Operational Router 時，先問一句：這一步是在 route 這個 task，還是在解它？**
+是後者就停下來派工，不要自己做。一次真實 incident：長駐的 Router
+（`codex/gpt-5.6-luna/max`）連續跑了約 25 分鐘的 repository 調查、資料核對與
+154 個測試的 regression run，全程沒有派工、沒有 dispatch identity attestation。
+這正是本節要擋的模式——保留 quota（見 Router capacity reserve）不等於保留了
+執行邊界，兩者是不同的失效模式。
+
+**Direct-allowed（bounded control-plane probe）：** `git status`/`rev-parse`、
+確認 branch/HEAD/worktree、讀一份 handoff/policy 文件、為了 classification
+檢視少量路徑、檢視 resource availability、驗證 worker 結果、dispatch 前一兩個
+範圍明確的命令。**缺陷不是「用了工具」，是「調查變成 worker 的量體與時長」。**
+
+**Dispatch-required（worker-shaped，落在既有 slot，不新增 slot 架構）：**
+
+```text
+broad discovery         → LONG_CONTEXT_DISCOVERY
+implementation          → DEFAULT_IMPLEMENTER / STRONG_IMPLEMENTER
+regression / test 執行  → REGRESSION_HUNTER
+domain reasoning        → DEEP_REASONER
+背景 terminal 做 domain 工作 → 一律違規，與哪個 slot 無關
+```
+
+主判準是語意，不是數字：
+
+```text
+The Router MUST dispatch when the next material step primarily advances the
+domain task rather than routing/validating the task.
+```
+
+反覆的大範圍 probe、超出簡短探查應有時間、命令輸出被用來解題而非決定怎麼
+route——這些是輔助稽核訊號，會被記錄，但不是唯一判準。
+
+**只有實際的 `ROUTER` slot** 享有 direct-allowed 豁免；`DEEP_REASONER` 也標
+`role: ROUTER`，但它是被派工的 worker，不因為 role tag 就變成控制面。
+
+找不到合格 worker（reserve 排除、無 eligible provider、identity 建立不了、
+permission 擋下）時，回既有的 `ROUTING_UNAVAILABLE` / `RESOURCE_BLOCKED` /
+`PERMISSION_BLOCKED` / human gate——**不是 Router 自己做**。Reserve 排除 Terra
+/Sol/一般 Luna worker 後，Router 自己接手同一份工作，額度照樣從同一個 pool
+扣掉，這是 `ROUTER_RESERVE_SELF_CONSUMPTION`，同樣禁止。
+
+Human 可以明確要求「這次直接做，不要派工」：記
+`router_execution_source: HUMAN_EXPLICIT_OVERRIDE`，綁定 current task id 與
+instruction revision；換一個 task 就要重新取得，不延續。
+
+完整語意見 [`WORKFLOW_POLICY.md`](../../policies/WORKFLOW_POLICY.md) 的
+Operational Router execution boundary，reserve 交互見
+[`RESOURCE_AWARE_ROUTING.md`](../../policies/RESOURCE_AWARE_ROUTING.md) 的
+Router capacity reserve。
+
+## 3. 六階段路由
 
 ```text
 classify -> slot -> overlay -> candidate -> contract -> dispatch
@@ -59,7 +111,7 @@ classify -> slot -> overlay -> candidate -> contract -> dispatch
 7. **dispatch** — 逐字命令，**在命令列明確傳入 model、reasoning、sandbox 與
    approval 旗標**。散文式的權限或模型宣告會被 worker 的本機設定靜默覆蓋。
 
-## 3. Concurrency
+## 4. Concurrency
 
 預設 `SEQUENTIAL`。改為 `PARALLEL_INDEPENDENT` 前，
 [`CONCURRENCY_POLICY.md`](../../policies/CONCURRENCY_POLICY.md) 的五項檢查必須全為是。
@@ -67,7 +119,7 @@ classify -> slot -> overlay -> candidate -> contract -> dispatch
 
 同一條 implementation chain 留在同一 worktree。fresh session 不等於 fresh worktree。
 
-## 4. Review
+## 5. Review
 
 `verification_need` 為 `independent` 或 `adversarial` 時，reviewer 的 **provider 與
 model family 都必須**與 implementer 不同。找不到 disjoint 候選就回 `BLOCKED`，
@@ -79,7 +131,7 @@ selection authority；它必須接收已解析的 workflow contract，不能自�
 Current human instruction 才能產生 `HUMAN_EXPLICIT_OVERRIDE`；一次完成工作的
 `HUMAN_RETROACTIVE_ACCEPTANCE` 只留在 audit history，不會擴充 registry。
 
-## 5. 執行中：等待、權限、max turns
+## 6. 執行中：等待、權限、max turns
 
 **慢不是壞。** 輪詢逾時、總執行時間長、terminal 安靜、還沒給結論——四者都不是失敗，
 不得回 `BLOCKED`。
@@ -130,7 +182,7 @@ max turns 都不是 `PERMISSION_BLOCKED`。
 Permission ceiling 的能力分解與 Execution lifecycle semantics；命令細節見
 [`OFFICIAL_COMMANDS.md`](../../references/OFFICIAL_COMMANDS.md)。
 
-## 6. Continuation 與 session cleanup
+## 7. Continuation 與 session cleanup
 
 **Resume 前先比對 human intent，不是先看 worker 還活著沒。** 一次真實 cycle 曾經
 續跑舊 task，即使新的 human instruction 早已要求不同的 task——worker 與 reviewer
@@ -182,7 +234,7 @@ Continuation freshness 與 Session lifecycle and cleanup；目前 Orca 沒有
 per-terminal close/list 的已驗證命令，實際限制見
 [`OFFICIAL_COMMANDS.md`](../../references/OFFICIAL_COMMANDS.md)。
 
-## 7. 停止
+## 8. 停止
 
 `BLOCKED` 必須附 reason code：`CONFIG_INVALID`、`ROUTING_UNAVAILABLE`、
 `POLICY_BLOCKED`、`RESOURCE_BLOCKED`、`PERMISSION_BLOCKED`。
@@ -194,7 +246,7 @@ auth/RBAC/RLS、privileged boundary、production deploy、secrets/security confi
 
 `failed_repair_count >= max_repair_attempts` 時升級或停止。初次 attempt 不算 repair。
 
-## 8. 回報（Worker → Operational Router）
+## 9. 回報（Worker → Operational Router）
 
 ```text
 TASK_RESULT
@@ -222,7 +274,7 @@ source_summary:
 `DISPATCH_IDENTITY_MATCH`。
 讀不到 quota 就整段 `UNKNOWN`——**禁止為了填滿欄位而猜測**。
 
-## 9. Handback（Operational Router → Strategic Router）
+## 10. Handback（Operational Router → Strategic Router）
 
 回報鏈固定為：
 
@@ -281,7 +333,7 @@ provider conversation ID。
 current project handoff。改到 durable state 時先更新 handoff，再用 `HANDOFF_UPDATE`
 指出改了哪裡。
 
-## 10. 改動這個 pack 之前
+## 11. 改動這個 pack 之前
 
 命令範例以本機 `--help` 為準，見
 [`OFFICIAL_COMMANDS.md`](../../references/OFFICIAL_COMMANDS.md)。

@@ -4,9 +4,11 @@ import { readFile } from "node:fs/promises";
 import { parse } from "yaml";
 import {
   attemptResume,
+  attestDispatchIdentity,
   budgetExpiryOpportunity,
   canonicalFingerprint,
   canonicalContinuationFacts,
+  checkReasoningDispatch,
   parseRelativeDuration,
   refreshRequired,
   relativeResetAt,
@@ -17,6 +19,7 @@ import {
   classifyCommand,
   classifyExecutionState,
   classifyPermissionRequest,
+  classifyRouterExecution,
   classifySessionCleanup,
   normalizePermissionCeiling,
   conservationPressure,
@@ -42,6 +45,8 @@ import {
   validateRegistry,
   validateResourceState,
   validateRepository,
+  validateRouterExecutionCases,
+  validateRouterExecutionRecord,
   validateRoutingCases,
 } from "../scripts/validate-policy-pack.mjs";
 
@@ -2721,7 +2726,7 @@ test("continuation binding and session lifecycle fields stay non-sensitive and r
   // only the smallest possible cross-reference was asked for.
   assert.ok(!/^CONTINUATION_/m.test(strategicReturn), "STRATEGIC_RETURN must not gain a new top-level field for continuation freshness");
 
-  assert.match(skill, /## 6\. Continuation 與 session cleanup/);
+  assert.match(skill, /## \d+\. Continuation 與 session cleanup/);
   assert.deepEqual(validateMarkdownLinks(skill, { path: "skills/orca-multi-agent-dev/SKILL.md", root: process.cwd() }), []);
 });
 
@@ -2999,4 +3004,256 @@ test("router capacity reserve is documented in exactly one place and referenced,
     resource.includes("router_reserve_override") && /不是\*\*新的授權機制/.test(resource),
     "router_reserve_override must be documented as an audit label, not a new authorisation channel",
   );
+});
+
+/* ------------------------------------------------------------------------ *
+ * Operational Router execution boundary
+ *
+ * The incident this hardening answers: a long-lived Operational Router
+ * (codex/gpt-5.6-luna/max) spent roughly 25 minutes performing repository
+ * discovery, data reconciliation, and a 154-test regression run directly, in
+ * a live Company Platform session, with zero worker dispatch and zero
+ * dispatch identity attestation. classifyRouterExecution() is the pure
+ * classifier this section adds; these tests cover what the YAML cases
+ * cannot - composition with Router capacity reserve, and proof that exact
+ * dispatch identity machinery is untouched.
+ * ------------------------------------------------------------------------ */
+
+const BOUNDARY_NOW = "2026-09-03T12:01:00Z";
+
+test("router capacity reserve cannot be defeated by the Router absorbing the suppressed workload itself", async () => {
+  const registryText = await readFile("policies/MODEL_REGISTRY.yaml", "utf8");
+  const registry = parse(registryText);
+  const tierOrder = registry.capability_tier_order;
+  const slot = registry.capability_slots.STRONG_IMPLEMENTER;
+
+  // Required case 4 (from the Router-reserve task) and 7 (from this one),
+  // composed: the classifier says this is worker-shaped work, and selecting
+  // a candidate for it must not quietly hand the reserved pool back to
+  // itself just because the classifier said "dispatch required".
+  const classification = classifyRouterExecution({ intent: "IMPLEMENTATION" });
+  assert.equal(classification.router_execution_decision, "DISPATCH_REQUIRED");
+  assert.equal(classification.dispatch_slot, "IMPLEMENTATION");
+
+  const reserved = {
+    state: "GREEN", available: true, source: "ORCA_RUNTIME", checked_at: "2026-09-03T12:00:00Z",
+    weekly_window: { remaining_ratio: 0.09, reset_at: "2026-09-10T12:00:00Z" },
+  };
+  const healthyClaude = {
+    state: "GREEN", available: true, source: "ORCA_RUNTIME", checked_at: "2026-09-03T12:00:00Z",
+    weekly_window: { remaining_ratio: 0.9, reset_at: "2026-09-10T12:00:00Z" },
+  };
+
+  // Required case 8: an eligible alternative provider exists -> dispatch it,
+  // not Codex/Router.
+  const withAlternative = selectCandidate(slot, { codex: reserved, claude: healthyClaude }, tierOrder, {
+    now: BOUNDARY_NOW,
+    taskRisk: "medium",
+    activeRouterResourceKey: "codex",
+  });
+  assert.equal(withAlternative.status, "SELECTED");
+  assert.notEqual(withAlternative.candidate.provider, "codex");
+
+  // Required case 9: no eligible alternative exists -> BLOCKED, never a
+  // fallback to Codex/Router self-execution. Every acceptable outcome here
+  // is an existing, honest blocked/gate code - which one fires is decided by
+  // the pre-existing selection algorithm, not by this test.
+  const unavailable = { state: "GREEN", available: false, source: "ORCA_RUNTIME", checked_at: "2026-09-03T12:00:00Z" };
+  const noAlternative = selectCandidate(slot, { codex: reserved, claude: unavailable, antigravity: { pools: { gemini: unavailable } } }, tierOrder, {
+    now: BOUNDARY_NOW,
+    taskRisk: "medium",
+    activeRouterResourceKey: "codex",
+  });
+  assert.equal(noAlternative.status, "BLOCKED");
+  assert.ok(
+    ["ROUTING_UNAVAILABLE", "RESOURCE_BLOCKED", "POLICY_BLOCKED", "CONFIG_INVALID"].includes(noAlternative.code),
+    `expected an honest blocked code, got ${noAlternative.code}`,
+  );
+  // Critically: the Codex candidate itself is not silently returned as
+  // SELECTED just because nothing else qualifies.
+  assert.notEqual(noAlternative.status, "SELECTED");
+});
+
+test("only the actual ROUTER slot gets the control-plane exemption, using real registry slot names", async () => {
+  const registryText = await readFile("policies/MODEL_REGISTRY.yaml", "utf8");
+  const registry = parse(registryText);
+
+  // Required case 12, grounded in the shipped registry rather than a
+  // hypothetical: DEEP_REASONER really does carry role: ROUTER.
+  assert.equal(registry.capability_slots.DEEP_REASONER.role, "ROUTER");
+  assert.equal(registry.capability_slots.ROUTER.role, "ROUTER");
+
+  const forTheRouterSlot = classifyRouterExecution({ intent: "CONTROL_PLANE_PROBE" }, { isRouterSlot: true });
+  assert.equal(forTheRouterSlot.router_execution_decision, "DIRECT_ALLOWED");
+
+  // DEEP_REASONER's role tag alone must not be read as "this is the Router".
+  // A caller resolving DEEP_REASONER must pass isRouterSlot: false explicitly.
+  const forDeepReasoner = classifyRouterExecution({ intent: "CONTROL_PLANE_PROBE" }, { isRouterSlot: false });
+  assert.equal(forDeepReasoner.router_execution_decision, "DISPATCH_REQUIRED");
+  assert.equal(forDeepReasoner.router_execution_class, null);
+});
+
+test("exact dispatch identity and reasoning-dispatch rules are unchanged by this hardening", () => {
+  // Required case 15. This hardening adds a pre-dispatch classification gate;
+  // it must not touch how a dispatch, once decided, is verified.
+  const attestation = attestDispatchIdentity(
+    { provider: "codex", model: "gpt-5.6-luna", model_family: "gpt-5.6", reasoning_effort: "max" },
+    { provider: "codex", model: "gpt-5.6-luna", model_family: "gpt-5.6", reasoning_effort: "max" },
+  );
+  assert.equal(attestation.attestation_result, "DISPATCH_IDENTITY_MATCH");
+
+  const mismatch = attestDispatchIdentity(
+    { provider: "codex", model: "gpt-5.6-terra", model_family: "gpt-5.6", reasoning_effort: "high" },
+    { provider: "codex", model: "gpt-5.6-terra", model_family: "gpt-5.6", reasoning_effort: "max" },
+  );
+  assert.equal(mismatch.attestation_result, "DISPATCH_CONTRACT_MISMATCH");
+
+  const dispatch = checkReasoningDispatch({
+    provider: "codex",
+    expected: { model: "gpt-5.6-luna", model_family: "gpt-5.6", reasoning_effort: "max" },
+    command: "codex exec -m gpt-5.6-luna -c 'model_reasoning_effort=\"max\"' -s workspace-write --color never -o out -",
+    actual: { model: "gpt-5.6-luna", model_family: "gpt-5.6", reasoning_effort: "max" },
+  });
+  assert.equal(dispatch.result, "DISPATCH_IDENTITY_MATCH");
+});
+
+test("router execution class/decision pairing is validated for internal consistency", () => {
+  // Every result classifyRouterExecution can actually produce must itself
+  // pass the consistency checker - the classifier cannot emit a record its
+  // own validator would reject.
+  const observations = [
+    { intent: "CONTROL_PLANE_PROBE" },
+    { intent: "BROAD_DISCOVERY" },
+    { intent: "IMPLEMENTATION" },
+    { intent: "REGRESSION_TEST_EXECUTION" },
+    { intent: "DEEP_REASONING" },
+    { intent: "IMPLEMENTATION", current_task_id: "t", current_instruction_revision: "r", human_override: { task_id: "t", instruction_revision: "r" } },
+  ];
+  for (const observation of observations) {
+    const result = classifyRouterExecution(observation);
+    const record = { ...result, task_id: observation.current_task_id, instruction_revision: observation.current_instruction_revision, human_override: observation.human_override };
+    assert.deepEqual(validateRouterExecutionRecord(record), [], `classifyRouterExecution(${JSON.stringify(observation)}) produced an inconsistent record`);
+  }
+
+  // And the "not the ROUTER slot" result is consistent too, even though its
+  // class is null.
+  const notRouter = classifyRouterExecution({ intent: "CONTROL_PLANE_PROBE" }, { isRouterSlot: false });
+  assert.deepEqual(validateRouterExecutionRecord({ ...notRouter, dispatch_slot: "LONG_CONTEXT_DISCOVERY" }), []);
+});
+
+test("repository router execution cases all conform to the executable semantics", async () => {
+  const cases = parse(await readFile("tests/router-execution-cases.yaml", "utf8"));
+  const names = new Set(cases.cases.map(({ name }) => name));
+
+  for (const required of [
+    "git_status_and_handoff_read_is_control_plane",
+    "one_narrow_lookup_for_classification_is_control_plane",
+    "repo_wide_source_archaeology_requires_discovery_dispatch",
+    "code_modification_requires_implementation_dispatch",
+    "broad_regression_suite_requires_regression_hunter_dispatch",
+    "repeated_iterations_escalate_a_declared_probe",
+    "human_explicit_override_permits_direct_execution",
+    "stale_override_from_a_different_task_does_not_carry_forward",
+    "deep_reasoner_role_tag_confers_no_control_plane_exemption",
+    "reviewer_verification_after_worker_returns_is_control_plane",
+    "background_terminal_for_domain_work_is_a_boundary_violation",
+  ]) {
+    assert.ok(names.has(required), `router execution cases are missing ${required}`);
+  }
+
+  assert.ok(cases.cases.length >= 15, "router execution cases must cover at least the required scenarios");
+  assert.deepEqual(validateRouterExecutionCases(cases), []);
+});
+
+test("router execution case validator rejects a case whose expectation drifts", () => {
+  const drifted = {
+    cases: [
+      {
+        name: "wrong_decision",
+        kind: "router_execution",
+        why: "a fixture asserting the wrong thing must be caught",
+        observation: { intent: "IMPLEMENTATION" },
+        expect: { router_execution_decision: "DIRECT_ALLOWED" },
+      },
+    ],
+  };
+  assert.match(validateRouterExecutionCases(drifted).join("\n"), /expected router_execution_decision "DIRECT_ALLOWED", got "DISPATCH_REQUIRED"/);
+
+  const badRecord = {
+    cases: [
+      {
+        name: "wrong_validity",
+        kind: "contract_consistency",
+        why: "a fixture claiming a broken record is valid must be caught",
+        record: { router_execution_class: "WORKER_IMPLEMENTATION", router_execution_decision: "DIRECT_ALLOWED", router_execution_source: "POLICY_DEFAULT" },
+        expect: { valid: true },
+      },
+    ],
+  };
+  assert.match(validateRouterExecutionCases(badRecord).join("\n"), /expected valid true, got false/);
+
+  assert.deepEqual(validateRouterExecutionCases({ cases: [] }), ["router execution cases: expected a non-empty `cases` list"]);
+});
+
+test("the Operational Router execution boundary is owned in one place and cross-referenced, not duplicated", async () => {
+  const workflow = await readFile("policies/WORKFLOW_POLICY.md", "utf8");
+  const resource = await readFile("policies/RESOURCE_AWARE_ROUTING.md", "utf8");
+  const routing = await readFile("policies/MODEL_ROUTING_POLICY.md", "utf8");
+  const contract = await readFile("templates/ROUTER_EXECUTION_CONTRACT_TEMPLATE.md", "utf8");
+
+  assert.match(workflow, /## Operational Router execution boundary/);
+  assert.ok(
+    workflow.includes("The Operational Router is control-plane capacity, not the default workload executor."),
+    "the core invariant must be stated where the rule lives",
+  );
+
+  // Every class/decision/source value must be nameable in the normative text.
+  for (const token of [
+    "CONTROL_PLANE", "WORKER_DISCOVERY", "WORKER_IMPLEMENTATION", "WORKER_REGRESSION", "WORKER_REASONING",
+    "DIRECT_ALLOWED", "DISPATCH_REQUIRED", "HUMAN_OVERRIDE", "POLICY_DEFAULT", "HUMAN_EXPLICIT_OVERRIDE",
+  ]) {
+    assert.ok(workflow.includes(token), `workflow policy is missing ${token}`);
+  }
+
+  // The semantic trigger, stated as the primary rule, with numeric
+  // heuristics explicitly framed as advisory.
+  assert.ok(
+    workflow.includes("The Router MUST dispatch when the next material step primarily advances the"),
+    "the semantic escalation trigger must be stated verbatim",
+  );
+  assert.match(workflow, /數字只是輔助訊號/);
+  assert.match(workflow, /不得只用「超過 N 次命令」這種脆弱的單一數字規則/);
+
+  // Slot mapping points at the existing table rather than inventing one.
+  assert.ok(workflow.includes("MODEL_ROUTING_POLICY.md"), "workflow policy must point at the existing Slot decision table");
+  assert.match(workflow, /不新增平行的 slot 架構/);
+  assert.match(routing, /不新增平行的 slot 架構/);
+
+  // Reserve self-consumption is owned by RESOURCE_AWARE_ROUTING.md and only
+  // cross-referenced from the boundary section.
+  assert.match(resource, /### Self-consumption：`ROUTER_RESERVE_SELF_CONSUMPTION`/);
+  assert.ok(
+    resource.includes("Router Capacity Reserve MUST NOT be defeated by the Router simply doing the"),
+    "the resource policy must state the self-consumption invariant",
+  );
+  // The boundary section names the code so it is discoverable from either
+  // direction, but does not restate its meaning - that stays single-owned.
+  assert.match(workflow, /ROUTER_RESERVE_SELF_CONSUMPTION/);
+  assert.ok(
+    !workflow.includes("Router Capacity Reserve MUST NOT be defeated by the Router simply doing the"),
+    "the self-consumption invariant sentence must not be duplicated in the workflow policy",
+  );
+
+  // The contract template carries the audit fields and states the same
+  // consistency rule the validator enforces.
+  for (const field of ["router_execution_class", "router_execution_decision", "router_execution_source", "dispatch_slot", "human_override"]) {
+    assert.ok(contract.includes(field), `contract template cannot express ${field}`);
+  }
+
+  // "Do not change" constraints: capability tiers, stages, quota thresholds,
+  // model rankings and provider probes are untouched by this hardening.
+  const registryText = await readFile("policies/MODEL_REGISTRY.yaml", "utf8");
+  for (const leaked of ["router_execution_class", "router_execution_decision", "ROUTER_RESERVE_SELF_CONSUMPTION", "CONTROL_PLANE_PROBE"]) {
+    assert.ok(!registryText.includes(leaked), `the model registry must not carry ${leaked}`);
+  }
 });

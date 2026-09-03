@@ -1,6 +1,6 @@
 # Resource-Aware Routing Policy
 
-Version: `0.6`
+Version: `0.7`
 Status: normative
 
 這份文件是 **resource state、freshness、quota window role（BURST / BUDGET）、conservation pressure、reset proximity / stranded capacity、候選重排，以及 Router capacity reserve** 的 normative owner。
@@ -760,6 +760,34 @@ router_reserve_override: true      # 僅在此次 override 實際使用了被保
 下一個 task 若沒有自己的 current override，reserve 照常評估。一個 task 之前的
 override 帶到後續 task 上，是既有的 `HUMAN_OVERRIDE_STALE` 情況，語意由
 `MODEL_ROUTING_POLICY.md` 定義，此處不重複。
+
+### Self-consumption：`ROUTER_RESERVE_SELF_CONSUMPTION`
+
+**`Router Capacity Reserve MUST NOT be defeated by the Router simply doing the
+worker task itself.`**
+
+Reserve 排除的是「自主非 Router 派工對同一 pool 的消耗」，不是「這份工作」——如果
+Router 排除了 Terra / Sol / 一般 Luna worker，卻自己（同一個 Luna-max Router
+session）接手執行同一份 worker-shaped 工作，額度仍然從同一個被保護的 pool 扣掉，
+只是換了名字繼續消耗，reserve 形同虛設。這個繞過模式的名稱是
+`ROUTER_RESERVE_SELF_CONSUMPTION`。
+
+判定與處置：
+
+- 某段工作依 [`WORKFLOW_POLICY.md`](WORKFLOW_POLICY.md) 的 *Operational Router
+  execution boundary* 被歸類為 worker-shaped（`router_execution_class` 為任一
+  `WORKER_*`），且該工作原本會落在目前處於 reserve band 的 pool 上時，
+  Router **不得**改為自己直接執行來規避排除。
+- 這與 Human override 不同：Human override 是 human 在 current instruction
+  明確授權的例外，會記 `router_execution_source: HUMAN_EXPLICIT_OVERRIDE` 且
+  綁定 task id / instruction revision；`ROUTER_RESERVE_SELF_CONSUMPTION` 是
+  **沒有這個授權**、Router 自行決定繞過的情況，屬於違規，不是合法路徑。
+- 找不到 eligible 的替代 provider/pool 時，正確結果是既有的
+  `ROUTING_UNAVAILABLE` / `RESOURCE_BLOCKED` / `PERMISSION_BLOCKED` / human
+  gate（哪一個由既有規則決定，此處不重複），**不是**「Router 自己做」。
+- Execution class 的判定、control-plane probe 與 worker-shaped 工作的邊界，
+  唯一 owner 是 `WORKFLOW_POLICY.md` 的 *Operational Router execution
+  boundary*，本節不重複定義，只重申它與 reserve 的交互不得被繞過。
 
 ### 與既有 band / UNKNOWN 語意的關係
 

@@ -19,7 +19,7 @@ SKILL → WORKFLOW_POLICY → CONCURRENCY_POLICY → MODEL_ROUTING_POLICY
 
 | Owner | 負責 | 不負責 |
 |---|---|---|
-| `WORKFLOW_POLICY.md` | 角色、precedence、lifecycle、execution lifecycle、continuation freshness、session lifecycle/cleanup、handback、gate、permission ceiling 語意、cross-repo | 具體模型名稱、blocked reason code 語意 |
+| `WORKFLOW_POLICY.md` | 角色、precedence、lifecycle、execution lifecycle、continuation freshness、session lifecycle/cleanup、**Operational Router execution boundary**、handback、gate、permission ceiling 語意、cross-repo | 具體模型名稱、blocked reason code 語意、Router capacity reserve 的門檻與 band 定義 |
 | `CONCURRENCY_POLICY.md` | concurrency mode 與啟用條件 | provider 選擇 |
 | `MODEL_ROUTING_POLICY.md` | task classification、slot 選擇、candidate 演算法、escalation | 即時 quota 數值 |
 | `MODEL_REGISTRY.yaml` | slot 的 ordered candidates、能力下限、repair budget | stable workflow 規則 |
@@ -35,7 +35,7 @@ SKILL → WORKFLOW_POLICY → CONCURRENCY_POLICY → MODEL_ROUTING_POLICY
 | Role | 權限 | 禁止 |
 |---|---|---|
 | Strategic router | 需求拆解、task classification、role/slot/`minimum_tier` 指定、concurrency mode、gate 判定 | 代替 human 通過 human gate；宣稱已驗證它讀不到的檔案狀態 |
-| Operational router (Orca) | 驗證 repo/HEAD/working tree、讀 registry、套 resource overlay、執行 candidate 演算法、組出 dispatch command、建立/重用 worktree 與 terminal、收斂結果 | 重新解讀需求、改寫 contract、降低 permission ceiling |
+| Operational router (Orca) | 驗證 repo/HEAD/working tree、讀 registry、套 resource overlay、執行 candidate 演算法、組出 dispatch command、建立/重用 worktree 與 terminal、收斂結果、bounded control-plane probe | 重新解讀需求、改寫 contract、降低 permission ceiling、**在非 bounded probe 範圍內直接執行 worker-shaped 工作**（見下方 *Operational Router execution boundary*） |
 | Worker | 在 allowed changes 範圍內實作與驗證 | 擴大範圍、修改驗收標準、commit/push（除非 contract 明示） |
 | Reviewer | 獨立檢查 filesystem、git diff 與 tests | 只讀 worker 摘要就判定通過 |
 | Human (authoritative owner) | 架構決策、gate 放行、風險承擔 | — |
@@ -69,6 +69,167 @@ Reviewer 預設 read-only，並且**必須直接檢查 filesystem、`git diff` �
 Operational router 回傳 `BLOCKED` 時，交還給 strategic router 或 human 重新決策，不得自行放寬 `minimum_tier` 或 independent review 的 disjointness。
 
 Strategic router 也不執行 lifecycle 的 `verify` 階段——它不得依賴自己能確認 HEAD 或 working tree。該階段一律由 operational router 執行並回報。
+
+## Operational Router execution boundary
+
+**`Control plane ≠ workload plane.`** 這一節是「Operational Router 何時必須停止
+自己調查、改為派工」的 normative owner。它處理的是**執行內容的種類**，與
+Execution lifecycle semantics（執行進度觀察）、Router capacity reserve（quota 保護）
+是三個不同層次：慢不慢是進度問題，額度夠不夠是資源問題，**這一節管的是「這件事
+本來就不該由 Router 自己做」**。
+
+### 核心不變式
+
+```text
+The Operational Router is control-plane capacity, not the default workload executor.
+```
+
+一次真實 incident：長駐的 Operational Router（`codex / gpt-5.6-luna / reasoning: max`）
+在同一個 session 內持續執行數十分鐘的 repository 調查、資料核對與驗證測試，
+全程沒有派工、沒有 dispatch identity attestation、也沒有 reviewer——這正是本節要
+排除的模式。Router 保留 quota（見 Router capacity reserve）不代表它保留了
+**執行邊界**；兩者是分開的失效模式。
+
+### Direct-allowed：bounded control-plane probe
+
+Router 可以直接執行的範圍，僅限於**建立 task state、解析 routing 前提、驗證
+handoff/baseline、取得 resource state、驗證 worker/reviewer 結果、綜合下一步**
+所需的**小範圍探查**。例子：
+
+- `git status` / `git rev-parse` / 確認 branch、HEAD、worktree 狀態；
+- 讀**一份**authoritative handoff 或 policy 文件；
+- 為了 classification 檢視少量、有明確目標的路徑；
+- 檢視 provider/resource availability；
+- 驗證 worker 的結果（reviewer 場景下的 bounded verification）；
+- dispatch 前一兩個範圍明確的命令；
+- bounded synthesis / evidence confirmation。
+
+**這裡的缺陷從來不是「用了工具」，而是「調查變成 worker 的量體與時長」。**
+不得因為新增這一節就反過來理解成 Router 完全不能碰工具。
+
+### Dispatch-required：worker-shaped 訊號
+
+以下任一種**內容**出現時，Router 必須停止直接執行、改為派工到既有 slot——
+**不新增平行的 slot 架構**，對應關係見
+[`MODEL_ROUTING_POLICY.md`](MODEL_ROUTING_POLICY.md) 的 Slot decision table：
+
+| Worker-shaped 訊號 | 例子 | 對應既有 slot |
+|---|---|---|
+| Broad discovery | repo-wide 搜尋、跨 repo inventory、大範圍 source archaeology、long-context 證據蒐集 | `LONG_CONTEXT_DISCOVERY` |
+| Implementation | 改程式碼、撰寫 migration、refactor、功能實作、修測試 | `DEFAULT_IMPLEMENTER` / `STRONG_IMPLEMENTER`（依 Stage admission） |
+| Regression / test execution | 跑大範圍測試、反覆 test-debug 循環、regression hunting | `REGRESSION_HUNTER` |
+| Domain reasoning toward a solution | 針對 domain 問題本身做架構/語意推理（非 routing 判斷本身） | `DEEP_REASONER` |
+| Long-running investigation | 一連串工具呼叫，其目的是解決 domain task，而不是為了 route 它 | 依內容對應上列其一 |
+| Background workload | 由 Router 開一個背景 terminal 繼續做 domain 工作，自己維持 active | **一律違規**，與哪個 slot 無關——見下方 |
+
+**Background workload 是獨立的違規類別。** 即使該背景 terminal 最終會被歸類成
+discovery 或 implementation，「Router 自己開背景 terminal 做 domain 工作、自己
+維持 active」本身就是 dispatch boundary 違反：那個背景 terminal 本身就應該是
+一次帶 contract 的 dispatch，不是 Router 的側路徑。
+
+### Escalation trigger（語意優先，數字只是輔助訊號）
+
+```text
+The Router MUST dispatch when the next material step primarily advances the
+domain task rather than routing/validating the task.
+```
+
+這是判斷的**主要**依據；不得只用「超過 N 次命令」這種脆弱的單一數字規則。以下是
+**輔助的稽核訊號**，用來偵測「明明在解 domain task，卻還自稱是 probe」的情況，
+本身不是唯一判準：
+
+- 連續的大範圍搜尋反覆執行；
+- 直接工作量持續超出一個簡短的 control-plane probe 應有的時間窗；
+- 多批命令，且其輸出被用來解決 task 本身，而不是用來決定怎麼 route；
+- 背景 terminal 在做 domain 工作；
+- 從「驗證狀態」悄悄轉成「尋找解法」。
+
+操作性指引（非 parser hard limit，可由 contract 覆寫）：
+
+```yaml
+router_probe_guardrails:
+  iteration_count: 3        # 同一批 probe 反覆超過這個次數，視為訊號
+  elapsed_ms: 120000         # 單一 control-plane probe 持續超過這個時間，視為訊號
+```
+
+任一輔助訊號觸發時，連同語意判斷一起記錄，不得沉默地讓 Router 續做——這是
+audit signal，觸發後仍要走下方的分類與派工，不是額外的自動 BLOCKED。
+
+### Router execution class / decision
+
+Contract 與稽核記錄至少表達：
+
+```yaml
+router_execution_class:
+  # CONTROL_PLANE | WORKER_DISCOVERY | WORKER_IMPLEMENTATION
+  # | WORKER_REGRESSION | WORKER_REASONING
+router_execution_decision:
+  # DIRECT_ALLOWED | DISPATCH_REQUIRED | HUMAN_OVERRIDE
+router_execution_source:
+  # POLICY_DEFAULT | HUMAN_EXPLICIT_OVERRIDE
+```
+
+`router_execution_class` 為 `CONTROL_PLANE` 時，`router_execution_decision`
+只能是 `DIRECT_ALLOWED` 或（human override 情境下）`HUMAN_OVERRIDE`。
+`router_execution_class` 為任一 `WORKER_*` 時，`router_execution_decision`
+只能是 `DISPATCH_REQUIRED`，除非有效的 current human override 存在。
+一筆 `WORKER_*` class 卻記 `DIRECT_ALLOWED`、且沒有對應 override 的記錄，
+本身就是不合法的 contract 狀態，conformance checker 會標為 finding。
+
+### 只有實際的 ROUTER slot 享有這個豁免
+
+**`role: ROUTER` 這個 role tag 不等於「這是承載 active Operational Router 的
+slot」**——`DEEP_REASONER` 也標 `role: ROUTER`（用於 architecture reasoning
+dispatch），但它是一次被派工的 worker，不是長駐的控制面。只有 registry 中
+名為 `ROUTER` 的 slot 本身、且目前確實是那個長駐 session，才適用本節的
+control-plane 豁免。這與 [`RESOURCE_AWARE_ROUTING.md`](RESOURCE_AWARE_ROUTING.md)
+Router capacity reserve 的 *Active Router identity* 是同一條規則，這裡不重複。
+
+### Human override
+
+Human 可以明確要求「這次直接在 Router session 做，不要派工」。此時：
+
+```yaml
+router_execution_source: HUMAN_EXPLICIT_OVERRIDE
+router_reserve_override: true   # 若 Router capacity reserve 當下生效
+```
+
+Override 必須綁定 **current task id 與 instruction revision**，與
+[`MODEL_ROUTING_POLICY.md`](MODEL_ROUTING_POLICY.md) 的 `HUMAN_EXPLICIT_OVERRIDE`
+/ `HUMAN_OVERRIDE_STALE` 是同一套 staleness 語意，不重新定義一份。**不綁定 task
+的舊 override 不得延續到下一個 task**；task 一換，override 必須重新取得。
+
+### 找不到合格 worker 時：回既有 blocked/gate 結果，不是自己做
+
+`router_execution_decision: DISPATCH_REQUIRED` 之後，若：
+
+- 找不到 eligible model/provider；
+- resource reserve 排除了相關 pool；
+- exact dispatch identity 無法確立；
+- permission constraint 擋下了 worker；
+
+一律回既有的 `ROUTING_UNAVAILABLE` / `RESOURCE_BLOCKED` / `PERMISSION_BLOCKED` /
+human gate 結果（語意分別由 `MODEL_ROUTING_POLICY.md` 與上方既有章節定義，此處
+不重複）。**「Router 自己做」不是這些情況的自動 fallback。** 這與 Router capacity
+reserve 的關係見下方一節。
+
+### 與 Router capacity reserve 的交互
+
+Router capacity reserve（[`RESOURCE_AWARE_ROUTING.md`](RESOURCE_AWARE_ROUTING.md)）
+保護的是 quota；本節保護的是執行邊界。兩者必須一起看，否則 reserve 可以被繞過：
+排除了 Terra / Sol / 一般 Luna worker 卻讓 Luna-max Router 自己吃下同一份工作，
+額度依然被同一個 pool 消耗掉，只是換了個名字。這個繞過模式的名稱與完整語意
+（`ROUTER_RESERVE_SELF_CONSUMPTION`）由 `RESOURCE_AWARE_ROUTING.md` 定義，
+此處只重申：**Router capacity reserve 不得被「Router 自己做被排除的工作」這種
+方式繞過。**
+
+### Dispatch 執行方式不變
+
+本節只決定「要不要派工」，**不改變怎麼派工**。一旦判定
+`DISPATCH_REQUIRED`：選既有 slot、用既有的 human-authoritative registry、走既有
+resource acquisition、套用既有 Router capacity reserve、保留 provider + model +
+reasoning、要求 dispatch identity attestation、維持既有的 reviewer disjointness。
+**不建立第二條、不受治理的 helper path。**
 
 ## Lifecycle
 
@@ -820,6 +981,11 @@ ceiling（見上方 Permission ceiling 的能力分解）與 credential 政策�
 跨 provider 派工本身有成本：撰寫 contract、建立 terminal、獨立複核、收斂結果。**當這些開銷明顯大於直接執行該工作時，不派工。**
 
 派工在下列情況才划算：工作需要與實作者不同的獨立視角（independent review、regression hunting）、需要不同的能力層級、上下文量超出當前 session、或工作本身耗時足以攤平開銷。單純為了「用掉便宜模型」而派出瑣碎步驟是淨損失。
+
+**這一節談的是「值不值得為了獨立視角或不同能力層級而多開一次派工」，不是「Router
+自己做算不算派工」。** 判斷內容是否為 worker-shaped、Router 是否必須停止直接執行，
+由上方 *Operational Router execution boundary* 的既有規則決定，此處不因為開銷考量
+而放寬——省下派工開銷不是 Router 自己承接 worker-shaped 工作的理由。
 
 ## Cross-repo
 

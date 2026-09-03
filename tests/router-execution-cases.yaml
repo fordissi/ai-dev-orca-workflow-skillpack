@@ -1,0 +1,343 @@
+# Deterministic Operational Router execution-boundary conformance cases.
+#
+# These cases are executed by scripts/validate-policy-pack.mjs. They are a
+# conformance check on the Operational Router execution boundary section of
+# policies/WORKFLOW_POLICY.md, which stays normative: if a case and the
+# Markdown policy disagree, the case is what gets corrected.
+#
+# kind: router_execution     -> executed through classifyRouterExecution();
+#                                expects a class/decision/dispatch_slot.
+# kind: contract_consistency -> executed through validateRouterExecutionRecord();
+#                                expects whether a self-reported record is
+#                                internally consistent.
+#
+# The incident this section answers: a long-lived Operational Router
+# (codex/gpt-5.6-luna/max) spent ~25 minutes doing repository discovery, data
+# reconciliation and a 154-test regression suite directly, with no worker
+# dispatch and no dispatch identity attestation. Every "worker-shaped"
+# case below is drawn from that shape of work.
+
+version: "0.3"
+
+cases:
+
+  - name: git_status_and_handoff_read_is_control_plane
+    kind: router_execution
+    why: >-
+      Required case 1. git status, rev-parse and reading the authoritative
+      handoff are exactly the bounded probes the Router exists to perform
+      before routing - none of them advance the domain task itself.
+    observation:
+      intent: CONTROL_PLANE_PROBE
+    expect:
+      router_execution_class: CONTROL_PLANE
+      router_execution_decision: DIRECT_ALLOWED
+      dispatch_slot: null
+
+  - name: one_narrow_lookup_for_classification_is_control_plane
+    kind: router_execution
+    why: >-
+      Required case 2. A single, narrowly targeted lookup needed to classify
+      the task is the same bounded-probe shape as case 1, just for a
+      different routing prerequisite.
+    observation:
+      intent: CONTROL_PLANE_PROBE
+      iteration_count: 1
+    expect:
+      router_execution_class: CONTROL_PLANE
+      router_execution_decision: DIRECT_ALLOWED
+
+  - name: repo_wide_source_archaeology_requires_discovery_dispatch
+    kind: router_execution
+    why: >-
+      Required case 3. Repository-wide source archaeology is broad discovery,
+      the exact shape of the observed incident's opening minutes. It maps to
+      the existing LONG_CONTEXT_DISCOVERY slot, not a new one.
+    observation:
+      intent: BROAD_DISCOVERY
+    expect:
+      router_execution_class: WORKER_DISCOVERY
+      router_execution_decision: DISPATCH_REQUIRED
+      dispatch_slot: LONG_CONTEXT_DISCOVERY
+
+  - name: code_modification_requires_implementation_dispatch
+    kind: router_execution
+    why: >-
+      Required case 4. Any code edit is worker-shaped regardless of how small
+      it looks from inside the Router session.
+    observation:
+      intent: IMPLEMENTATION
+    expect:
+      router_execution_class: WORKER_IMPLEMENTATION
+      router_execution_decision: DISPATCH_REQUIRED
+      dispatch_slot: IMPLEMENTATION
+
+  - name: broad_regression_suite_requires_regression_hunter_dispatch
+    kind: router_execution
+    why: >-
+      Required case 5. Running a broad test suite as part of solving the task
+      - the observed incident's 154-test reconciliation run - is exactly
+      what REGRESSION_HUNTER exists for.
+    observation:
+      intent: REGRESSION_TEST_EXECUTION
+    expect:
+      router_execution_class: WORKER_REGRESSION
+      router_execution_decision: DISPATCH_REQUIRED
+      dispatch_slot: REGRESSION_HUNTER
+
+  - name: repeated_iterations_escalate_a_declared_probe
+    kind: router_execution
+    why: >-
+      Required case 6. The Router calls each step a "quick check", but four
+      iterations against a stated guardrail of three is the semantic pattern
+      this section names explicitly - repeated broad search iterations - and
+      the escalation is recorded, not applied silently.
+    observation:
+      intent: CONTROL_PLANE_PROBE
+      iteration_count: 4
+    expect:
+      router_execution_class: WORKER_DISCOVERY
+      router_execution_decision: DISPATCH_REQUIRED
+      dispatch_slot: LONG_CONTEXT_DISCOVERY
+      guardrail_triggered_includes: [iteration_count]
+
+  - name: sustained_elapsed_time_also_escalates_a_declared_probe
+    kind: router_execution
+    why: >-
+      The other guardrail axis: a probe that has run long past a short
+      control-plane window, even without a high iteration count, is the
+      "sustained direct workload" pattern - closer to the incident's ~25
+      minutes than any single command count would capture.
+    observation:
+      intent: CONTROL_PLANE_PROBE
+      elapsed_ms: 900000
+    expect:
+      router_execution_decision: DISPATCH_REQUIRED
+      guardrail_triggered_includes: [elapsed_ms]
+
+  - name: repo_wide_flag_escalates_even_at_low_iteration_count
+    kind: router_execution
+    why: >-
+      A single command whose own scope is repository-wide is worker-shaped
+      immediately - the guardrail does not require several iterations to
+      recognise scope that is already broad on the first call.
+    observation:
+      intent: CONTROL_PLANE_PROBE
+      iteration_count: 1
+      is_repo_wide: true
+    expect:
+      router_execution_decision: DISPATCH_REQUIRED
+      guardrail_triggered_includes: [is_repo_wide]
+
+  - name: guardrails_never_escalate_work_already_declared_worker_shaped
+    kind: router_execution
+    why: >-
+      Guardrails only escalate a step declared CONTROL_PLANE_PROBE; they are
+      not a second classification pass over work the caller already
+      correctly labelled worker-shaped.
+    observation:
+      intent: IMPLEMENTATION
+      iteration_count: 1
+    expect:
+      router_execution_class: WORKER_IMPLEMENTATION
+      router_execution_decision: DISPATCH_REQUIRED
+      dispatch_slot: IMPLEMENTATION
+
+  - name: human_explicit_override_permits_direct_execution
+    kind: router_execution
+    why: >-
+      Required case 10. The current human instruction explicitly said "do
+      this directly, do not dispatch" - task-local authority the human
+      always retains.
+    observation:
+      intent: IMPLEMENTATION
+      current_task_id: "task-42"
+      current_instruction_revision: "rev-7"
+      human_override: { task_id: "task-42", instruction_revision: "rev-7" }
+    expect:
+      router_execution_class: WORKER_IMPLEMENTATION
+      router_execution_decision: HUMAN_OVERRIDE
+      router_execution_source: HUMAN_EXPLICIT_OVERRIDE
+
+  - name: stale_override_from_a_different_task_does_not_carry_forward
+    kind: router_execution
+    why: >-
+      Required case 11. An override recorded for task-42 must not authorise
+      direct execution on task-43 - the same staleness posture as
+      HUMAN_OVERRIDE_STALE for model pins, applied to this decision instead.
+    observation:
+      intent: IMPLEMENTATION
+      current_task_id: "task-43"
+      current_instruction_revision: "rev-1"
+      human_override: { task_id: "task-42", instruction_revision: "rev-7" }
+    expect:
+      router_execution_class: WORKER_IMPLEMENTATION
+      router_execution_decision: DISPATCH_REQUIRED
+      router_execution_source: POLICY_DEFAULT
+
+  - name: stale_override_same_task_different_revision_does_not_carry_forward
+    kind: router_execution
+    why: >-
+      The narrower staleness case: same task id, but the human instruction
+      moved on to a new revision without restating the override. A revision
+      bump is exactly the kind of change continuation freshness already
+      treats as stale elsewhere in this pack; the same posture applies here.
+    observation:
+      intent: IMPLEMENTATION
+      current_task_id: "task-42"
+      current_instruction_revision: "rev-8"
+      human_override: { task_id: "task-42", instruction_revision: "rev-7" }
+    expect:
+      router_execution_decision: DISPATCH_REQUIRED
+      router_execution_source: POLICY_DEFAULT
+
+  - name: deep_reasoner_role_tag_confers_no_control_plane_exemption
+    kind: router_execution
+    why: >-
+      Required case 12. DEEP_REASONER carries role: ROUTER in the registry
+      (it is used for architecture-reasoning dispatch) but it is a dispatched
+      worker, not the long-lived control plane. Only the actual ROUTER slot
+      is exempt; a caller must say so explicitly via isRouterSlot.
+    observation:
+      intent: CONTROL_PLANE_PROBE
+    options:
+      isRouterSlot: false
+    expect:
+      router_execution_class: null
+      router_execution_decision: DISPATCH_REQUIRED
+
+  - name: reviewer_verification_after_worker_returns_is_control_plane
+    kind: router_execution
+    why: >-
+      Required case 13. Confirming a worker's result before closing the cycle
+      is bounded verification, one of the direct-allowed categories this
+      section names explicitly - it is not re-doing the worker's task.
+    observation:
+      intent: CONTROL_PLANE_PROBE
+    expect:
+      router_execution_class: CONTROL_PLANE
+      router_execution_decision: DIRECT_ALLOWED
+
+  - name: background_terminal_for_domain_work_is_a_boundary_violation
+    kind: router_execution
+    why: >-
+      Required case 14. A background terminal doing domain implementation
+      while the Router stays active is its own violation category,
+      independent of how the underlying work would otherwise classify - the
+      side channel itself is the problem.
+    observation:
+      intent: CONTROL_PLANE_PROBE
+      background_terminal: true
+    expect:
+      router_execution_class: WORKER_IMPLEMENTATION
+      router_execution_decision: DISPATCH_REQUIRED
+      dispatch_slot: IMPLEMENTATION
+      guardrail_triggered_includes: [background_terminal]
+
+  - name: background_terminal_still_yields_to_a_current_human_override
+    kind: router_execution
+    why: >-
+      Even a background-workload violation is not exempt from ordinary human
+      authority - a current, correctly bound override still permits it,
+      exactly as it would for any other worker-shaped classification.
+    observation:
+      intent: CONTROL_PLANE_PROBE
+      background_terminal: true
+      current_task_id: "task-9"
+      current_instruction_revision: "rev-1"
+      human_override: { task_id: "task-9", instruction_revision: "rev-1" }
+    expect:
+      router_execution_decision: HUMAN_OVERRIDE
+      router_execution_source: HUMAN_EXPLICIT_OVERRIDE
+
+  - name: unrecognised_intent_fails_closed_toward_dispatch
+    kind: router_execution
+    why: >-
+      An intent this classifier does not recognise must not be treated as an
+      implicit control-plane probe - that would be the exact silent-continue
+      failure mode this section exists to close off.
+    observation:
+      intent: SOMETHING_UNKNOWN
+    expect:
+      router_execution_class: null
+      router_execution_decision: DISPATCH_REQUIRED
+
+  - name: contract_worker_class_with_direct_allowed_is_inconsistent
+    kind: contract_consistency
+    why: >-
+      A contract self-reporting worker-shaped class with a DIRECT_ALLOWED
+      decision and no override is not a legal state - this is the
+      CONTRACT_VALIDATED half of enforcement catching a self-contradictory
+      record even if classifyRouterExecution was bypassed entirely.
+    record:
+      router_execution_class: WORKER_IMPLEMENTATION
+      router_execution_decision: DIRECT_ALLOWED
+      router_execution_source: POLICY_DEFAULT
+    expect:
+      valid: false
+
+  - name: contract_control_plane_direct_allowed_is_consistent
+    kind: contract_consistency
+    why: The ordinary, legal shape for a bounded control-plane probe.
+    record:
+      router_execution_class: CONTROL_PLANE
+      router_execution_decision: DIRECT_ALLOWED
+      router_execution_source: POLICY_DEFAULT
+    expect:
+      valid: true
+
+  - name: contract_worker_class_dispatch_required_needs_a_slot
+    kind: contract_consistency
+    why: >-
+      DISPATCH_REQUIRED without naming which existing slot receives the work
+      is not an auditable dispatch decision.
+    record:
+      router_execution_class: WORKER_DISCOVERY
+      router_execution_decision: DISPATCH_REQUIRED
+      router_execution_source: POLICY_DEFAULT
+    expect:
+      valid: false
+
+  - name: contract_human_override_requires_current_binding
+    kind: contract_consistency
+    why: >-
+      A record claiming HUMAN_EXPLICIT_OVERRIDE / HUMAN_OVERRIDE without an
+      override actually bound to the current task_id and instruction_revision
+      is not legal - the source and decision must be backed by the binding,
+      not merely asserted.
+    record:
+      router_execution_class: WORKER_IMPLEMENTATION
+      router_execution_decision: HUMAN_OVERRIDE
+      router_execution_source: HUMAN_EXPLICIT_OVERRIDE
+      dispatch_slot: IMPLEMENTATION
+      task_id: "task-1"
+      instruction_revision: "rev-1"
+      human_override: { task_id: "task-0", instruction_revision: "rev-0" }
+    expect:
+      valid: false
+
+  - name: contract_human_override_with_current_binding_is_consistent
+    kind: contract_consistency
+    why: The positive control for the previous case.
+    record:
+      router_execution_class: WORKER_IMPLEMENTATION
+      router_execution_decision: HUMAN_OVERRIDE
+      router_execution_source: HUMAN_EXPLICIT_OVERRIDE
+      dispatch_slot: IMPLEMENTATION
+      task_id: "task-1"
+      instruction_revision: "rev-1"
+      human_override: { task_id: "task-1", instruction_revision: "rev-1" }
+    expect:
+      valid: true
+
+  - name: contract_control_plane_cannot_claim_dispatch_required
+    kind: contract_consistency
+    why: >-
+      CONTROL_PLANE work does not require dispatch by definition; a record
+      claiming both is internally contradictory.
+    record:
+      router_execution_class: CONTROL_PLANE
+      router_execution_decision: DISPATCH_REQUIRED
+      router_execution_source: POLICY_DEFAULT
+    expect:
+      valid: false

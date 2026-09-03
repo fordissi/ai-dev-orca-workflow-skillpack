@@ -3112,6 +3112,345 @@ export function validateContinuationCases(document) {
 }
 
 /* ------------------------------------------------------------------------ *
+ * Operational Router execution boundary
+ *
+ * Control plane != workload plane. WORKFLOW_POLICY.md owns this invariant;
+ * this section only makes it executable. It answers one question -
+ * "should the Router keep doing this itself, or must it dispatch?" - and
+ * never decides HOW to dispatch: that is still selectCandidate() and the
+ * rest of MODEL_ROUTING_POLICY.md, untouched.
+ * ------------------------------------------------------------------------ */
+
+const ROUTER_EXECUTION_CLASSES = ["CONTROL_PLANE", "WORKER_DISCOVERY", "WORKER_IMPLEMENTATION", "WORKER_REGRESSION", "WORKER_REASONING"];
+const ROUTER_EXECUTION_DECISIONS = ["DIRECT_ALLOWED", "DISPATCH_REQUIRED", "HUMAN_OVERRIDE"];
+const ROUTER_EXECUTION_SOURCES = ["POLICY_DEFAULT", "HUMAN_EXPLICIT_OVERRIDE"];
+
+// What a step is FOR, not what tool it happens to call. This is the primary,
+// semantic signal - the intent categories a caller declares up front.
+const ROUTER_INTENTS = [
+  "CONTROL_PLANE_PROBE",
+  "BROAD_DISCOVERY",
+  "IMPLEMENTATION",
+  "REGRESSION_TEST_EXECUTION",
+  "DEEP_REASONING",
+  "LONG_RUNNING_INVESTIGATION",
+];
+
+// Worker-shaped signals map onto the EXISTING Slot decision table in
+// MODEL_ROUTING_POLICY.md - no parallel slot architecture. "IMPLEMENTATION"
+// intentionally names a role family, not one fixed slot: DEFAULT_IMPLEMENTER
+// vs STRONG_IMPLEMENTER is Stage admission's job, not this classifier's.
+const INTENT_EXECUTION = {
+  CONTROL_PLANE_PROBE: { class: "CONTROL_PLANE", slot: null },
+  BROAD_DISCOVERY: { class: "WORKER_DISCOVERY", slot: "LONG_CONTEXT_DISCOVERY" },
+  IMPLEMENTATION: { class: "WORKER_IMPLEMENTATION", slot: "IMPLEMENTATION" },
+  REGRESSION_TEST_EXECUTION: { class: "WORKER_REGRESSION", slot: "REGRESSION_HUNTER" },
+  DEEP_REASONING: { class: "WORKER_REASONING", slot: "DEEP_REASONER" },
+  // Sustained iteration whose purpose is solving the domain task rather than
+  // routing it. Defaults to the discovery slot family - the most common
+  // shape ("keep looking until I understand it") - a caller who knows it is
+  // really implementation/regression/reasoning should say so directly via
+  // the more specific intent instead.
+  LONG_RUNNING_INVESTIGATION: { class: "WORKER_DISCOVERY", slot: "LONG_CONTEXT_DISCOVERY" },
+};
+
+// Advisory guardrail defaults. Operational guidance, not a parser hard limit
+// - a contract may override either. Neither is the sole criterion: they only
+// escalate a step the caller labelled CONTROL_PLANE_PROBE, and the escalation
+// is always recorded in `guardrail_triggered` so it is auditable rather than
+// a silent reclassification.
+const ROUTER_PROBE_GUARDRAILS = { iterationCount: 3, elapsedMs: 120_000 };
+
+/**
+ * Checks whether a human override is bound to the CURRENT task and
+ * instruction revision. Deliberately the same shape as
+ * MODEL_ROUTING_POLICY.md's HUMAN_EXPLICIT_OVERRIDE / HUMAN_OVERRIDE_STALE
+ * check for model pins - this is not a second staleness rule, it is the same
+ * rule applied to a different decision.
+ */
+function currentHumanOverride(override, current) {
+  if (!isPlainObject(override)) return false;
+  const currentTask = current?.task_id ?? null;
+  const currentRevision = current?.instruction_revision ?? null;
+  return (
+    isNonEmptyString(currentTask) &&
+    isNonEmptyString(currentRevision) &&
+    currentTask === override.task_id &&
+    currentRevision === override.instruction_revision
+  );
+}
+
+/**
+ * Classifies one step the Operational Router is about to take: is this a
+ * bounded control-plane probe it may perform directly, or is it worker-shaped
+ * work that must be dispatched?
+ *
+ * `isRouterSlot` gates the entire exemption: only the actual ROUTER slot ever
+ * gets CONTROL_PLANE / DIRECT_ALLOWED. A slot that merely carries the `role:
+ * ROUTER` tag (DEEP_REASONER, for architecture-reasoning dispatch) is itself
+ * a dispatched worker and this classifier does not exempt it - the tag is a
+ * role, not a claim of being the long-lived control plane.
+ *
+ * A background terminal doing domain work is its own violation category,
+ * independent of what the work would otherwise classify as: the Router
+ * spawning a side channel to keep working while it stays "active" is exactly
+ * the dispatch-boundary bypass this section exists to name.
+ */
+export function classifyRouterExecution(observation, options = {}) {
+  const o = isPlainObject(observation) ? observation : {};
+  const { isRouterSlot = true, guardrails = {} } = options;
+  const iterationThreshold = guardrails.iterationCount ?? ROUTER_PROBE_GUARDRAILS.iterationCount;
+  const elapsedThreshold = guardrails.elapsedMs ?? ROUTER_PROBE_GUARDRAILS.elapsedMs;
+
+  if (!isRouterSlot) {
+    return {
+      router_execution_class: null,
+      router_execution_decision: "DISPATCH_REQUIRED",
+      dispatch_slot: null,
+      router_execution_source: "POLICY_DEFAULT",
+      guardrail_triggered: [],
+      reason: "not the ROUTER slot - role: ROUTER alone confers no control-plane exemption; ordinary slot rules apply",
+    };
+  }
+
+  const overrideCurrent = currentHumanOverride(o.human_override, {
+    task_id: o.current_task_id,
+    instruction_revision: o.current_instruction_revision,
+  });
+
+  if (o.background_terminal === true) {
+    const base = {
+      router_execution_class: "WORKER_IMPLEMENTATION",
+      dispatch_slot: "IMPLEMENTATION",
+      guardrail_triggered: ["background_terminal"],
+      reason: "a background terminal doing domain work is a dispatch-boundary violation regardless of who launched it",
+    };
+    return overrideCurrent
+      ? { ...base, router_execution_decision: "HUMAN_OVERRIDE", router_execution_source: "HUMAN_EXPLICIT_OVERRIDE" }
+      : { ...base, router_execution_decision: "DISPATCH_REQUIRED", router_execution_source: "POLICY_DEFAULT" };
+  }
+
+  const mapping = ROUTER_INTENTS.includes(o.intent) ? INTENT_EXECUTION[o.intent] : null;
+
+  if (mapping === null) {
+    // Unrecognised intent fails closed toward dispatch, never toward silent
+    // direct execution - the same fail-closed posture this pack uses
+    // everywhere else for unclassifiable input.
+    return {
+      router_execution_class: null,
+      router_execution_decision: "DISPATCH_REQUIRED",
+      dispatch_slot: null,
+      router_execution_source: "POLICY_DEFAULT",
+      guardrail_triggered: [],
+      reason: `unrecognised intent ${JSON.stringify(o.intent)}; fail closed toward dispatch`,
+    };
+  }
+
+  // Advisory guardrails: they can only escalate a step the caller labelled a
+  // control-plane probe. They never apply to a step already declared
+  // worker-shaped (that classification already requires dispatch), and they
+  // never by themselves produce a BLOCKED result - the case they exist for is
+  // "this still looks like a probe by its own account, but its shape says
+  // otherwise", not a new failure mode.
+  const guardrailTriggered = [];
+  if (mapping.class === "CONTROL_PLANE") {
+    if (typeof o.iteration_count === "number" && o.iteration_count > iterationThreshold) guardrailTriggered.push("iteration_count");
+    if (typeof o.elapsed_ms === "number" && o.elapsed_ms > elapsedThreshold) guardrailTriggered.push("elapsed_ms");
+    if (o.is_repo_wide === true) guardrailTriggered.push("is_repo_wide");
+  }
+
+  const escalated = guardrailTriggered.length > 0;
+  const effective = escalated ? INTENT_EXECUTION.LONG_RUNNING_INVESTIGATION : mapping;
+
+  if (effective.class === "CONTROL_PLANE") {
+    return {
+      router_execution_class: "CONTROL_PLANE",
+      router_execution_decision: "DIRECT_ALLOWED",
+      dispatch_slot: null,
+      router_execution_source: "POLICY_DEFAULT",
+      guardrail_triggered: guardrailTriggered,
+      reason: "bounded control-plane probe",
+    };
+  }
+
+  const reason = escalated
+    ? `guardrail escalation (${guardrailTriggered.join(", ")}): repeated or sustained direct work is worker-shaped even though it was declared a probe`
+    : `${o.intent} is worker-shaped`;
+
+  if (overrideCurrent) {
+    return {
+      router_execution_class: effective.class,
+      router_execution_decision: "HUMAN_OVERRIDE",
+      dispatch_slot: effective.slot,
+      router_execution_source: "HUMAN_EXPLICIT_OVERRIDE",
+      guardrail_triggered: guardrailTriggered,
+      reason: `${reason}; current human instruction explicitly authorised direct Router execution`,
+    };
+  }
+
+  // A stale or missing override does not silently grant direct execution -
+  // same posture as HUMAN_OVERRIDE_STALE for model pins.
+  return {
+    router_execution_class: effective.class,
+    router_execution_decision: "DISPATCH_REQUIRED",
+    dispatch_slot: effective.slot,
+    router_execution_source: "POLICY_DEFAULT",
+    guardrail_triggered: guardrailTriggered,
+    reason,
+  };
+}
+
+/**
+ * Contract self-consistency check: a router_execution record that claims
+ * worker-shaped class with a DIRECT_ALLOWED decision and no current human
+ * override is not a legal contract state, independent of how it was
+ * produced. This is the CONTRACT_VALIDATED half of enforcement - it catches
+ * a self-report that contradicts itself even if classifyRouterExecution was
+ * never actually called to produce it.
+ */
+export function validateRouterExecutionRecord(record) {
+  const r = isPlainObject(record) ? record : {};
+  const findings = [];
+
+  // `null` is a legitimate class: "this classifier does not apply here" (not
+  // the ROUTER slot, or an unrecognised intent that fails closed). It is
+  // distinct from a genuine WORKER_* classification and never claims a
+  // control-plane exemption for itself.
+  const classIsValid = r.router_execution_class === null || ROUTER_EXECUTION_CLASSES.includes(r.router_execution_class);
+  if (!classIsValid) {
+    findings.push(`router_execution_class ${JSON.stringify(r.router_execution_class)} is not null or one of ${ROUTER_EXECUTION_CLASSES.join("|")}`);
+  }
+  if (!ROUTER_EXECUTION_DECISIONS.includes(r.router_execution_decision)) {
+    findings.push(`router_execution_decision ${JSON.stringify(r.router_execution_decision)} is not one of ${ROUTER_EXECUTION_DECISIONS.join("|")}`);
+  }
+  if ("router_execution_source" in r && !ROUTER_EXECUTION_SOURCES.includes(r.router_execution_source)) {
+    findings.push(`router_execution_source ${JSON.stringify(r.router_execution_source)} is not one of ${ROUTER_EXECUTION_SOURCES.join("|")}`);
+  }
+  if (findings.length > 0) return findings;
+
+  if (r.router_execution_class === null) {
+    // Not applicable: no exemption to claim, so only DISPATCH_REQUIRED (fall
+    // through to ordinary slot rules) is legal - never DIRECT_ALLOWED or
+    // HUMAN_OVERRIDE, both of which would assert an exemption this record
+    // does not have standing to claim.
+    if (r.router_execution_decision !== "DISPATCH_REQUIRED") {
+      findings.push("router_execution_class: null cannot carry a decision other than DISPATCH_REQUIRED - it claims no control-plane exemption");
+    }
+    return findings;
+  }
+
+  const isWorkerClass = r.router_execution_class !== "CONTROL_PLANE";
+
+  if (isWorkerClass && r.router_execution_decision === "DIRECT_ALLOWED") {
+    findings.push(`${r.router_execution_class} is worker-shaped and cannot carry router_execution_decision: DIRECT_ALLOWED`);
+  }
+  if (!isWorkerClass && r.router_execution_decision === "DISPATCH_REQUIRED") {
+    findings.push("CONTROL_PLANE work does not require dispatch; router_execution_decision: DISPATCH_REQUIRED is inconsistent");
+  }
+  if (r.router_execution_decision === "HUMAN_OVERRIDE" && !currentHumanOverride(r.human_override, r)) {
+    findings.push("router_execution_decision: HUMAN_OVERRIDE requires a human_override bound to the current task_id and instruction_revision");
+  }
+  if (r.router_execution_source === "HUMAN_EXPLICIT_OVERRIDE" && r.router_execution_decision !== "HUMAN_OVERRIDE") {
+    findings.push("router_execution_source: HUMAN_EXPLICIT_OVERRIDE requires router_execution_decision: HUMAN_OVERRIDE");
+  }
+  if (isWorkerClass && r.router_execution_decision === "DISPATCH_REQUIRED" && !isNonEmptyString(r.dispatch_slot)) {
+    findings.push(`${r.router_execution_class} with DISPATCH_REQUIRED must record a dispatch_slot`);
+  }
+
+  return findings;
+}
+
+/* ------------------------------------------------------------------------ *
+ * Router execution conformance cases
+ *
+ * tests/router-execution-cases.yaml is a conformance check on the
+ * Operational Router execution boundary section of WORKFLOW_POLICY.md, which
+ * stays normative.
+ * ------------------------------------------------------------------------ */
+
+const ROUTER_EXECUTION_CASE_KINDS = ["router_execution", "contract_consistency"];
+
+export function validateRouterExecutionCases(document) {
+  const findings = [];
+
+  if (!isPlainObject(document) || !Array.isArray(document.cases) || document.cases.length === 0) {
+    return ["router execution cases: expected a non-empty `cases` list"];
+  }
+
+  const seen = new Set();
+
+  for (const [index, testCase] of document.cases.entries()) {
+    const named = isNonEmptyString(testCase?.name) ? testCase.name : `cases[${index}]`;
+
+    if (!isPlainObject(testCase)) {
+      findings.push(`${named}: expected a mapping`);
+      continue;
+    }
+    if (!isNonEmptyString(testCase.name)) {
+      findings.push(`${named}: a case needs a name`);
+      continue;
+    }
+    if (seen.has(testCase.name)) findings.push(`${named}: duplicate case name`);
+    seen.add(testCase.name);
+
+    if (!isNonEmptyString(testCase.why)) findings.push(`${named}: a case needs a \`why\``);
+
+    if (!ROUTER_EXECUTION_CASE_KINDS.includes(testCase.kind)) {
+      findings.push(`${named}: kind ${JSON.stringify(testCase.kind)} is not one of ${ROUTER_EXECUTION_CASE_KINDS.join("|")}`);
+      continue;
+    }
+
+    if (!isPlainObject(testCase.expect)) {
+      findings.push(`${named}: expected an \`expect\` mapping`);
+      continue;
+    }
+
+    if (testCase.kind === "contract_consistency") {
+      const recordFindings = validateRouterExecutionRecord(testCase.record);
+      const isValid = recordFindings.length === 0;
+      if (isValid !== testCase.expect.valid) {
+        findings.push(`${named}: expected valid ${JSON.stringify(testCase.expect.valid)}, got ${JSON.stringify(isValid)} (${recordFindings.join("; ")})`);
+      }
+      continue;
+    }
+
+    const result = classifyRouterExecution(testCase.observation, isPlainObject(testCase.options) ? testCase.options : {});
+
+    if (result.router_execution_class !== null && !ROUTER_EXECUTION_CLASSES.includes(result.router_execution_class)) {
+      findings.push(`${named}: produced unknown router_execution_class ${JSON.stringify(result.router_execution_class)}`);
+    }
+    if (!ROUTER_EXECUTION_DECISIONS.includes(result.router_execution_decision)) {
+      findings.push(`${named}: produced unknown router_execution_decision ${JSON.stringify(result.router_execution_decision)}`);
+    }
+    if ("router_execution_class" in testCase.expect && result.router_execution_class !== testCase.expect.router_execution_class) {
+      findings.push(
+        `${named}: expected router_execution_class ${JSON.stringify(testCase.expect.router_execution_class)}, got ${JSON.stringify(result.router_execution_class)}`,
+      );
+    }
+    if ("router_execution_decision" in testCase.expect && result.router_execution_decision !== testCase.expect.router_execution_decision) {
+      findings.push(
+        `${named}: expected router_execution_decision ${JSON.stringify(testCase.expect.router_execution_decision)}, got ${JSON.stringify(result.router_execution_decision)}`,
+      );
+    }
+    if ("dispatch_slot" in testCase.expect && result.dispatch_slot !== testCase.expect.dispatch_slot) {
+      findings.push(`${named}: expected dispatch_slot ${JSON.stringify(testCase.expect.dispatch_slot)}, got ${JSON.stringify(result.dispatch_slot)}`);
+    }
+    if ("router_execution_source" in testCase.expect && result.router_execution_source !== testCase.expect.router_execution_source) {
+      findings.push(
+        `${named}: expected router_execution_source ${JSON.stringify(testCase.expect.router_execution_source)}, got ${JSON.stringify(result.router_execution_source)}`,
+      );
+    }
+    for (const requiredGuardrail of testCase.expect.guardrail_triggered_includes ?? []) {
+      if (!result.guardrail_triggered.includes(requiredGuardrail)) {
+        findings.push(`${named}: expected guardrail_triggered to include ${JSON.stringify(requiredGuardrail)}, got ${JSON.stringify(result.guardrail_triggered)}`);
+      }
+    }
+  }
+
+  return findings;
+}
+
+/* ------------------------------------------------------------------------ *
  * Repository validation (direct-run entry point)
  * ------------------------------------------------------------------------ */
 
@@ -3162,7 +3501,7 @@ function readInput(root, relativePath, parseAs, findings) {
 
 export function validateRepository(root = process.cwd()) {
   const findings = [];
-  const summary = { registry: 0, resourceExample: 0, routingCases: 0, executionCases: 0, continuationCases: 0, filesScanned: 0, scanFindings: 0, markdownFilesLinkChecked: 0 };
+  const summary = { registry: 0, resourceExample: 0, routingCases: 0, executionCases: 0, continuationCases: 0, routerExecutionCases: 0, filesScanned: 0, scanFindings: 0, markdownFilesLinkChecked: 0 };
 
   const registry = readInput(root, "policies/MODEL_REGISTRY.yaml", "yaml", findings);
   if (registry !== undefined) {
@@ -3203,6 +3542,14 @@ export function validateRepository(root = process.cwd()) {
       findings.push(`tests/continuation-cases.yaml: ${finding}`);
     }
     summary.continuationCases = Array.isArray(continuationCases?.cases) ? continuationCases.cases.length : 0;
+  }
+
+  const routerExecutionCases = readInput(root, "tests/router-execution-cases.yaml", "yaml", findings);
+  if (routerExecutionCases !== undefined) {
+    for (const finding of validateRouterExecutionCases(routerExecutionCases)) {
+      findings.push(`tests/router-execution-cases.yaml: ${finding}`);
+    }
+    summary.routerExecutionCases = Array.isArray(routerExecutionCases?.cases) ? routerExecutionCases.cases.length : 0;
   }
 
   const invalidFixturePath = join(root, "tests", "fixtures", "invalid-model-registry.yaml");
@@ -3356,6 +3703,7 @@ if (process.argv[1] !== undefined && pathToFileURL(process.argv[1]).href === imp
     `slots: ${summary.registry} | resource examples: ${summary.resourceExample} | ` +
       `routing cases: ${summary.routingCases} | execution cases: ${summary.executionCases} | ` +
       `continuation cases: ${summary.continuationCases} | ` +
+      `router execution cases: ${summary.routerExecutionCases} | ` +
       `files scanned: ${summary.filesScanned} | ` +
       `markdown link-checked: ${summary.markdownFilesLinkChecked}`,
   );
