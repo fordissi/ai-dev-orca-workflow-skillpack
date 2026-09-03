@@ -355,6 +355,148 @@ permission_ceiling:
 
 `sandbox` 值無法辨識時 fail closed：所有能力視為未授權。
 
+## Scoped worker environment provisioning
+
+這一節是 **worker 環境能力（environment capability）的授予、供裝機制、preflight、
+redaction，與 callback transport 失敗後的結果回收** 的 normative owner。它**不選模型**、
+不動 `MODEL_REGISTRY.yaml`、不改 governance tier / capacity reserve / reviewer
+disjointness / exact dispatch identity。
+
+### 觀察到的 runtime 事實
+
+- Router process-local 的特權 DB URL：**存在**；
+- 新 worker 的特權 DB URL / 唯讀 URL / CA 設定：**不存在**；
+- 新的 Orca worker **不繼承** Router 的 process / user-scope 變數；
+- `worker-start` / `terminal create` **沒有** 直接 env injection 旗標；
+- 受支援的機制是 **Orca environment recipe / trusted setup hook**。
+
+### Core principle
+
+Worker 只取得**該 task 所需**的環境能力。Secret **不得**：
+
+- 嵌進 prompt；
+- 以 command-line argument 傳入（違反即 policy violation）；
+- 印進 log；
+- 出現在 `worker_done`；
+- 被所有 worker 全域繼承。
+
+### Capability model
+
+在 contract 用一個 **generic** 欄位表達需求，例如：
+
+```yaml
+required_environment_capabilities:
+  - FOUNDATION_DB_READONLY
+  - FOUNDATION_DB_PRIVILEGED
+```
+
+這些名稱是**專案自訂的 capability identifier**。skillpack 擁有**機制**，不擁有各專案
+的 secret 值。能力層級只有三級：`NONE` / `READONLY` / `PRIVILEGED`。
+
+### Governance interaction
+
+**環境能力不選模型。** dispatch 前的順序：
+
+1. Router 正常分類 task；
+2. 解析 governance tier；
+3. 解析 `required_environment_capabilities`；
+4. Router 驗證該能力對這個 task 是**被允許**的；
+5. worker 透過 trusted Orca environment recipe / setup hook 啟動（**唯一**供裝途徑）；
+6. worker 在**不印值**的前提下驗證能力存在；
+7. 供裝失敗 **fail-closed**。
+
+`G3`（`G3_HIGH_RISK`）**不自動**等於特權 credential 存取——task 必須**具體地**需要它。
+例：
+
+| 情境 | 特權 DB 能力 |
+|---|---|
+| discovery / reviewer | 通常 `NONE` |
+| read-only hosted validation | `FOUNDATION_DB_READONLY` |
+| 明確授權的受控 DB 執行 | `FOUNDATION_DB_PRIVILEGED` |
+
+`PRIVILEGED` 一律需要 current task 上的明確授權
+（`environment_capability_authorization: required_and_provided`）。
+
+**`Router local env presence does not count as worker capability availability.`**
+
+### Secret sourcing
+
+用 trusted secret storage / setup hook。**不得把 repo-local `.env` 或 global
+Windows user environment 規定為首選機制。** **沒有 secret 值進 Git。**
+
+### Redaction
+
+Worker diagnostics **永遠不 echo** credential-bearing URL。對 secret-bearing 變數，
+log 只能輸出下列 token 之一：
+
+```text
+PRESENT  ABSENT  TARGET_MATCH  TARGET_MISMATCH  TLS_OK  TLS_FAILED
+```
+
+底層命令若在 stderr 帶出 connection string，回傳 evidence 前必須先 sanitize。
+
+### Preflight
+
+worker 進入 domain 執行**之前**：
+
+- 驗證 required capability `PRESENT`；
+- 適用時驗證預期 target identity（`TARGET_MATCH`）；
+- 適用時驗證 CA 設定存在；
+- 驗證特權層級**等於** task 要求（不多不少）。
+
+任一不成立 → 回 `ENVIRONMENT_CAPABILITY_UNAVAILABLE`，且**不得** fallback 到：舊
+endpoint、直連 IPv6 endpoint、另一組 credential、local approximation、或更寬的
+privilege。`READONLY` 請求不得被悄悄升成 `PRIVILEGED`；`PRIVILEGED` 請求不得被
+`READONLY` 悄悄取代——不符即 `PRIVILEGE_LEVEL_MISMATCH`，fail-closed。
+
+### Worker result recovery（callback transport 失敗）
+
+worker 完成 domain 工作、但因 worker 環境內沒有 Orca CLI 而**無法送 `worker_done`**
+時，**不得自動 redispatch**。Operational Router 可以把結果回收當作 **control-plane
+work**（屬於 *Operational Router execution boundary* 的 bounded probe），使用：
+
+```bash
+orca orchestration worker-show --dispatch <dispatch_id> --json
+orca orchestration worker-read --dispatch <dispatch_id> --limit <bounded_n> --json
+```
+
+`worker-read` **只**用於回收 / 檢視既有 worker 結果；transport 正常時**不得**拿它
+當 `worker_done` 的替代品。
+
+回收優先序：
+
+```text
+1. valid worker_done
+2. observed completed worker state + bounded worker-read result
+3. terminal / orchestration evidence
+4. 狀態仍不明確 → HUMAN_GATE
+```
+
+回收成功時 `callback_transport = FAILED_RECOVERED`。**不得**：
+
+- 只因 `worker_done` 失敗就 spawn 重複 worker；
+- 重跑已完成的 implementation / review 工作；
+- 把 callback transport 失敗當成 domain-task 失敗。
+
+回收到的輸出若含 secret 或 credential-bearing diagnostics，**併入 Router evidence /
+handoff 前先 sanitize**。
+
+### Lifecycle
+
+只把能力供裝給**需要它的**那個 worker / task。**不得**把長駐 Router session 的 env
+當作授權來源。**不得**要求未來所有 worker 都繼承同一組 secret。
+
+### Interruption / recovery
+
+worker 因中斷而重啟時：**重新解析** required environment capabilities、**重新供裝**
+（透過 trusted setup 機制）、**不假設**舊 terminal 的 secret 狀態存活。
+
+### Reviewers
+
+Independent reviewer **不因為要重現 validation** 就取得特權 secret；他們檢視
+**sanitized** validation evidence。只有在 review 本身**真的需要**直接 database
+存取時，才供裝 read / privileged credential 給 reviewer。
+
 ## Execution lifecycle semantics
 
 這一節是 **dispatch 之後、close 之前**的等待、停滯與續跑語意的 normative owner。

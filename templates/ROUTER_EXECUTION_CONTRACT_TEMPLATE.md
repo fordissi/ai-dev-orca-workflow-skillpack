@@ -115,6 +115,14 @@ permission_ceiling:           # 意圖上限；實際旗標由 dispatch_command 
   # 上面的分解式欄位若明確寫出則優先。對照表見 WORKFLOW_POLICY.md。
   sandbox:                    # read-only | workspace-write（legacy 簡寫，optional）
 
+# Scoped worker environment provisioning。語意見 WORKFLOW_POLICY.md 的
+# "Scoped worker environment provisioning"。這裡只列需求，不放 secret 值。
+required_environment_capabilities:  # 清單（專案自訂 id），或 none。不需要時填 none
+                                    # 例：[FOUNDATION_DB_READONLY] / [FOUNDATION_DB_PRIVILEGED]
+environment_capability_authorization: # required_and_provided | not_required | MISSING
+                                    # PRIVILEGED 能力必須是 required_and_provided；
+                                    # governance tier（含 G3）本身不授予
+
 # Execution budget。數值是操作指引，不是 parser limit；未填時採 WORKFLOW_POLICY.md
 # 的預設。poll_interval 的逾時只代表「重新觀察一次」，不是 worker 的完成期限。
 execution_budget:
@@ -321,8 +329,38 @@ governance_resolution:
   human_override:                # unresolved，或 none — 綁定 task_id/instruction_revision；
                                  # 命中 hard trigger 時不得用來把 governance_tier 降級
 
+# Scoped worker environment provisioning 的解析。語意見 policies/WORKFLOW_POLICY.md
+# 的 "Scoped worker environment provisioning"。只記標籤/結果，不記 secret 值，
+# 不記 credential-bearing URL。
+environment_provisioning:
+  mechanism:                   # unresolved — orca_environment_recipe | setup_hook | none
+  resolved_capabilities:        # unresolved — [] 或 專案自訂 id 清單
+  granted_level:               # unresolved — NONE | READONLY | PRIVILEGED
+  outcome:                     # unresolved — CAPABILITY_GRANTED | AUTHORIZATION_REQUIRED
+                                # | PRIVILEGE_LEVEL_MISMATCH | ENVIRONMENT_CAPABILITY_UNAVAILABLE
+  preflight:
+    capability_present:        # unresolved — PRESENT | ABSENT
+    target_identity:           # unresolved — TARGET_MATCH | TARGET_MISMATCH | NOT_APPLICABLE
+    ca_config:                 # unresolved — PRESENT | ABSENT | NOT_REQUIRED
+    tls:                       # unresolved — TLS_OK | TLS_FAILED | NOT_CHECKED
+    privilege_level_matches:   # unresolved — true | false
+  router_local_env_counts:     # 一律 false — Router process-local env 不是 worker capability
+  redaction_verified:          # unresolved — true（diagnostics 只含允許 token，無 credential URL）
+
+# Callback transport 與 result recovery。worker 完成但送不出 worker_done 時的
+# 回收路徑。語意見 WORKFLOW_POLICY.md 的 Worker result recovery。
+callback_transport:            # unresolved — OK | FAILED_RECOVERED | FAILED_UNRECOVERED
+result_recovery:               # 僅在 callback_transport != OK 時填
+  recovery_tier_used:          # unresolved — WORKER_DONE | WORKER_READ
+                                # | ORCHESTRATION_EVIDENCE | HUMAN_GATE
+  worker_read_bounded_limit:   # unresolved — 用於 worker-read --limit 的 bounded n
+  duplicate_dispatch_avoided:  # 一律 true — 不因 worker_done 失敗就重派或重跑已完成工作
+  recovered_output_sanitized:  # unresolved — true（併入 evidence/handoff 前已 sanitize）
+
 dispatch_command:             # unresolved
   # 逐字命令，且必須在命令列明確傳入 model、reasoning、sandbox 與 approval 旗標。
+  # **不得**在命令列傳入 secret / connection string / credential-bearing URL——
+  # 環境能力一律經 trusted setup 機制供裝。
   # 只在上面用散文宣告 permission_ceiling 是不夠的：worker 端的 local CLI
   # 設定會靜默覆蓋未明示的預設值，使實際權限高於 contract 意圖。
 ```

@@ -164,6 +164,33 @@ Execution lifecycle semantics 處置，**不得**標為 `ROUTING_UNAVAILABLE`，
 provider / model / reasoning-effort in `worker-show --json` and in a
 non-interactive per-terminal query.**
 
+### Scoped worker environment provisioning（觀察到的機制）
+
+實測：新的 Orca worker **不繼承** Router process / user-scope 變數；
+`orca orchestration worker-start` 與 `orca terminal create` **沒有**直接的
+env injection 旗標。受支援的環境供裝途徑是 **Orca environment recipe /
+trusted setup hook**（見 `orca environment ...` 與 `orca vm recipe doctor`；
+`orca --help` 的 Environments / Environment Recipes 區塊）。因此
+`required_environment_capabilities` 的 secret **一律**經 recipe / setup hook
+供裝，**不得**在 `dispatch_command` 或 prompt 傳。語意見
+[`../policies/WORKFLOW_POLICY.md`](../policies/WORKFLOW_POLICY.md) 的
+*Scoped worker environment provisioning*。
+
+### Worker result recovery（callback transport 失敗）
+
+worker 完成 domain 工作但因環境內沒有 Orca CLI 而送不出 `worker_done` 時，
+Operational Router 以 control-plane inspection 回收既有結果，**不 redispatch**：
+
+```bash
+orca orchestration worker-show --dispatch <dispatch_id> --json
+orca orchestration worker-read --dispatch <dispatch_id> --limit <bounded_n> --json
+```
+
+`worker-read` 只用於回收 / 檢視既有結果，`--limit` 必須 bounded；transport 正常時
+不得拿它替代 `worker_done`。回收優先序與 `FAILED_RECOVERED` 語意見
+[`../policies/WORKFLOW_POLICY.md`](../policies/WORKFLOW_POLICY.md) 的
+*Worker result recovery*。
+
 讀取輸出（已於本機驗證）：
 
 ```bash

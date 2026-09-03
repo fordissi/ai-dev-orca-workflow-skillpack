@@ -3680,6 +3680,237 @@ export function validateGovernanceTierCases(document) {
 }
 
 /* ------------------------------------------------------------------------ *
+ * Scoped worker environment provisioning
+ *
+ * Workers get only the environment capabilities their task requires. Secrets
+ * never travel in prompts, command-line args, logs or worker_done, and are
+ * never inherited globally. WORKFLOW_POLICY.md's "Scoped worker environment
+ * provisioning" section is the normative owner; this makes the fail-closed
+ * decisions executable. It does not select the model, touch the registry, or
+ * change governance-tier / capacity-reserve / disjointness / dispatch-identity
+ * behaviour.
+ * ------------------------------------------------------------------------ */
+
+export const ENV_CAPABILITY_LEVELS = ["NONE", "READONLY", "PRIVILEGED"];
+
+// Diagnostics about a secret-bearing variable may emit ONLY these tokens - no
+// value, no connection string.
+export const ENV_DIAGNOSTIC_TOKENS = ["PRESENT", "ABSENT", "TARGET_MATCH", "TARGET_MISMATCH", "TLS_OK", "TLS_FAILED"];
+
+export const ENV_PROVISIONING_OUTCOMES = [
+  "CAPABILITY_GRANTED",
+  "AUTHORIZATION_REQUIRED",
+  "PRIVILEGE_LEVEL_MISMATCH",
+  "ENVIRONMENT_CAPABILITY_UNAVAILABLE",
+];
+
+export const CALLBACK_TRANSPORT_STATES = ["OK", "FAILED_RECOVERED", "FAILED_UNRECOVERED"];
+export const RESULT_RECOVERY_TIERS = ["WORKER_DONE", "WORKER_READ", "ORCHESTRATION_EVIDENCE", "HUMAN_GATE"];
+
+const levelRank = (level) => Math.max(0, ENV_CAPABILITY_LEVELS.indexOf(level));
+
+/**
+ * A scheme://user:secret@host userinfo pair - the shape of a credential-bearing
+ * connection string. Kept host-agnostic so it does not also match an email.
+ */
+const CREDENTIAL_URL = /\b[a-z][a-z0-9+.\-]*:\/\/[^\s/@:]+:[^\s/@]+@/i;
+
+export function containsCredentialBearingUrl(text) {
+  return isNonEmptyString(text) && CREDENTIAL_URL.test(text);
+}
+
+/**
+ * Redacts the userinfo of any credential-bearing URL. Returns the sanitized
+ * text and whether anything was redacted. Used before a recovered worker
+ * result is folded into Router evidence or a handoff.
+ */
+export function sanitizeRecoveredOutput(text) {
+  if (!isNonEmptyString(text)) return { sanitized: text ?? "", redacted: false };
+  let redacted = false;
+  const sanitized = text.replace(
+    /\b([a-z][a-z0-9+.\-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi,
+    (_, scheme) => {
+      redacted = true;
+      return `${scheme}REDACTED@`;
+    },
+  );
+  return { sanitized, redacted };
+}
+
+/**
+ * Whether a dispatch command smuggles a secret in a command-line argument -
+ * a credential-bearing URL anywhere, or a credential-named flag with a value.
+ * Such a dispatch is a policy violation regardless of the value.
+ */
+export function dispatchInjectsSecret(command) {
+  if (!isNonEmptyString(command)) return false;
+  if (containsCredentialBearingUrl(command)) return true;
+  return /(?:^|\s)--?[a-z0-9-]*(?:secret|token|passwd|password|api[_-]?key|db[_-]?url|dsn|conn(?:ection)?[_-]?string)[a-z0-9-]*(?:=|\s+)\S/i.test(
+    command,
+  );
+}
+
+export function envDiagnosticTokenAllowed(token) {
+  return ENV_DIAGNOSTIC_TOKENS.includes(token);
+}
+
+/**
+ * A restart after interruption always re-resolves and re-provisions the
+ * required capabilities through the trusted setup mechanism. A claim that the
+ * old terminal's secret state can just be reused is rejected.
+ */
+export function mustReprovisionOnRestart(context) {
+  const c = isPlainObject(context) ? context : {};
+  if (c.restarted_after_interruption !== true) {
+    return { reprovision: false, reason: "not a restart" };
+  }
+  if (c.reuse_old_terminal_secret_state === true) {
+    return { reprovision: true, reason: "old terminal secret state is not authoritative; re-provision through the trusted setup mechanism" };
+  }
+  return { reprovision: true, reason: "restart after interruption re-resolves and re-provisions required capabilities" };
+}
+
+/**
+ * Fail-closed resolution of a worker's scoped environment capability request.
+ *
+ * Governance tier alone never grants a credential. A privileged capability
+ * needs explicit authorization. A reviewer gets NONE unless the review itself
+ * needs direct DB access. The Router's own process-local env does not count as
+ * the worker having the capability. A provisioned level that does not exactly
+ * match the requested one is a mismatch, never silently accepted - neither
+ * upgraded nor downgraded. Missing capability or a failed preflight is
+ * ENVIRONMENT_CAPABILITY_UNAVAILABLE with no fallback.
+ */
+export function resolveEnvironmentCapability(request) {
+  const r = isPlainObject(request) ? request : {};
+  const requested = Array.isArray(r.requested) ? r.requested.filter(isNonEmptyString) : [];
+  const privilegedIds = Array.isArray(r.privileged_ids) ? r.privileged_ids : [];
+  const isPrivileged = (id) => privilegedIds.includes(id) || /privileg/i.test(id);
+
+  const requestedLevel =
+    requested.length === 0 ? "NONE" : requested.some(isPrivileged) ? "PRIVILEGED" : "READONLY";
+
+  const grantNone = (reason) => ({ outcome: "CAPABILITY_GRANTED", granted_level: "NONE", requested_level: requestedLevel, reason });
+
+  // Reviewer: sanitized evidence is enough unless direct DB access is required.
+  if (r.reviewer === true && requestedLevel !== "NONE" && r.review_requires_direct_db !== true) {
+    return grantNone("reviewer reviews sanitized validation evidence; direct DB access not established as required");
+  }
+
+  if (requestedLevel === "NONE") {
+    return { outcome: "CAPABILITY_GRANTED", granted_level: "NONE", requested_level: "NONE" };
+  }
+
+  // A request must be backed by a task-established need. Governance tier
+  // (even G3) does not by itself create one.
+  if (r.task_requires_capability !== true) {
+    return grantNone("no task-established need for a database capability; governance tier alone does not grant one");
+  }
+
+  if (requestedLevel === "PRIVILEGED" && r.authorization !== "required_and_provided") {
+    return {
+      outcome: "AUTHORIZATION_REQUIRED",
+      granted_level: "NONE",
+      requested_level: "PRIVILEGED",
+      reason: "privileged database capability requires explicit authorization on the current task",
+    };
+  }
+
+  // The Router process-local env being present is not the worker's capability.
+  if (r.router_local_env_present === true && r.worker_env_present !== true) {
+    return {
+      outcome: "ENVIRONMENT_CAPABILITY_UNAVAILABLE",
+      granted_level: "NONE",
+      requested_level: requestedLevel,
+      reason: "Router process-local environment is not a worker capability; the fresh worker environment lacks it",
+    };
+  }
+
+  const pf = isPlainObject(r.preflight) ? r.preflight : null;
+  if (pf !== null) {
+    if (pf.capability_present !== true) {
+      return { outcome: "ENVIRONMENT_CAPABILITY_UNAVAILABLE", granted_level: "NONE", requested_level: requestedLevel, reason: "preflight: required capability not present" };
+    }
+    if (isNonEmptyString(pf.privilege_level) && pf.privilege_level !== requestedLevel) {
+      return {
+        outcome: "PRIVILEGE_LEVEL_MISMATCH",
+        granted_level: "NONE",
+        requested_level: requestedLevel,
+        provisioned_level: pf.privilege_level,
+        reason: `preflight privilege level ${pf.privilege_level} does not match the requested ${requestedLevel}; not silently ${levelRank(pf.privilege_level) > levelRank(requestedLevel) ? "downgraded" : "upgraded"}`,
+      };
+    }
+    if (pf.target_identity === "TARGET_MISMATCH") {
+      return { outcome: "ENVIRONMENT_CAPABILITY_UNAVAILABLE", granted_level: "NONE", requested_level: requestedLevel, reason: "preflight: target identity mismatch; no fallback endpoint" };
+    }
+    if (r.ca_required === true && pf.ca_config === "ABSENT") {
+      return { outcome: "ENVIRONMENT_CAPABILITY_UNAVAILABLE", granted_level: "NONE", requested_level: requestedLevel, reason: "preflight: CA configuration absent and required" };
+    }
+  } else if (isNonEmptyString(r.provisioned_level) && r.provisioned_level !== requestedLevel) {
+    return {
+      outcome: "PRIVILEGE_LEVEL_MISMATCH",
+      granted_level: "NONE",
+      requested_level: requestedLevel,
+      provisioned_level: r.provisioned_level,
+      reason: `provisioned level ${r.provisioned_level} does not match requested ${requestedLevel}`,
+    };
+  }
+
+  return { outcome: "CAPABILITY_GRANTED", granted_level: requestedLevel, requested_level: requestedLevel };
+}
+
+/**
+ * Recovery precedence when a completed worker cannot send worker_done because
+ * the Orca CLI is unavailable inside its environment:
+ *
+ *   1. a valid worker_done
+ *   2. observed completed worker state + a bounded worker-read result
+ *   3. terminal / orchestration evidence
+ *   4. HUMAN_GATE when the state stays ambiguous
+ *
+ * A transport failure never spawns a duplicate worker and never counts as a
+ * domain-task failure. worker-read is only for recovering an existing result.
+ */
+export function classifyCallbackRecovery(evidence) {
+  const e = isPlainObject(evidence) ? evidence : {};
+
+  if (isPlainObject(e.worker_done)) {
+    return {
+      tier: "WORKER_DONE",
+      callback_transport: "OK",
+      worker_read_invoked: false,
+      duplicate_dispatch: false,
+    };
+  }
+
+  const wr = isPlainObject(e.worker_read) ? e.worker_read : null;
+  if (e.worker_state === "completed" && wr !== null && wr.complete === true && wr.ambiguous !== true) {
+    return {
+      tier: "WORKER_READ",
+      callback_transport: "FAILED_RECOVERED",
+      worker_read_invoked: true,
+      duplicate_dispatch: false,
+    };
+  }
+
+  if (e.worker_state === "completed" && e.orchestration_evidence === true && e.ambiguous !== true) {
+    return {
+      tier: "ORCHESTRATION_EVIDENCE",
+      callback_transport: "FAILED_RECOVERED",
+      worker_read_invoked: wr !== null,
+      duplicate_dispatch: false,
+    };
+  }
+
+  return {
+    tier: "HUMAN_GATE",
+    callback_transport: "FAILED_UNRECOVERED",
+    worker_read_invoked: wr !== null,
+    duplicate_dispatch: false,
+  };
+}
+
+/* ------------------------------------------------------------------------ *
  * Repository validation (direct-run entry point)
  * ------------------------------------------------------------------------ */
 

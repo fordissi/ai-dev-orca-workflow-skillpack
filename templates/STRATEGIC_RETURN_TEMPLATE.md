@@ -87,6 +87,9 @@ VERIFICATION:
   review_required:          # standard | independent | adversarial
   reviewer_result:          # PASS | FAIL | NOT_REQUIRED
   disjointness:             # verified | not_required | UNKNOWN
+  callback_transport:       # OK | FAILED_RECOVERED | FAILED_UNRECOVERED
+                            # FAILED_RECOVERED = worker 完成但 worker_done 送不出，
+                            # 已用 worker-read 回收；未重派、未重跑，輸出已 sanitize
 
 REMAINING_RISKS:
 - <未解決且有實質影響的風險>
