@@ -115,12 +115,15 @@ permission_ceiling:           # 意圖上限；實際旗標由 dispatch_command 
   # 上面的分解式欄位若明確寫出則優先。對照表見 WORKFLOW_POLICY.md。
   sandbox:                    # read-only | workspace-write（legacy 簡寫，optional）
 
-# Scoped worker environment provisioning。語意見 WORKFLOW_POLICY.md 的
-# "Scoped worker environment provisioning"。這裡只列需求，不放 secret 值。
-required_environment_capabilities:  # 清單（專案自訂 id），或 none。不需要時填 none
+# Scoped worker capabilities。語意見 WORKFLOW_POLICY.md 的 "Scoped worker
+# capabilities"。這裡只列需求，不放 secret 值，不指定 fulfillment 機制
+# （機制由 project/runtime policy 決定）。
+required_capabilities:        # 清單（專案自訂 capability id），或 none。不需要時填 none
                                     # 例：[FOUNDATION_DB_READONLY] / [FOUNDATION_DB_PRIVILEGED]
+                                    # deprecated alias: required_environment_capabilities
+                                    # （立即 normalize；兩者不一致即 fail closed）
 environment_capability_authorization: # required_and_provided | not_required | MISSING
-                                    # PRIVILEGED 能力必須是 required_and_provided；
+                                    # PRIVILEGED capability 必須是 required_and_provided；
                                     # governance tier（含 G3）本身不授予
 
 # Execution budget。數值是操作指引，不是 parser limit；未填時採 WORKFLOW_POLICY.md
@@ -329,23 +332,22 @@ governance_resolution:
   human_override:                # unresolved，或 none — 綁定 task_id/instruction_revision；
                                  # 命中 hard trigger 時不得用來把 governance_tier 降級
 
-# Scoped worker environment provisioning 的解析。語意見 policies/WORKFLOW_POLICY.md
-# 的 "Scoped worker environment provisioning"。只記標籤/結果，不記 secret 值，
-# 不記 credential-bearing URL。
-environment_provisioning:
-  mechanism:                   # unresolved — orca_environment_recipe | setup_hook | none
-  resolved_capabilities:        # unresolved — [] 或 專案自訂 id 清單
-  granted_level:               # unresolved — NONE | READONLY | PRIVILEGED
-  outcome:                     # unresolved — CAPABILITY_GRANTED | AUTHORIZATION_REQUIRED
-                                # | PRIVILEGE_LEVEL_MISMATCH | ENVIRONMENT_CAPABILITY_UNAVAILABLE
-  preflight:
-    capability_present:        # unresolved — PRESENT | ABSENT
-    target_identity:           # unresolved — TARGET_MATCH | TARGET_MISMATCH | NOT_APPLICABLE
-    ca_config:                 # unresolved — PRESENT | ABSENT | NOT_REQUIRED
-    tls:                       # unresolved — TLS_OK | TLS_FAILED | NOT_CHECKED
-    privilege_level_matches:   # unresolved — true | false
-  router_local_env_counts:     # 一律 false — Router process-local env 不是 worker capability
-  redaction_verified:          # unresolved — true（diagnostics 只含允許 token，無 credential URL）
+# Scoped worker capabilities 的解析。語意見 policies/WORKFLOW_POLICY.md 的
+# "Scoped worker capabilities"。compact：每個 capability 一列，只記標籤/結果，
+# 不記 secret 值、不記 credential-bearing URL、不記 fulfillment 的內部細節。
+capability_resolution:         # unresolved — 清單，或 none（無 required_capabilities 時）
+  - capability_id:
+    required_privilege:        # NONE | READONLY | PRIVILEGED
+    fulfillment_mechanism:     # NONE | ENV_INJECTION | CAPABILITY_WRAPPER | SECRET_BROKER | REMOTE_EXECUTOR
+    worker_receives_secret:    # YES | NO   （NO 是有效的 fulfilled outcome）
+    authorization_state:       # required_and_provided | not_required | MISSING
+    preflight_state:           # PRESENT | ABSENT | TARGET_MISMATCH | CA_ABSENT | NOT_APPLICABLE
+    effective_privilege:       # NONE | READONLY | PRIVILEGED  （必須 == required_privilege）
+    result:                    # CAPABILITY_FULFILLED | CAPABILITY_UNAVAILABLE
+                                # | AUTHORIZATION_REQUIRED | PRIVILEGE_LEVEL_MISMATCH
+                                # | TARGET_MISMATCH | CAPABILITY_PREFLIGHT_FAILED
+router_local_env_counts:       # 一律 false — Router process-local env 不是 capability fulfillment
+capability_redaction_verified: # unresolved — true（diagnostics 只含允許 token，無 credential URL）
 
 # Callback transport 與 result recovery。worker 完成但送不出 worker_done 時的
 # 回收路徑。語意見 WORKFLOW_POLICY.md 的 Worker result recovery。

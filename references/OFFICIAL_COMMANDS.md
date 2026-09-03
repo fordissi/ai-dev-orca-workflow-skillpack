@@ -164,17 +164,19 @@ Execution lifecycle semantics 處置，**不得**標為 `ROUTING_UNAVAILABLE`，
 provider / model / reasoning-effort in `worker-show --json` and in a
 non-interactive per-terminal query.**
 
-### Scoped worker environment provisioning（觀察到的機制）
+### Scoped worker capabilities（觀察到的機制）
 
 實測：新的 Orca worker **不繼承** Router process / user-scope 變數；
 `orca orchestration worker-start` 與 `orca terminal create` **沒有**直接的
-env injection 旗標。受支援的環境供裝途徑是 **Orca environment recipe /
-trusted setup hook**（見 `orca environment ...` 與 `orca vm recipe doctor`；
-`orca --help` 的 Environments / Environment Recipes 區塊）。因此
-`required_environment_capabilities` 的 secret **一律**經 recipe / setup hook
-供裝，**不得**在 `dispatch_command` 或 prompt 傳。語意見
+env injection 旗標；已安裝的 Orca environment recipe 也沒有安全通用的
+secret-bearing process-env 注入。可用的 fulfillment mechanism 由 project /
+runtime policy 決定——`ENV_INJECTION`（`orca environment ...` /
+`orca vm recipe doctor`；`orca --help` 的 Environments / Environment Recipes）
+只是其中一種；`CAPABILITY_WRAPPER` / `SECRET_BROKER` / `REMOTE_EXECUTOR` 可以在
+worker 從不拿到 credential 的前提下滿足能力。無論哪種，secret **一律**經
+approved mechanism 供裝，**不得**在 `dispatch_command` 或 prompt 傳。語意見
 [`../policies/WORKFLOW_POLICY.md`](../policies/WORKFLOW_POLICY.md) 的
-*Scoped worker environment provisioning*。
+*Scoped worker capabilities*。
 
 ### Worker result recovery（callback transport 失敗）
 

@@ -355,79 +355,131 @@ permission_ceiling:
 
 `sandbox` 值無法辨識時 fail closed：所有能力視為未授權。
 
-## Scoped worker environment provisioning
+## Scoped worker capabilities
 
-這一節是 **worker 環境能力（environment capability）的授予、供裝機制、preflight、
-redaction，與 callback transport 失敗後的結果回收** 的 normative owner。它**不選模型**、
-不動 `MODEL_REGISTRY.yaml`、不改 governance tier / capacity reserve / reviewer
-disjointness / exact dispatch identity。
+這一節是 **worker capability 的授予、fulfillment mechanism、secret possession、
+preflight、redaction，與 callback transport 失敗後的結果回收** 的 normative owner。
+它**不選模型**、不動 `MODEL_REGISTRY.yaml`、不改 governance tier / capacity reserve /
+Router–Worker boundary / reviewer disjointness / exact dispatch identity /
+callback recovery。
 
 ### 觀察到的 runtime 事實
 
-- Router process-local 的特權 DB URL：**存在**；
-- 新 worker 的特權 DB URL / 唯讀 URL / CA 設定：**不存在**；
 - 新的 Orca worker **不繼承** Router 的 process / user-scope 變數；
-- `worker-start` / `terminal create` **沒有** 直接 env injection 旗標；
-- 受支援的機制是 **Orca environment recipe / trusted setup hook**。
+- 已安裝的 Orca environment recipe **沒有**安全通用的 secret-bearing process-env
+  注入機制；
+- **trusted capability wrapper 可以在 worker 從不拿到 credential 的前提下滿足 DB
+  能力**——更安全；
+- 因此「worker 需要某能力」**不等於**「把某個 secret env 變數注入 worker」。
 
 ### Core principle
 
-Worker 只取得**該 task 所需**的環境能力。Secret **不得**：
-
-- 嵌進 prompt；
-- 以 command-line argument 傳入（違反即 policy violation）；
-- 印進 log；
-- 出現在 `worker_done`；
-- 被所有 worker 全域繼承。
+Worker 只取得**該 task 所需**的 capability。Secret **不得**：嵌進 prompt；以
+command-line argument 傳入（違反即 policy violation）；印進 log；出現在
+`worker_done`；被所有 worker 全域繼承。
 
 ### Capability model
 
-在 contract 用一個 **generic** 欄位表達需求，例如：
+Contract 用一個 **generic** 欄位表達需求：
 
 ```yaml
-required_environment_capabilities:
+required_capabilities:
   - FOUNDATION_DB_READONLY
   - FOUNDATION_DB_PRIVILEGED
 ```
 
-這些名稱是**專案自訂的 capability identifier**。skillpack 擁有**機制**，不擁有各專案
-的 secret 值。能力層級只有三級：`NONE` / `READONLY` / `PRIVILEGED`。
+一個 **capability 代表對某個 bounded operation 的權限 / 能力**；它**不規定該能力
+如何被 fulfil**。名稱是**專案自訂的 capability identifier**。skillpack 擁有**機制**，
+不擁有各專案的 secret 值。effective privilege 只有三級：`NONE` / `READONLY` /
+`PRIVILEGED`。
+
+> **Deprecated alias。** 前一版的欄位名 `required_environment_capabilities` 仍被接受，
+> 但**立即 normalize** 成 `required_capabilities`（`normalizeRequiredCapabilities()`），
+> 且**不得**讓新舊兩個欄位各自獨立驅動行為。兩者若同時出現且不一致 →
+> `CONFLICTING_CAPABILITY_FIELDS`，fail closed。normalize 後**唯一 owner** 是
+> `required_capabilities`。
+
+### Fulfillment mechanisms
+
+`CAPABILITY_FULFILLMENT_MECHANISM` 的允許值：
+
+```text
+NONE  ENV_INJECTION  CAPABILITY_WRAPPER  SECRET_BROKER  REMOTE_EXECUTOR
+```
+
+**`A capability may be fulfilled by any approved mechanism that satisfies the task's least-privilege and secret-handling requirements.`**
+**No mechanism is preferred globally.** 哪些 mechanism 可用由 project / runtime policy 決定。
+
+### Semantic rule
+
+**`The worker's required capability is the authority boundary.`** fulfillment
+mechanism 是 implementation detail。例如 `FOUNDATION_DB_READONLY` 可以是：worker
+拿到一個 readonly process-env credential；**或** worker 呼叫 trusted readonly
+capability wrapper；**或** worker 呼叫 secret broker / remote executor——只要
+**effective authority 恰好是 `READONLY`**。**不要求 worker 本身持有 credential。**
+
+### Secret possession
+
+明確欄位：
+
+```yaml
+worker_receives_secret: YES | NO
+```
+
+一個 capability 可以在 `worker_receives_secret: NO` 的情況下**成功 fulfil**——這是
+**first-class 的有效 outcome**（例：`FOUNDATION_DB_READONLY` + `CAPABILITY_WRAPPER`
++ `worker_receives_secret: NO` → `CAPABILITY_FULFILLED`）。`ENV_INJECTION` 預設
+`YES`；wrapper / broker / executor 預設 `NO`；明確值優先。
 
 ### Governance interaction
 
-**環境能力不選模型。** dispatch 前的順序：
+**Capability 不選模型。** dispatch 前：
 
 1. Router 正常分類 task；
 2. 解析 governance tier；
-3. 解析 `required_environment_capabilities`；
-4. Router 驗證該能力對這個 task 是**被允許**的；
-5. worker 透過 trusted Orca environment recipe / setup hook 啟動（**唯一**供裝途徑）；
-6. worker 在**不印值**的前提下驗證能力存在；
-7. 供裝失敗 **fail-closed**。
+3. `normalizeRequiredCapabilities` → `required_capabilities`；
+4. 驗證 task-established need（見下）與 authorization；
+5. 選 / 檢查一個可用的 fulfillment mechanism；
+6. 進 domain 執行前跑 preflight；
+7. 任一步失敗 **fail-closed**。
 
-`G3`（`G3_HIGH_RISK`）**不自動**等於特權 credential 存取——task 必須**具體地**需要它。
-例：
+`G3`（`G3_HIGH_RISK`）**不自動**等於特權能力——task 必須**具體地**需要它；沒有
+task-established need 時，即使 governance tier 高、authorization 齊備，也只給
+`NONE`。`PRIVILEGED` 一律需要 current task 上的明確、task-bound authorization
+（`environment_capability_authorization: required_and_provided`），staleness 語意同
+`MODEL_ROUTING_POLICY.md` 的 `HUMAN_EXPLICIT_OVERRIDE` / `HUMAN_OVERRIDE_STALE`。
 
-| 情境 | 特權 DB 能力 |
+| 情境 | capability |
 |---|---|
 | discovery / reviewer | 通常 `NONE` |
 | read-only hosted validation | `FOUNDATION_DB_READONLY` |
-| 明確授權的受控 DB 執行 | `FOUNDATION_DB_PRIVILEGED` |
+| 明確授權的受控執行 | `FOUNDATION_DB_PRIVILEGED` |
 
-`PRIVILEGED` 一律需要 current task 上的明確授權
-（`environment_capability_authorization: required_and_provided`）。
+### Capability wrapper
 
-**`Router local env presence does not count as worker capability availability.`**
+`CAPABILITY_WRAPPER` 是合法 fulfillment mechanism。trusted wrapper **可以**：從
+trusted store 取 secret、把 secret 留在 wrapper / child-process 記憶體、只暴露
+**allowlisted** 的 operation surface、回傳 sanitized 結果、讓呼叫端 worker 看不到
+credential。
 
-### Secret sourcing
+Wrapper **不得**變成 arbitrary-command tunnel。對 DB wrapper：**不隱含 arbitrary
+SQL**；approved actions / functions 必須 allowlisted；privilege level 必須 bounded；
+target identity 必須驗證；secret-bearing diagnostics 必須 sanitize。surface 非
+allowlist-only 時 → `CAPABILITY_PREFLIGHT_FAILED`。
 
-用 trusted secret storage / setup hook。**不得把 repo-local `.env` 或 global
-Windows user environment 規定為首選機制。** **沒有 secret 值進 Git。**
+### Environment injection
+
+`ENV_INJECTION` 在 runtime 真的能安全支援時仍受支援，但：
+**Router local env presence is not capability fulfillment.**
+user / global env inheritance 不是 authority；env injection 只是**一種
+mechanism**，不是 capability 的定義；不得 command-line / prompt 注入 secret；
+**缺少 env-injection 支援 ≠ capability 不可能**
+——若另有 approved mechanism（wrapper / broker / executor）可用，就用它。
 
 ### Redaction
 
-Worker diagnostics **永遠不 echo** credential-bearing URL。對 secret-bearing 變數，
-log 只能輸出下列 token 之一：
+Worker diagnostics **永遠不 echo** credential-bearing URL。對 secret-bearing
+capability，log 只能輸出下列 token 之一：
 
 ```text
 PRESENT  ABSENT  TARGET_MATCH  TARGET_MISMATCH  TLS_OK  TLS_FAILED
@@ -439,15 +491,17 @@ PRESENT  ABSENT  TARGET_MATCH  TARGET_MISMATCH  TLS_OK  TLS_FAILED
 
 worker 進入 domain 執行**之前**：
 
-- 驗證 required capability `PRESENT`；
+- 驗證 capability `PRESENT`（透過所選 mechanism）；
 - 適用時驗證預期 target identity（`TARGET_MATCH`）；
 - 適用時驗證 CA 設定存在；
-- 驗證特權層級**等於** task 要求（不多不少）。
+- 驗證 **effective privilege 恰好等於** required（不多不少）。
 
-任一不成立 → 回 `ENVIRONMENT_CAPABILITY_UNAVAILABLE`，且**不得** fallback 到：舊
-endpoint、直連 IPv6 endpoint、另一組 credential、local approximation、或更寬的
-privilege。`READONLY` 請求不得被悄悄升成 `PRIVILEGED`；`PRIVILEGED` 請求不得被
-`READONLY` 悄悄取代——不符即 `PRIVILEGE_LEVEL_MISMATCH`，fail-closed。
+任一不成立 → 對應 fail-closed outcome（`CAPABILITY_UNAVAILABLE` /
+`CAPABILITY_PREFLIGHT_FAILED` / `TARGET_MISMATCH` / `PRIVILEGE_LEVEL_MISMATCH` /
+`AUTHORIZATION_REQUIRED`），且**不得** fallback 到：舊 endpoint、直連 IPv6
+endpoint、另一組 credential、local approximation、或更寬的 privilege。`READONLY`
+請求不得被悄悄升成 `PRIVILEGED`；`PRIVILEGED` 請求不得被 `READONLY` 悄悄取代——
+不符即 `PRIVILEGE_LEVEL_MISMATCH`，fail-closed。
 
 ### Worker result recovery（callback transport 失敗）
 
@@ -483,19 +537,24 @@ handoff 前先 sanitize**。
 
 ### Lifecycle
 
-只把能力供裝給**需要它的**那個 worker / task。**不得**把長駐 Router session 的 env
-當作授權來源。**不得**要求未來所有 worker 都繼承同一組 secret。
+只把 capability 授予**需要它的**那個 worker / task。**不得**把長駐 Router session
+的 env / wrapper / broker session 當作授權來源。**不得**要求未來所有 worker 都
+繼承同一組 secret 或共用同一個 wrapper session。
 
 ### Interruption / recovery
 
-worker 因中斷而重啟時：**重新解析** required environment capabilities、**重新供裝**
-（透過 trusted setup 機制）、**不假設**舊 terminal 的 secret 狀態存活。
+worker 因中斷而重啟時：**重新解析** `required_capabilities`、**重新解析**可用的
+fulfillment mechanism、**重新建立** capability access。**不假設**：舊 env state、
+舊 wrapper process、舊 secret broker session、舊 remote executor session、舊
+terminal——**prior capability state 不具權威**。
 
 ### Reviewers
 
-Independent reviewer **不因為要重現 validation** 就取得特權 secret；他們檢視
-**sanitized** validation evidence。只有在 review 本身**真的需要**直接 database
-存取時，才供裝 read / privileged credential 給 reviewer。
+Independent reviewer **不因為要重現 validation** 就取得任何 sensitive capability；
+預設檢視 **sanitized** validation evidence。只有在 review 本身**真的需要直接使用
+該 capability** 時才明確宣告
+`review_requires_direct_capability: true`（不綁死在 database / env 術語）並經
+authorization。
 
 ## Execution lifecycle semantics
 

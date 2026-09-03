@@ -3680,34 +3680,83 @@ export function validateGovernanceTierCases(document) {
 }
 
 /* ------------------------------------------------------------------------ *
- * Scoped worker environment provisioning
+ * Scoped worker capabilities
  *
- * Workers get only the environment capabilities their task requires. Secrets
- * never travel in prompts, command-line args, logs or worker_done, and are
- * never inherited globally. WORKFLOW_POLICY.md's "Scoped worker environment
- * provisioning" section is the normative owner; this makes the fail-closed
- * decisions executable. It does not select the model, touch the registry, or
- * change governance-tier / capacity-reserve / disjointness / dispatch-identity
- * behaviour.
+ * A worker gets only the capabilities its task requires. A capability is an
+ * AUTHORITY BOUNDARY (a bounded operation the worker is permitted to cause);
+ * how it is fulfilled - env injection, a trusted capability wrapper, a secret
+ * broker, a remote executor - is an implementation detail chosen by
+ * project/runtime policy, with no globally preferred mechanism. The worker
+ * need not possess the credential: `worker_receives_secret: NO` is a
+ * first-class FULFILLED outcome. Secrets never travel in prompts, command-line
+ * args, logs or worker_done, and are never inherited globally.
+ * WORKFLOW_POLICY.md's "Scoped worker capabilities" section is the normative
+ * owner; this makes the fail-closed decisions executable. It does not select
+ * the model, touch the registry, or change governance-tier / capacity-reserve
+ * / disjointness / dispatch-identity / callback-recovery behaviour.
  * ------------------------------------------------------------------------ */
 
-export const ENV_CAPABILITY_LEVELS = ["NONE", "READONLY", "PRIVILEGED"];
+export const CAPABILITY_LEVELS = ["NONE", "READONLY", "PRIVILEGED"];
 
-// Diagnostics about a secret-bearing variable may emit ONLY these tokens - no
-// value, no connection string.
-export const ENV_DIAGNOSTIC_TOKENS = ["PRESENT", "ABSENT", "TARGET_MATCH", "TARGET_MISMATCH", "TLS_OK", "TLS_FAILED"];
+export const CAPABILITY_FULFILLMENT_MECHANISMS = [
+  "NONE",
+  "ENV_INJECTION",
+  "CAPABILITY_WRAPPER",
+  "SECRET_BROKER",
+  "REMOTE_EXECUTOR",
+];
 
-export const ENV_PROVISIONING_OUTCOMES = [
-  "CAPABILITY_GRANTED",
+export const CAPABILITY_OUTCOMES = [
+  "CAPABILITY_FULFILLED",
+  "CAPABILITY_UNAVAILABLE",
   "AUTHORIZATION_REQUIRED",
   "PRIVILEGE_LEVEL_MISMATCH",
-  "ENVIRONMENT_CAPABILITY_UNAVAILABLE",
+  "TARGET_MISMATCH",
+  "CAPABILITY_PREFLIGHT_FAILED",
 ];
+
+// Diagnostics about a secret-bearing capability may emit ONLY these tokens -
+// no value, no connection string.
+export const CAPABILITY_DIAGNOSTIC_TOKENS = ["PRESENT", "ABSENT", "TARGET_MATCH", "TARGET_MISMATCH", "TLS_OK", "TLS_FAILED"];
+
+// Deprecated aliases (pre-generalization names). Kept for one release so
+// existing imports keep resolving; new code uses the CAPABILITY_* names.
+export const ENV_CAPABILITY_LEVELS = CAPABILITY_LEVELS;
+export const ENV_DIAGNOSTIC_TOKENS = CAPABILITY_DIAGNOSTIC_TOKENS;
+export const ENV_PROVISIONING_OUTCOMES = CAPABILITY_OUTCOMES;
 
 export const CALLBACK_TRANSPORT_STATES = ["OK", "FAILED_RECOVERED", "FAILED_UNRECOVERED"];
 export const RESULT_RECOVERY_TIERS = ["WORKER_DONE", "WORKER_READ", "ORCHESTRATION_EVIDENCE", "HUMAN_GATE"];
 
-const levelRank = (level) => Math.max(0, ENV_CAPABILITY_LEVELS.indexOf(level));
+const levelRank = (level) => Math.max(0, CAPABILITY_LEVELS.indexOf(level));
+
+/**
+ * Normalizes the contract's capability field. `required_capabilities` is the
+ * single owner; `required_environment_capabilities` is a deprecated alias that
+ * is normalized to it exactly once. If BOTH are present and disagree, fail
+ * closed - two independent fields must never drive behaviour.
+ */
+export function normalizeRequiredCapabilities(fields) {
+  const f = isPlainObject(fields) ? fields : {};
+  const canon = Array.isArray(f.required_capabilities) ? f.required_capabilities.filter(isNonEmptyString) : null;
+  const alias = Array.isArray(f.required_environment_capabilities)
+    ? f.required_environment_capabilities.filter(isNonEmptyString)
+    : null;
+
+  if (canon !== null && alias !== null) {
+    const same = canon.length === alias.length && canon.every((c) => alias.includes(c));
+    if (!same) {
+      return {
+        error: "CONFLICTING_CAPABILITY_FIELDS",
+        fail_closed: true,
+        reason: "required_capabilities and the deprecated required_environment_capabilities disagree",
+      };
+    }
+    return { capabilities: canon, deprecated_alias_used: true, normalized_once: true };
+  }
+  if (alias !== null) return { capabilities: alias, deprecated_alias_used: true, normalized_once: true };
+  return { capabilities: canon ?? [], deprecated_alias_used: false, normalized_once: canon !== null };
+}
 
 /**
  * A scheme://user:secret@host userinfo pair - the shape of a credential-bearing
@@ -3755,33 +3804,47 @@ export function envDiagnosticTokenAllowed(token) {
 }
 
 /**
- * A restart after interruption always re-resolves and re-provisions the
- * required capabilities through the trusted setup mechanism. A claim that the
- * old terminal's secret state can just be reused is rejected.
+ * A restart after interruption always re-resolves `required_capabilities`,
+ * re-resolves the available fulfillment mechanisms and re-establishes access.
+ * Any claim that prior capability state (old env, old wrapper process, old
+ * broker/executor session, old terminal) can just be reused is rejected.
  */
 export function mustReprovisionOnRestart(context) {
   const c = isPlainObject(context) ? context : {};
   if (c.restarted_after_interruption !== true) {
     return { reprovision: false, reason: "not a restart" };
   }
-  if (c.reuse_old_terminal_secret_state === true) {
-    return { reprovision: true, reason: "old terminal secret state is not authoritative; re-provision through the trusted setup mechanism" };
+  const staleReuse = [
+    "reuse_old_terminal_secret_state",
+    "reuse_old_env_state",
+    "reuse_old_wrapper_process",
+    "reuse_old_broker_session",
+    "reuse_old_remote_executor_session",
+  ].some((k) => c[k] === true);
+  if (staleReuse) {
+    return { reprovision: true, reason: "prior capability state is not authoritative; re-resolve and re-establish through an approved mechanism" };
   }
-  return { reprovision: true, reason: "restart after interruption re-resolves and re-provisions required capabilities" };
+  return { reprovision: true, reason: "restart after interruption re-resolves required_capabilities and re-establishes access" };
 }
 
 /**
- * Fail-closed resolution of a worker's scoped environment capability request.
+ * Fail-closed resolution of a worker's scoped capability request, independent
+ * of how the capability is fulfilled.
  *
- * Governance tier alone never grants a credential. A privileged capability
- * needs explicit authorization. A reviewer gets NONE unless the review itself
- * needs direct DB access. The Router's own process-local env does not count as
- * the worker having the capability. A provisioned level that does not exactly
- * match the requested one is a mismatch, never silently accepted - neither
- * upgraded nor downgraded. Missing capability or a failed preflight is
- * ENVIRONMENT_CAPABILITY_UNAVAILABLE with no fallback.
+ *   1. resolve the requested capability (and its privilege level)
+ *   2. verify a task-established need (governance tier alone never grants)
+ *   3. verify authorization (PRIVILEGED needs explicit, task-bound approval)
+ *   4. select / check a fulfillment mechanism against what the runtime offers
+ *   5. verify capability preflight
+ *   6. verify effective privilege == required (no silent upgrade or downgrade)
+ *   7. fail-closed result
+ *
+ * A reviewer gets NONE unless `review_requires_direct_capability` is true. The
+ * Router's own process-local env does not count as fulfillment. A missing
+ * mechanism does NOT mean impossible if another approved mechanism is
+ * available. `worker_receives_secret: NO` is a valid fulfilled outcome.
  */
-export function resolveEnvironmentCapability(request) {
+export function resolveCapability(request) {
   const r = isPlainObject(request) ? request : {};
   const requested = Array.isArray(r.requested) ? r.requested.filter(isNonEmptyString) : [];
   const privilegedIds = Array.isArray(r.privileged_ids) ? r.privileged_ids : [];
@@ -3790,74 +3853,129 @@ export function resolveEnvironmentCapability(request) {
   const requestedLevel =
     requested.length === 0 ? "NONE" : requested.some(isPrivileged) ? "PRIVILEGED" : "READONLY";
 
-  const grantNone = (reason) => ({ outcome: "CAPABILITY_GRANTED", granted_level: "NONE", requested_level: requestedLevel, reason });
+  const fulfilledNone = (reason) => ({
+    outcome: "CAPABILITY_FULFILLED",
+    effective_privilege: "NONE",
+    required_privilege: requestedLevel,
+    fulfillment_mechanism: "NONE",
+    worker_receives_secret: "NO",
+    reason,
+  });
 
-  // Reviewer: sanitized evidence is enough unless direct DB access is required.
-  if (r.reviewer === true && requestedLevel !== "NONE" && r.review_requires_direct_db !== true) {
-    return grantNone("reviewer reviews sanitized validation evidence; direct DB access not established as required");
+  // (2b) Reviewer: sanitized evidence is enough unless the review itself needs
+  // to use the capability directly.
+  const reviewNeedsDirect = r.review_requires_direct_capability === true || r.review_requires_direct_db === true;
+  if (r.reviewer === true && requestedLevel !== "NONE" && !reviewNeedsDirect) {
+    return fulfilledNone("reviewer reviews sanitized validation evidence; direct capability use not declared required");
   }
 
+  // (1) Nothing requested.
   if (requestedLevel === "NONE") {
-    return { outcome: "CAPABILITY_GRANTED", granted_level: "NONE", requested_level: "NONE" };
+    return { outcome: "CAPABILITY_FULFILLED", effective_privilege: "NONE", required_privilege: "NONE", fulfillment_mechanism: "NONE", worker_receives_secret: "NO" };
   }
 
-  // A request must be backed by a task-established need. Governance tier
-  // (even G3) does not by itself create one.
+  // (2) Task-established need. Governance tier (incl. G3) does not create one.
   if (r.task_requires_capability !== true) {
-    return grantNone("no task-established need for a database capability; governance tier alone does not grant one");
+    return fulfilledNone("no task-established need for this capability; governance tier alone does not grant one");
   }
 
+  // (3) Authorization for a privileged capability.
   if (requestedLevel === "PRIVILEGED" && r.authorization !== "required_and_provided") {
     return {
       outcome: "AUTHORIZATION_REQUIRED",
-      granted_level: "NONE",
-      requested_level: "PRIVILEGED",
-      reason: "privileged database capability requires explicit authorization on the current task",
+      effective_privilege: "NONE",
+      required_privilege: "PRIVILEGED",
+      reason: "privileged capability requires explicit, task-bound authorization",
     };
   }
 
-  // The Router process-local env being present is not the worker's capability.
-  if (r.router_local_env_present === true && r.worker_env_present !== true) {
+  // (4) Fulfillment mechanism.
+  const available = Array.isArray(r.available_mechanisms) ? r.available_mechanisms : null;
+  const mechanism = isNonEmptyString(r.fulfillment_mechanism) ? r.fulfillment_mechanism : null;
+
+  if (mechanism === null || mechanism === "NONE") {
+    // No mechanism named. Impossible only if the runtime offers none either.
+    if (available !== null && available.filter((m) => m !== "NONE").length === 0) {
+      return { outcome: "CAPABILITY_UNAVAILABLE", effective_privilege: "NONE", required_privilege: requestedLevel, reason: "no approved fulfillment mechanism is available" };
+    }
+    return { outcome: "CAPABILITY_UNAVAILABLE", effective_privilege: "NONE", required_privilege: requestedLevel, reason: "no fulfillment mechanism selected" };
+  }
+  if (!CAPABILITY_FULFILLMENT_MECHANISMS.includes(mechanism)) {
+    return { outcome: "CAPABILITY_UNAVAILABLE", effective_privilege: "NONE", required_privilege: requestedLevel, reason: `unknown fulfillment mechanism ${JSON.stringify(mechanism)}` };
+  }
+  if (available !== null && !available.includes(mechanism)) {
+    return { outcome: "CAPABILITY_UNAVAILABLE", effective_privilege: "NONE", required_privilege: requestedLevel, reason: `mechanism ${mechanism} is not available in this runtime` };
+  }
+
+  // ENV_INJECTION only: the Router's process-local env is not fulfillment.
+  if (mechanism === "ENV_INJECTION" && r.router_local_env_present === true && r.worker_env_present !== true) {
     return {
-      outcome: "ENVIRONMENT_CAPABILITY_UNAVAILABLE",
-      granted_level: "NONE",
-      requested_level: requestedLevel,
-      reason: "Router process-local environment is not a worker capability; the fresh worker environment lacks it",
+      outcome: "CAPABILITY_UNAVAILABLE",
+      effective_privilege: "NONE",
+      required_privilege: requestedLevel,
+      fulfillment_mechanism: mechanism,
+      reason: "Router process-local environment is not capability fulfillment; the fresh worker environment lacks it",
     };
   }
 
+  // CAPABILITY_WRAPPER must expose an allowlisted operation surface, not an
+  // arbitrary-command / arbitrary-SQL tunnel.
+  if (mechanism === "CAPABILITY_WRAPPER" && r.wrapper_allowlist_only === false) {
+    return {
+      outcome: "CAPABILITY_PREFLIGHT_FAILED",
+      effective_privilege: "NONE",
+      required_privilege: requestedLevel,
+      fulfillment_mechanism: mechanism,
+      reason: "capability wrapper exposes an unbounded operation surface; approved actions must be allowlisted",
+    };
+  }
+
+  // (5) Preflight.
   const pf = isPlainObject(r.preflight) ? r.preflight : null;
   if (pf !== null) {
     if (pf.capability_present !== true) {
-      return { outcome: "ENVIRONMENT_CAPABILITY_UNAVAILABLE", granted_level: "NONE", requested_level: requestedLevel, reason: "preflight: required capability not present" };
-    }
-    if (isNonEmptyString(pf.privilege_level) && pf.privilege_level !== requestedLevel) {
-      return {
-        outcome: "PRIVILEGE_LEVEL_MISMATCH",
-        granted_level: "NONE",
-        requested_level: requestedLevel,
-        provisioned_level: pf.privilege_level,
-        reason: `preflight privilege level ${pf.privilege_level} does not match the requested ${requestedLevel}; not silently ${levelRank(pf.privilege_level) > levelRank(requestedLevel) ? "downgraded" : "upgraded"}`,
-      };
+      return { outcome: "CAPABILITY_PREFLIGHT_FAILED", effective_privilege: "NONE", required_privilege: requestedLevel, fulfillment_mechanism: mechanism, reason: "preflight: capability not present" };
     }
     if (pf.target_identity === "TARGET_MISMATCH") {
-      return { outcome: "ENVIRONMENT_CAPABILITY_UNAVAILABLE", granted_level: "NONE", requested_level: requestedLevel, reason: "preflight: target identity mismatch; no fallback endpoint" };
+      return { outcome: "TARGET_MISMATCH", effective_privilege: "NONE", required_privilege: requestedLevel, fulfillment_mechanism: mechanism, reason: "preflight: target identity mismatch; no fallback target" };
     }
     if (r.ca_required === true && pf.ca_config === "ABSENT") {
-      return { outcome: "ENVIRONMENT_CAPABILITY_UNAVAILABLE", granted_level: "NONE", requested_level: requestedLevel, reason: "preflight: CA configuration absent and required" };
+      return { outcome: "CAPABILITY_PREFLIGHT_FAILED", effective_privilege: "NONE", required_privilege: requestedLevel, fulfillment_mechanism: mechanism, reason: "preflight: CA configuration absent and required" };
     }
-  } else if (isNonEmptyString(r.provisioned_level) && r.provisioned_level !== requestedLevel) {
+  }
+
+  // (6) Effective privilege must match exactly - no silent upgrade or downgrade.
+  const effective = isNonEmptyString(r.effective_privilege)
+    ? r.effective_privilege
+    : pf !== null && isNonEmptyString(pf.privilege_level)
+      ? pf.privilege_level
+      : requestedLevel;
+  if (effective !== requestedLevel) {
     return {
       outcome: "PRIVILEGE_LEVEL_MISMATCH",
-      granted_level: "NONE",
-      requested_level: requestedLevel,
-      provisioned_level: r.provisioned_level,
-      reason: `provisioned level ${r.provisioned_level} does not match requested ${requestedLevel}`,
+      effective_privilege: effective,
+      required_privilege: requestedLevel,
+      fulfillment_mechanism: mechanism,
+      reason: `effective privilege ${effective} does not match the required ${requestedLevel}; not silently ${levelRank(effective) > levelRank(requestedLevel) ? "downgraded" : "upgraded"}`,
     };
   }
 
-  return { outcome: "CAPABILITY_GRANTED", granted_level: requestedLevel, requested_level: requestedLevel };
+  // (7) Fulfilled. Secret possession defaults by mechanism; an explicit value
+  // wins. worker_receives_secret: NO is a valid outcome.
+  const secretByMechanism = mechanism === "ENV_INJECTION" ? "YES" : "NO";
+  const workerReceivesSecret = ["YES", "NO"].includes(r.worker_receives_secret) ? r.worker_receives_secret : secretByMechanism;
+
+  return {
+    outcome: "CAPABILITY_FULFILLED",
+    effective_privilege: requestedLevel,
+    required_privilege: requestedLevel,
+    fulfillment_mechanism: mechanism,
+    worker_receives_secret: workerReceivesSecret,
+  };
 }
+
+// Deprecated alias (pre-generalization name). Behaves identically.
+export const resolveEnvironmentCapability = resolveCapability;
 
 /**
  * Recovery precedence when a completed worker cannot send worker_done because
