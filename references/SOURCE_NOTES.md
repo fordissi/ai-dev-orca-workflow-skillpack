@@ -12,7 +12,7 @@
 | Orca CLI | 2026-09-01（本 session） | 2026-09-01（前次 session 記錄，本 session 未重新抓取） | 版本 1.4.192 |
 | Codex CLI | 2026-09-01（本 session） | 2026-09-01（前次 session 記錄，本 session 未重新抓取） | 版本 0.151.0 |
 | Claude Code | 2026-09-01（本 session） | 2026-09-01（前次 session 記錄，本 session 未重新抓取） | 版本 2.1.252 |
-| Antigravity CLI | 2026-09-01（本 session） | 2026-09-01（前次 session 記錄，本 session 未重新抓取） | 版本 1.1.22 |
+| Antigravity CLI | 2026-09-03（`--version` 與 `agy models` 重新實測） | 2026-09-01（前次 session 記錄，本次未重新抓取上游） | 版本 1.1.24（前次記錄 1.1.22） |
 | GitHub CLI | 2026-09-01（本 session） | **2026-09-01（本 session 實際抓取 manual）** | 版本 2.92.0 |
 | OpenUsage | 不適用（未安裝） | 2026-09-01（前次 session 記錄） | macOS 15+ |
 
@@ -65,6 +65,27 @@
 - 官方語法 `gh repo create [<name>] [flags]`；省略 `OWNER/` 時預設為已登入使用者。
 - `--public`、`--source`、`--remote`、`--push` 官方 manual 與本機 `--help` 一致，無差異。
 - `gh auth status` 確認認證有效。**其 token 欄位未記錄於任何 artifact。**
+
+## 本 session 實測發現（2026-09-03）
+
+### Antigravity CLI 1.1.24（版本更新：前次記錄 1.1.22）
+
+- `agy --version` 回報 `1.1.24`。
+- `agy models` 重新執行，清單新增 `gemini-3.8-flash-{high,medium,low}`，排在
+  清單最前面；`gemini-3.7-flash-*` / `gemini-3.6-flash-*` / `gemini-3.1-pro-*`
+  仍在清單中，並未被移除——這是新舊世代**同時存在**，前次查核時只有單一世代。
+- 實際 dispatch 驗證：`agy -p "<prompt>" --model gemini-3.8-flash-low` 與
+  `--model gemini-3.8-flash-high` 皆成功，回應正確自報 `Gemini 3.8 Flash` /
+  `Google Gemini`。
+- **差異記錄**：`AUTO_GEMINI` resolver 的既有說明（見
+  `policies/MODEL_REGISTRY.yaml` 的 `resolvers.antigravity_models`）原本假設
+  「符合 effort 的 family entry」唯一，多世代同時存在後不再成立，已補充
+  「取符合 effort 的最新一筆」規則，並同步更新
+  `references/OFFICIAL_COMMANDS.md`。`MODEL_REGISTRY.yaml` 的 candidate 欄位
+  本身（`model: AUTO_GEMINI`）不需要改，因為 resolver 是即時解析、不寫死版本。
+- E6 記錄的 headless print-mode 對 `command` 權限 fail-closed 的 blocker
+  **未在本次重新驗證**；`AUTO_GEMINI` 的 `status: experimental` 沿用不變。
+  詳細記錄見 `references/MODEL_EVIDENCE.md` 的 E9。
 
 ## 已移除的過時內容
 

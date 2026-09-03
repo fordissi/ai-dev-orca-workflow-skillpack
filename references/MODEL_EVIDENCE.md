@@ -260,6 +260,57 @@ evidence_status: provisional
 supports_tier_claim_for: []
 ```
 
+### E9 — 本機 Gemini 3.8 Flash 世代更新確認（2026-09-03）
+
+```yaml
+id: E9
+source_url: local
+accessed_at: "2026-09-03"
+scope: antigravity_gemini_flash_generation_check
+what_it_measures: >-
+  Google 發布 Gemini Flash 3.8 後，確認 `agy`（本機 1.1.24）是否已能解析、
+  dispatch 這個新世代，以及既有的 AUTO_GEMINI live-resolver 機制是否需要
+  改動 MODEL_REGISTRY.yaml 的 candidate 欄位才能跟上。這不是 E6 的完整
+  ~8 項 qualification 重跑，只確認世代更新本身沒有破壞既有的 resolver 假設。
+cases_run:
+  - check: live resolver lists the new generation
+    method: "agy models"
+    result: PASS
+    detail: >-
+      gemini-3.8-flash-{high,medium,low} 出現在清單最前面；
+      gemini-3.7-flash-* / gemini-3.6-flash-* / gemini-3.1-pro-* 仍在清單中，
+      新舊世代同時存在——這是 E6 撰寫時沒有的情況（當時只有單一世代）。
+  - check: low-reasoning dispatch on the new generation
+    method: "agy -p ... --model gemini-3.8-flash-low"
+    result: PASS
+    detail: "coherent 3-line output; self-reported 'Gemini 3.8 Flash' / 'Google Gemini'"
+  - check: high-reasoning dispatch on the new generation
+    method: "agy -p ... --model gemini-3.8-flash-high"
+    result: PASS
+    detail: "coherent 2-line output; self-reported 'Gemini 3.8 Flash'"
+  - check: provider / model-family identity for reviewer disjointness
+    result: PASS
+    detail: "reported Google Gemini - resolves to model_family: gemini, same as 3.7"
+methodology_limitation: >-
+  只重跑 E6 的 identity 與 low/high dispatch 兩類檢查，用來確認世代更新本身
+  安全；E6 記錄的 headless print-mode 對 `command` 權限 fail-closed 的
+  blocker（reviewer / repo-discovery 路徑）**未在本次重新驗證**，因為那是
+  agy harness 層級的行為，與 Gemini 是哪個世代無關——沒有理由預期它隨模型
+  版本改變，但也尚未實測證實。`AUTO_GEMINI` 在 `MODEL_REGISTRY.yaml` 中
+  維持 `status: experimental`，blocker 狀態沿用 E6，不因本次確認而解除。
+confidence: medium
+evidence_status: provisional
+expires_at: "2026-12-01"
+supports_tier_claim_for: []
+conclusion: >-
+  AUTO_GEMINI 的 live-resolver 設計本來就不寫死版本字串，因此 3.7 → 3.8 的
+  世代更新**不需要修改 MODEL_REGISTRY.yaml 的任何 candidate 欄位**——所有
+  九個引用 AUTO_GEMINI 的 slot 在下一次 dispatch 時就會解析到 3.8。唯一
+  需要補上的是 resolver 語意本身：多世代同時存在時必須明確「取符合 effort
+  的最新一筆」，見 policies/MODEL_REGISTRY.yaml 的 resolvers.antigravity_models
+  與 references/OFFICIAL_COMMANDS.md 的對應更新（皆為本次一併記錄）。
+```
+
 ## 2026-09-02：三階段重構後的 status 狀態
 
 `MODEL_REGISTRY.yaml` 0.5 的實際 `status`：

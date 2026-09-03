@@ -113,7 +113,7 @@ resolvers:
   antigravity_models:
     command: "agy models"
     resolves: ["AUTO_GEMINI"]
-    verified_at: "2026-09-02"
+    verified_at: "2026-09-03"
     note: >-
       AUTO_GEMINI is a placeholder. Resolve it against the live model list
       before dispatch. Do not hard-code a display name observed on one host.
@@ -122,11 +122,23 @@ resolvers:
       resolution outside the candidate's declared model_family is
       CONFIG_INVALID and must not be dispatched - this is what keeps
       independent-review disjointness honest.
-      Effort is encoded in the id: `reasoning: low` resolves to the
-      `gemini-3.7-flash-low` family entry, `reasoning: high` to
-      `gemini-3.7-flash-high` (observed 2026-09-02). `agy --effort low|medium|high`
-      is the session-level equivalent. Resolve against the live list at
-      dispatch time; this is a hint, not a frozen string.
+      Effort is encoded in the id: `reasoning: low` resolves to the live
+      list's newest Gemini Flash family entry ending `-low`, `reasoning: high`
+      to the newest ending `-high`. `agy --effort low|medium|high` is the
+      session-level equivalent. Resolve against the live list at dispatch
+      time; this is a hint, not a frozen string.
+      Re-verified 2026-09-03 against `agy 1.1.24`: the list now carries
+      multiple Gemini Flash generations at once (observed: 3.8, 3.7, 3.6,
+      3.1-pro, newest first). Before 2026-09-03 only one generation was ever
+      live, so "the family entry matching this effort" was unambiguous; it no
+      longer is. The resolver MUST take the newest generation matching the
+      requested effort (the live list's own ordering, newest-first, is
+      sufficient - do not add separate version-comparison logic), never an
+      older one, and must not degrade to UNKNOWN merely because the list grew
+      longer. `gemini-3.8-flash-low` and `-high` were dispatched directly
+      (`agy -p "<prompt>" --model gemini-3.8-flash-<effort>`) and both
+      self-reported `Gemini 3.8 Flash` / `Google Gemini` correctly - the
+      resolver path itself needs no candidate edit for this generation change.
       Model eligibility is evaluated PER EXECUTION TASK: the headless
       permission limitation recorded in E6 constrains specific task shapes,
       it is not global ineligibility.

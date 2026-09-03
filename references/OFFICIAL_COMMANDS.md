@@ -2,7 +2,9 @@
 
 Local `--help` verified: **2026-09-01**; reasoning / dispatch / attestation
 section re-verified **2026-09-02** against `codex-cli 0.151.0`,
-`Claude Code 2.1.258`, `agy 1.1.23`, `orca 1.4.194`.
+`Claude Code 2.1.258`, `agy 1.1.23`, `orca 1.4.194`; Antigravity model list
+re-verified **2026-09-03** against `agy 1.1.24` — `gemini-3.8-flash-{low,
+medium,high}` now resolves and dispatches (see the Antigravity section below).
 
 Provider-native **resource probe** invocations (Codex `/status`, Claude
 `/usage`, Antigravity `agy` `/usage`) — verified account/session state, quota
@@ -39,7 +41,7 @@ gh repo create --help
 | Orca runtime | 1.4.192 | `orca status --json` 的 `runtime.appVersion` |
 | Codex CLI | 0.151.0 | `codex --version` |
 | Claude Code | 2.1.252 | `claude --version` |
-| Antigravity CLI | 1.1.22 | `agy --version` |
+| Antigravity CLI | 1.1.24 | `agy --version`（重新驗證 2026-09-03；先前記錄 1.1.22） |
 | GitHub CLI | 2.92.0 | `gh --version` |
 
 ---
@@ -417,13 +419,25 @@ agy --print "<prompt>"
 
 ### Reasoning effort（Antigravity / Gemini）
 
-實測 2026-09-02，`agy 1.1.23`：
+實測 2026-09-02，`agy 1.1.23`；model list 重新實測 2026-09-03，`agy 1.1.24`：
 
-- Effort 同時以**兩種方式**表達：model id 內嵌（`gemini-3.7-flash-high` /
-  `-medium` / `-low`，見 `agy models`）以及 session 旗標 `--effort low|medium|high`。
-- Registry 的 `AUTO_GEMINI` + `reasoning: low` 應解析到 `gemini-3.7-flash-low` 家族
-  entry；`reasoning: high` 解析到 `gemini-3.7-flash-high`。dispatch 時傳明確的
-  已解析 model id，或 `--model <family> --effort <level>`。
+- Effort 同時以**兩種方式**表達：model id 內嵌（`agy models` 目前列出
+  `gemini-3.8-flash-{high,medium,low}`、`gemini-3.7-flash-{high,medium,low}`、
+  `gemini-3.6-flash-{high,medium,low}`、`gemini-3.1-pro-{high,low}` 等家族，
+  由新到舊排列）以及 session 旗標 `--effort low|medium|high`。
+- **2026-09-03 新增：`gemini-3.8-flash-low` 與 `-high` 已實測可直接 dispatch**
+  （`agy -p "<prompt>" --model gemini-3.8-flash-<effort>`），回應正確自報
+  `Gemini 3.8 Flash` / `Google Gemini`。3.7 家族仍在清單中、仍可解析，未被移除。
+- Registry 的 `AUTO_GEMINI` **依 `agy models` 當下的即時清單解析**，不寫死任何一個
+  版本字串——`reasoning: low` 解析到清單中對應 effort 的 Gemini Flash 家族 entry，
+  `reasoning: high` 同理。這代表 3.7 → 3.8 的世代更新**不需要修改
+  `MODEL_REGISTRY.yaml` 的任何 `model:` 欄位**：`AUTO_GEMINI` 本來就會在下一次
+  dispatch 時解析到當下清單最新的家族。dispatch 時仍要傳明確的已解析 model id，
+  或 `--model <family> --effort <level>`，不得假設哪個版本永遠是清單第一名。
+- **2026-09-03 起清單同時列出多個世代**（`3.8` / `3.7` / `3.6` / `3.1`），
+  過去只有單一世代時「符合 effort 的 entry」不會有歧義；現在必須明確規則：
+  `agy models` 依觀察是新到舊排列，**取符合該 effort 的第一筆（即當下最新世代）**。
+  不得任意選到舊世代，也不得因為清單變長就整段退化成 `UNKNOWN`。
 - `agy -p`（headless / print mode）**對需要 `command` 權限的工具 fail closed**：
   實測任何在 headless 下要讀檔的呼叫都被 auto-deny（訊息：*"a tool required the
   'command' permission that headless mode cannot prompt for"*）。因此 read-only
