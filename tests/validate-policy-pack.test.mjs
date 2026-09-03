@@ -11,7 +11,9 @@ import {
   refreshRequired,
   relativeResetAt,
   resetExpired,
+  resolveActiveRouterResourcePool,
   resolveResourceAcquisition,
+  resolveRouterReserve,
   classifyCommand,
   classifyExecutionState,
   classifyPermissionRequest,
@@ -36,6 +38,7 @@ import {
   validateExecutionCases,
   validateHistory,
   validateMarkdownLinks,
+  validateModelSelection,
   validateRegistry,
   validateResourceState,
   validateRepository,
@@ -1635,12 +1638,15 @@ test("resource policy owns the opportunity signal without claiming capability", 
   // Evidence carries labels, never numbers.
   assert.match(resource, /只記錄標籤，不記錄數值/);
 
-  // The seven-layer precedence belongs to the algorithm owner, and points back
-  // here for the sixth layer rather than restating it.
+  // The precedence chain belongs to the algorithm owner, and points back here
+  // for its resource-signal layers rather than restating them. A Router
+  // capacity reserve layer was inserted ahead of them (see the dedicated
+  // Router capacity reserve conformance test), shifting conservation and
+  // opportunity down by one - the shift itself is expected, not a drift.
   assert.match(routing, /1\. policy eligibility/);
-  assert.match(routing, /6\. long-horizon conservation/);
-  assert.match(routing, /7\. short-horizon opportunity/);
-  assert.match(routing, /8\. registry preference/);
+  assert.match(routing, /7\. long-horizon conservation/);
+  assert.match(routing, /8\. short-horizon opportunity/);
+  assert.match(routing, /9\. registry preference/);
   assert.ok(routing.includes("RESOURCE_AWARE_ROUTING.md"), "the routing policy must point at the signal owner");
   assert.match(routing, /此處不重複/);
   // Scarcity before utilization, stated in the algorithm that applies them.
@@ -2738,4 +2744,259 @@ test("hardening left model registry, capability tiers, resource routing and disj
   for (const leaked of ["continuation_binding", "session_lifecycle", "human_instruction_revision"]) {
     assert.ok(!resource.includes(leaked), `resource-aware routing must not absorb ${leaked}`);
   }
+});
+
+/* ------------------------------------------------------------------------ *
+ * Router capacity reserve
+ *
+ * The Router is control-plane capacity: task classification, slot selection,
+ * resource acquisition, model dispatch, continuation decisions, reviewer
+ * routing, human gates and recovery/handoff synthesis all depend on it
+ * staying available. These tests cover what the YAML routing cases cannot:
+ * the pure band-derivation boundaries, generic (non-hard-coded) Router
+ * identity resolution, and the interaction with the pre-existing human
+ * override staleness check.
+ * ------------------------------------------------------------------------ */
+
+const RESERVE_NOW = "2026-09-01T12:01:00Z";
+const routerPool = (remainingRatio, overrides = {}) => ({
+  state: "GREEN",
+  available: true,
+  source: "ORCA_RUNTIME",
+  checked_at: "2026-09-01T12:00:00Z",
+  weekly_window: { remaining_ratio: remainingRatio, reset_at: "2026-09-08T12:00:00Z" },
+  ...overrides,
+});
+
+test("router reserve bands read remaining_ratio alone, not crossed with proximity", () => {
+  // The four bands and their exact boundaries.
+  assert.equal(resolveRouterReserve(routerPool(0.16), { now: RESERVE_NOW }).router_reserve_band, "NORMAL");
+  assert.equal(resolveRouterReserve(routerPool(0.15), { now: RESERVE_NOW }).router_reserve_band, "ROUTER_RESERVE");
+  assert.equal(resolveRouterReserve(routerPool(0.11), { now: RESERVE_NOW }).router_reserve_band, "ROUTER_RESERVE");
+  assert.equal(resolveRouterReserve(routerPool(0.10), { now: RESERVE_NOW }).router_reserve_band, "ROUTER_CRITICAL_RESERVE");
+  assert.equal(resolveRouterReserve(routerPool(0.06), { now: RESERVE_NOW }).router_reserve_band, "ROUTER_CRITICAL_RESERVE");
+  assert.equal(resolveRouterReserve(routerPool(0.05), { now: RESERVE_NOW }).router_reserve_band, "ROUTER_EMERGENCY_RESERVE");
+  assert.equal(resolveRouterReserve(routerPool(0.0), { now: RESERVE_NOW }).router_reserve_band, "ROUTER_EMERGENCY_RESERVE");
+
+  // A reset an hour from now (NEAR proximity) must not soften or harden the
+  // band the way it would for conservation_pressure - reserve does not cross
+  // remaining_ratio with proximity at all.
+  const near = resolveRouterReserve(routerPool(0.08, { weekly_window: { remaining_ratio: 0.08, reset_at: "2026-09-01T13:00:00Z" } }), { now: RESERVE_NOW });
+  const far = resolveRouterReserve(routerPool(0.08), { now: RESERVE_NOW });
+  assert.equal(near.router_reserve_band, far.router_reserve_band);
+  assert.equal(near.router_reserve_band, "ROUTER_CRITICAL_RESERVE");
+});
+
+test("router reserve reads BUDGET only, never a BURST window", () => {
+  const burstOnly = {
+    state: "GREEN",
+    available: true,
+    source: "ORCA_RUNTIME",
+    checked_at: "2026-09-01T12:00:00Z",
+    short_window: { remaining_ratio: 0.02, reset_at: "2026-09-01T14:00:00Z" },
+  };
+  assert.equal(resolveRouterReserve(burstOnly, { now: RESERVE_NOW }).router_reserve_band, "UNKNOWN");
+
+  // A healthy BUDGET alongside a nearly exhausted BURST is still NORMAL - the
+  // BURST reading must not leak into the reserve band at all.
+  const both = {
+    ...burstOnly,
+    weekly_window: { remaining_ratio: 0.9, reset_at: "2026-09-08T12:00:00Z" },
+  };
+  assert.equal(resolveRouterReserve(both, { now: RESERVE_NOW }).router_reserve_band, "NORMAL");
+});
+
+test("router reserve takes the most restrictive of several BUDGET windows", () => {
+  const entry = {
+    state: "GREEN",
+    available: true,
+    source: "ORCA_RUNTIME",
+    checked_at: "2026-09-01T12:00:00Z",
+    windows: [
+      { key: "weekly", role: "BUDGET", remaining_ratio: 0.8, reset_at: "2026-09-08T12:00:00Z" },
+      { key: "monthly", role: "BUDGET", remaining_ratio: 0.03, reset_at: "2026-09-30T12:00:00Z" },
+    ],
+  };
+  assert.equal(resolveRouterReserve(entry, { now: RESERVE_NOW }).router_reserve_band, "ROUTER_EMERGENCY_RESERVE");
+});
+
+test("router reserve stays UNKNOWN wherever the reading cannot carry weight", () => {
+  // Untrusted source.
+  assert.equal(
+    resolveRouterReserve({ state: "GREEN", available: true, source: "UNKNOWN", weekly_window: { remaining_ratio: 0.02, reset_at: "2026-09-08T12:00:00Z" } }, { now: RESERVE_NOW })
+      .router_reserve_band,
+    "UNKNOWN",
+  );
+  // UNKNOWN state.
+  assert.equal(resolveRouterReserve({ state: "UNKNOWN", source: "UNKNOWN" }, { now: RESERVE_NOW }).router_reserve_band, "UNKNOWN");
+  // Stale (past the freshness TTL).
+  assert.equal(
+    resolveRouterReserve(routerPool(0.02), { now: "2026-09-01T13:00:00Z" }).router_reserve_band,
+    "UNKNOWN",
+  );
+  // Reset-expired window - crossing reset_at invalidates the reading however
+  // recent checked_at is, same rule as every other resource signal.
+  assert.equal(
+    resolveRouterReserve(routerPool(0.02, { weekly_window: { remaining_ratio: 0.02, reset_at: "2026-09-01T12:00:30Z" } }), { now: RESERVE_NOW })
+      .router_reserve_band,
+    "UNKNOWN",
+  );
+  // No entry at all.
+  assert.equal(resolveRouterReserve(undefined, { now: RESERVE_NOW }).router_reserve_band, "UNKNOWN");
+});
+
+test("resolveActiveRouterResourcePool follows the registry's actual ROUTER slot, not a hard-coded provider", async () => {
+  const registryText = await readFile("policies/MODEL_REGISTRY.yaml", "utf8");
+  const registry = parse(registryText);
+  const tierOrder = registry.capability_tier_order;
+
+  const healthyCodex = routerPool(0.9);
+  const healthyClaude = { state: "GREEN", available: true, source: "ORCA_RUNTIME", checked_at: "2026-09-01T12:00:00Z", weekly_window: { remaining_ratio: 0.9, reset_at: "2026-09-08T12:00:00Z" } };
+
+  // As shipped, the ROUTER slot resolves to Codex.
+  const shipped = resolveActiveRouterResourcePool(registry, { codex: healthyCodex, claude: healthyClaude }, tierOrder, { now: RESERVE_NOW });
+  assert.equal(shipped.resource_state_key, "codex");
+
+  // Required case 12: point the fixture's ROUTER slot at a different
+  // provider entirely. Resolution must follow it - the mechanism reads the
+  // registry, it does not know "codex" as a distinguished value anywhere.
+  const rerouted = structuredClone(registry);
+  rerouted.capability_slots.ROUTER.candidates = [
+    { provider: "claude", resource_state_key: "claude", model: "sonnet", model_family: "claude-sonnet", reasoning: "high", capability_tier: "STRONG", stage: "STAGE_1_DEFAULT", enabled: true },
+  ];
+  const changed = resolveActiveRouterResourcePool(rerouted, { codex: healthyCodex, claude: healthyClaude }, tierOrder, { now: RESERVE_NOW });
+  assert.equal(changed.resource_state_key, "claude");
+  assert.equal(changed.provider, "claude");
+
+  // And reserve now protects Claude, not Codex: an autonomous Stage 2 pick
+  // that would land on Claude is excluded once Claude's own budget is tight,
+  // and Codex (an unrelated pool under this fixture) is unaffected.
+  const claudeReserved = resolveRouterReserve(
+    { state: "GREEN", available: true, source: "ORCA_RUNTIME", checked_at: "2026-09-01T12:00:00Z", weekly_window: { remaining_ratio: 0.04, reset_at: "2026-09-08T12:00:00Z" } },
+    { now: RESERVE_NOW },
+  ).router_reserve_band;
+  assert.equal(claudeReserved, "ROUTER_EMERGENCY_RESERVE");
+
+  const strong = selectCandidate(rerouted.capability_slots.STRONG_IMPLEMENTER, { codex: healthyCodex, claude: { ...healthyClaude, weekly_window: { remaining_ratio: 0.04, reset_at: "2026-09-08T12:00:00Z" } } }, tierOrder, {
+    now: RESERVE_NOW,
+    taskRisk: "medium",
+    activeRouterResourceKey: changed.resource_state_key,
+  });
+  assert.equal(strong.status, "SELECTED");
+  assert.equal(strong.candidate.provider, "codex", "Claude must be excluded once it is the reserved Router pool, leaving Codex");
+
+  // No registry, no ROUTER slot, or nothing selectable -> null, not a guess.
+  assert.equal(resolveActiveRouterResourcePool(undefined, {}, tierOrder, { now: RESERVE_NOW }), null);
+  assert.equal(resolveActiveRouterResourcePool({ capability_slots: {} }, {}, tierOrder, { now: RESERVE_NOW }), null);
+});
+
+test("a stale human override is rejected independent of router reserve", () => {
+  // Required case 11. Router capacity reserve never has to know about this:
+  // HUMAN_OVERRIDE_STALE is the pre-existing, unmodified staleness check on
+  // validateModelSelection. This confirms it still fires when an override
+  // from a previous task is carried into a new one that reserve happens to
+  // be active for.
+  const stale = validateModelSelection({
+    model_selection_source: "HUMAN_EXPLICIT_OVERRIDE",
+    current_task_id: "task-2",
+    current_instruction_revision: "rev-2",
+    human_override: {
+      task_id: "task-1",
+      instruction_revision: "rev-1",
+      provider: "codex",
+      model: "gpt-5.6-terra",
+      model_family: "gpt-5.6",
+      reasoning_effort: "high",
+    },
+  });
+  assert.equal(stale.result, "HUMAN_OVERRIDE_STALE");
+
+  // The matching current-task override is accepted, same mechanism.
+  const current = validateModelSelection({
+    model_selection_source: "HUMAN_EXPLICIT_OVERRIDE",
+    current_task_id: "task-2",
+    current_instruction_revision: "rev-2",
+    human_override: {
+      task_id: "task-2",
+      instruction_revision: "rev-2",
+      provider: "codex",
+      model: "gpt-5.6-terra",
+      model_family: "gpt-5.6",
+      reasoning_effort: "high",
+    },
+  });
+  assert.equal(current.result, "HUMAN_MODEL_OVERRIDE");
+});
+
+test("router capacity reserve is a resource exclusion, never a capability or registry change", async () => {
+  const registryText = await readFile("policies/MODEL_REGISTRY.yaml", "utf8");
+  const registry = parse(registryText);
+  const tierOrder = registry.capability_tier_order;
+
+  // Deep-reserve conditions on every relevant pool at once.
+  const reserved = { state: "GREEN", available: true, source: "ORCA_RUNTIME", checked_at: "2026-09-01T12:00:00Z", weekly_window: { remaining_ratio: 0.01, reset_at: "2026-09-08T12:00:00Z" } };
+  const resourceStates = { codex: reserved, claude: reserved, antigravity: { pools: { gemini: reserved } } };
+
+  for (const [name, slot] of Object.entries(registry.capability_slots)) {
+    const permitted = new Set(slot.candidates.map(({ model }) => model));
+    const result = selectCandidate(slot, resourceStates, tierOrder, {
+      now: RESERVE_NOW,
+      taskRisk: "critical",
+      allowRed: true,
+      activeRouterResourceKey: "codex",
+      isRouterSlot: name === "ROUTER",
+    });
+    if (result.status !== "SELECTED") continue;
+    assert.ok(permitted.has(result.candidate.model), `${name} selected ${result.candidate.model}, which is not one of its own candidates`);
+    assert.ok(
+      tierOrder.indexOf(result.candidate.capability_tier) >= tierOrder.indexOf(slot.minimum_tier),
+      `${name} selected a candidate below its minimum tier under reserve`,
+    );
+  }
+
+  // Reserve exclusion never appears as a field on MODEL_REGISTRY.yaml itself.
+  for (const leaked of ["ROUTER_RESERVE", "ROUTER_CRITICAL_RESERVE", "ROUTER_EMERGENCY_RESERVE", "router_reserve", "activeRouterResourceKey"]) {
+    assert.ok(!registryText.includes(leaked), `the model registry must not carry ${leaked}`);
+  }
+});
+
+test("router capacity reserve is documented in exactly one place and referenced, not duplicated", async () => {
+  const resource = await readFile("policies/RESOURCE_AWARE_ROUTING.md", "utf8");
+  const routing = await readFile("policies/MODEL_ROUTING_POLICY.md", "utf8");
+
+  assert.match(resource, /## Router capacity reserve/);
+  assert.ok(
+    resource.includes("Control-plane capacity has priority over optional workload capacity."),
+    "the resource policy must state the core principle",
+  );
+
+  // Every band name and threshold must be nameable where the rule lives.
+  for (const token of [
+    "ROUTER_RESERVE", "ROUTER_CRITICAL_RESERVE", "ROUTER_EMERGENCY_RESERVE",
+    "0.15", "0.10", "0.05", "router_reserve_override", "HUMAN_EXPLICIT_OVERRIDE",
+  ]) {
+    assert.ok(resource.includes(token), `the resource policy is missing ${token}`);
+  }
+
+  // It must not silently hard-code the authoring host's current Router.
+  assert.match(resource, /MODEL_REGISTRY\.capability_slots\.ROUTER/);
+  assert.match(resource, /provider\/model\s+無關/);
+
+  // The routing policy references the mechanism and renumbers around it, but
+  // does not redefine the bands or thresholds itself.
+  assert.match(routing, /9\.\s+Router capacity reserve/);
+  assert.match(routing, /7\.\s+long-horizon conservation/);
+  assert.ok(routing.includes("RESOURCE_AWARE_ROUTING.md"), "the routing policy must point at the reserve owner");
+  assert.match(routing, /此處不重複/);
+  for (const threshold of ["remaining_ratio > 0.15", "remaining_ratio <= 0.15"]) {
+    assert.ok(!routing.includes(threshold), `the routing policy must not restate the reserve threshold ${threshold}`);
+  }
+
+  // Human override reuses the existing pin/provenance mechanism rather than
+  // inventing a second one.
+  assert.match(resource, /Human explicit model selection/);
+  assert.ok(
+    resource.includes("router_reserve_override") && /不是\*\*新的授權機制/.test(resource),
+    "router_reserve_override must be documented as an audit label, not a new authorisation channel",
+  );
 });

@@ -1244,6 +1244,63 @@ export function resolveConservationPressure(entry, options = {}) {
   };
 }
 
+// Router capacity reserve bands, most severe first. Unlike conservation
+// pressure, these read remaining_ratio alone - proximity does not modulate
+// them: control-plane capacity is protected by how much of it is left, not by
+// how soon the window happens to refill. Router reserve is deliberately a
+// separate signal from conservation_pressure even though both read BUDGET
+// windows: conservation reorders candidates that already qualify, while
+// reserve excludes a candidate from qualifying at all, and only for the one
+// resource pool that hosts the active Router.
+const ROUTER_RESERVE_BANDS = ["ROUTER_EMERGENCY_RESERVE", "ROUTER_CRITICAL_RESERVE", "ROUTER_RESERVE", "NORMAL", "UNKNOWN"];
+const routerReserveRank = (value) => rankIn(ROUTER_RESERVE_BANDS, value) - 1;
+
+const ROUTER_RESERVE_THRESHOLD = 0.15;
+const ROUTER_CRITICAL_RESERVE_THRESHOLD = 0.10;
+const ROUTER_EMERGENCY_RESERVE_THRESHOLD = 0.05;
+
+function routerReserveBandFor(remainingRatio) {
+  if (typeof remainingRatio !== "number" || !Number.isFinite(remainingRatio) || remainingRatio < 0 || remainingRatio > 1) {
+    return "UNKNOWN";
+  }
+  if (remainingRatio <= ROUTER_EMERGENCY_RESERVE_THRESHOLD) return "ROUTER_EMERGENCY_RESERVE";
+  if (remainingRatio <= ROUTER_CRITICAL_RESERVE_THRESHOLD) return "ROUTER_CRITICAL_RESERVE";
+  if (remainingRatio <= ROUTER_RESERVE_THRESHOLD) return "ROUTER_RESERVE";
+  return "NORMAL";
+}
+
+/**
+ * Resolves the router-capacity-reserve band for one resource pool: how much
+ * of its long-horizon BUDGET remains, read on its own flat thresholds rather
+ * than crossed with reset proximity. A short BURST window never contributes -
+ * a five-hour window nearly exhausted says nothing about whether the Router's
+ * weekly capacity is at risk.
+ *
+ * Multiple BUDGET windows take the most restrictive band, for the same reason
+ * conservation_pressure does: any one of them can be the cap that actually
+ * runs out first. UNKNOWN (no usable BUDGET reading) is neither NORMAL nor a
+ * reserve band - it triggers nothing, exactly like every other UNKNOWN signal
+ * in this file.
+ */
+export function resolveRouterReserve(entry, options = {}) {
+  const { now = Date.now() } = options;
+  const readable = readableEntry(entry, now);
+
+  if (readable === null) return { ...UNKNOWN_BASE, router_reserve_band: "UNKNOWN" };
+
+  const base = { state: readable.state, confidence: readable.confidence, stale: readable.stale, router_reserve_band: "UNKNOWN" };
+  if (!readable.usable) return base;
+
+  let tightest = "UNKNOWN";
+  for (const window of resourceWindows(entry)) {
+    if (window.role !== "BUDGET") continue;
+    const band = routerReserveBandFor(window.remaining_ratio);
+    if (routerReserveRank(band) > routerReserveRank(tightest)) tightest = band;
+  }
+
+  return { ...base, router_reserve_band: tightest };
+}
+
 // A provider argues for conservation only once its long-horizon budget is
 // genuinely tight. Everything softer is neutral, so a merely-measured provider
 // is never worse off than an unmeasured one.
@@ -1284,7 +1341,21 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
     requiredStage = isNonEmptyString(slot?.stage) ? slot.stage : null,
     rolePreference = [],
     pinnedCandidate = null,
+    activeRouterResourceKey = null,
+    isRouterSlot = false,
   } = options;
+
+  // Shared with the pinned-candidate short-circuit below: a human's explicit
+  // model pin is the one thing that may still use the Router's own reserved
+  // pool, because granting the override is a human decision the strategic
+  // contract already recorded, not something the operational router grants
+  // itself by relaxing a resource filter.
+  const pinnedMatches = (providerOrLabelProvider, model) =>
+    isPlainObject(pinnedCandidate) &&
+    isNonEmptyString(pinnedCandidate.model) &&
+    model === pinnedCandidate.model &&
+    (pinnedCandidate.provider === undefined || pinnedCandidate.provider === null ||
+      providerOrLabelProvider === pinnedCandidate.provider);
 
   // Stage gate: a candidate must meet the required stage, and a flagship
   // (STAGE_3) candidate is admitted only when the required stage IS STAGE_3.
@@ -1386,6 +1457,31 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
       failures.push({ kind: "policy", why: `${label}: shares the implementer model family` });
     }
 
+    // Router capacity reserve. The Router is control-plane capacity: it must
+    // stay able to route, validate, recover and hand off work. Once the pool
+    // hosting the active Router drops to or below the reserve threshold,
+    // autonomous (non-pinned) dispatches to OTHER slots on that same pool are
+    // excluded here - never the Router slot itself, and never a candidate the
+    // human explicitly pinned for this task. This never touches
+    // MODEL_REGISTRY membership or capability stage; it is a resource-routing
+    // exclusion, same layer as availability, evaluated alongside the other
+    // hard filters above. Semantics and thresholds are owned by
+    // RESOURCE_AWARE_ROUTING.md's Router capacity reserve section.
+    const routerReserve =
+      !isRouterSlot &&
+      isNonEmptyString(activeRouterResourceKey) &&
+      candidate?.resource_state_key === activeRouterResourceKey &&
+      !pinnedMatches(candidate?.provider, candidate?.model)
+        ? resolveRouterReserve(entry, { now }).router_reserve_band
+        : "NORMAL";
+
+    if (routerReserve !== "NORMAL" && routerReserve !== "UNKNOWN") {
+      failures.push({
+        kind: "policy",
+        why: `${label}: router capacity reserve (${routerReserve}) protects the pool hosting the active Router`,
+      });
+    }
+
     if (failures.length === 0) {
       qualified.push({
         candidate,
@@ -1412,12 +1508,7 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
   // stage, tier, disjointness, availability, source trust); if it does not,
   // the block is honest and names that candidate's own reason.
   if (isPlainObject(pinnedCandidate) && isNonEmptyString(pinnedCandidate.model)) {
-    const matches = (providerOrLabelProvider, model) =>
-      model === pinnedCandidate.model &&
-      (pinnedCandidate.provider === undefined || pinnedCandidate.provider === null ||
-        providerOrLabelProvider === pinnedCandidate.provider);
-
-    if (!slot.candidates.some((c) => matches(c?.provider, c?.model))) {
+    if (!slot.candidates.some((c) => pinnedMatches(c?.provider, c?.model))) {
       return {
         status: "BLOCKED",
         code: "CONFIG_INVALID",
@@ -1425,8 +1516,18 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
       };
     }
 
-    const hit = qualified.find(({ candidate }) => matches(candidate?.provider, candidate?.model));
+    const hit = qualified.find(({ candidate }) => pinnedMatches(candidate?.provider, candidate?.model));
     if (hit !== undefined) {
+      const hitEntry = resolveResourceEntry(resourceStates, hit.candidate?.resource_state_key);
+      const hitReserveBand = resolveRouterReserve(hitEntry, { now }).router_reserve_band;
+      // Recorded per PART, alongside model_selection_source=HUMAN_EXPLICIT_OVERRIDE
+      // at the contract layer: true only when this pin actually spent reserved
+      // Router capacity, never merely because a pin exists.
+      const reserveOverride =
+        !isRouterSlot &&
+        isNonEmptyString(activeRouterResourceKey) &&
+        hit.candidate?.resource_state_key === activeRouterResourceKey &&
+        hitReserveBand !== "NORMAL" && hitReserveBand !== "UNKNOWN";
       return {
         status: "SELECTED",
         candidate: hit.candidate,
@@ -1440,12 +1541,14 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
         expiry_promotion: null,
         stranded_promotion: null,
         pinned: true,
+        router_reserve_band: hitReserveBand,
+        router_reserve_override: reserveOverride,
       };
     }
 
     const rej = rejected.find(({ label }) => {
       const [prov, ...rest] = label.split("/");
-      return matches(prov, rest.join("/"));
+      return pinnedMatches(prov, rest.join("/"));
     });
     const code =
       rej === undefined
@@ -1600,6 +1703,38 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
     status: "BLOCKED",
     code,
     reason: `no candidate qualifies: ${rejected.flatMap(({ failures }) => failures.map(({ why }) => why)).join("; ")}`,
+  };
+}
+
+/**
+ * Identifies the resource pool currently hosting the active Operational
+ * Router, so Router capacity reserve stays generic rather than hard-coded to
+ * whichever provider/model happens to be the ROUTER slot's registry head
+ * today. Runs the ordinary selection algorithm against the registry's ROUTER
+ * slot (with `isRouterSlot: true`, so reserve cannot apply to it - the Router
+ * cannot exclude itself from its own pool) and reports the winning
+ * candidate's `resource_state_key`.
+ *
+ * Returns null when the ROUTER slot itself is not resolvable (no registry, no
+ * ROUTER slot, or no qualifying candidate) - in that case the caller has no
+ * pool identity to protect, and Router capacity reserve simply does not apply
+ * anywhere, exactly as it did before this mechanism existed.
+ */
+export function resolveActiveRouterResourcePool(registry, resourceStates, tierOrder, options = {}) {
+  const routerSlot = registry?.capability_slots?.ROUTER;
+  if (!isPlainObject(routerSlot)) return null;
+
+  const result = selectCandidate(routerSlot, resourceStates, tierOrder, {
+    ...options,
+    isRouterSlot: true,
+    activeRouterResourceKey: null,
+  });
+  if (result.status !== "SELECTED") return null;
+
+  return {
+    resource_state_key: result.candidate?.resource_state_key ?? null,
+    provider: result.candidate?.provider ?? null,
+    model: result.candidate?.model ?? null,
   };
 }
 
@@ -1870,6 +2005,16 @@ export function validateRoutingCases(document, registry) {
         if (promoted && !isNonEmptyString(result.expiry_promotion.over)) {
           findings.push(`${named}: an expiry promotion must record the candidate it moved ahead of`);
         }
+      }
+
+      if ("router_reserve_override" in testCase.expect && result.router_reserve_override !== testCase.expect.router_reserve_override) {
+        findings.push(
+          `${named}: expected router_reserve_override ${testCase.expect.router_reserve_override}, got ${result.router_reserve_override}`,
+        );
+      }
+
+      if ("router_reserve_band" in testCase.expect && result.router_reserve_band !== testCase.expect.router_reserve_band) {
+        findings.push(`${named}: expected router_reserve_band ${testCase.expect.router_reserve_band}, got ${result.router_reserve_band}`);
       }
 
       if ("conservation_demotion" in testCase.expect) {

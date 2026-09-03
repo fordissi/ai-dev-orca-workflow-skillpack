@@ -2616,3 +2616,455 @@ cases:
       provider: antigravity
       model: AUTO_GEMINI
       disjoint_from: { provider: codex, model_family: gpt-5.6 }
+
+  # ------------------------------------------------------------------- #
+  # ROUTER CAPACITY RESERVE
+  #
+  # The Router is control-plane capacity: task classification, slot
+  # selection, resource acquisition, model dispatch, continuation decisions,
+  # reviewer routing, human gates and recovery/handoff synthesis all depend on
+  # it staying available. These cases protect the resource pool that hosts
+  # the active Router from being drained by autonomous non-Router dispatch on
+  # the SAME pool, without ever touching MODEL_REGISTRY membership,
+  # capability stage, or reviewer disjointness.
+  #
+  # `activeRouterResourceKey` is hard-coded to `codex` in most of these cases
+  # because that is what the shipped registry's ROUTER slot actually resolves
+  # to today (see resolveActiveRouterResourcePool, exercised separately in
+  # tests/validate-policy-pack.test.mjs against a fixture where the Router
+  # runs on a different provider, proving the mechanism itself is generic).
+  # ------------------------------------------------------------------- #
+
+  - name: router_reserve_normal_band_leaves_terra_eligible
+    kind: selection
+    why: >-
+      Required case 1. Thirty percent of the Router's own weekly budget left
+      is comfortably above the reserve threshold, so an ordinary autonomous
+      Stage 2 dispatch on the same pool is unaffected.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.30, reset_at: "2026-09-08T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.90, reset_at: "2026-09-08T12:00:00Z" }
+    options:
+      allowExperimental: false
+      taskRisk: medium
+      now: "2026-09-01T12:01:00Z"
+      activeRouterResourceKey: codex
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-terra
+
+  - name: router_reserve_at_exactly_fifteen_percent_excludes_terra
+    kind: selection
+    why: >-
+      Required case 2. remaining_ratio == 0.15 is the reserve boundary
+      (<= 0.15), inclusive. Terra sits on the Router's own pool and is
+      excluded; the healthier disjoint alternative takes the work instead of
+      Codex being downgraded in capability to stay put.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.15, reset_at: "2026-09-08T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.90, reset_at: "2026-09-08T12:00:00Z" }
+    options:
+      allowExperimental: false
+      taskRisk: medium
+      now: "2026-09-01T12:01:00Z"
+      activeRouterResourceKey: codex
+    expect:
+      status: SELECTED
+      provider: claude
+      model: sonnet
+
+  - name: router_reserve_at_twelve_percent_excludes_sol_from_escalation
+    kind: selection
+    why: >-
+      Required case 3. Sol sits on the same pool hosting the Router. Twelve
+      percent remaining is inside the reserve band, so the flagship escalation
+      candidate on that pool is excluded and Opus (disjoint provider) takes
+      the exceptional flagship work instead.
+    slot: ESCALATION_MODEL
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.12, reset_at: "2026-09-08T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.90, reset_at: "2026-09-08T12:00:00Z" }
+    options:
+      allowExperimental: false
+      taskRisk: critical
+      now: "2026-09-01T12:01:00Z"
+      activeRouterResourceKey: codex
+    flagship_reason:
+      escalation_reason: major irreversible architectural decision with material ambiguity
+      why_stage_2_insufficient: >-
+        The decision is irreversible and the contract remains materially
+        ambiguous after Stage 2 review; flagship adjudication is warranted
+        independent of the Router's own resource pressure.
+    expect:
+      status: SELECTED
+      provider: claude
+      model: opus
+
+  - name: router_reserve_does_not_exclude_the_router_slot_itself
+    kind: selection
+    why: >-
+      Required case 4. The same twelve-percent reading, but this dispatch IS
+      for the ROUTER slot. Reserve protects this pool - it must not exclude
+      the Router from using its own capacity to keep functioning.
+    slot: ROUTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.12, reset_at: "2026-09-08T12:00:00Z" }
+    options:
+      allowExperimental: false
+      taskRisk: low
+      now: "2026-09-01T12:01:00Z"
+      isRouterSlot: true
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-luna
+
+  - name: router_reserve_at_twelve_percent_excludes_ordinary_luna_implementer
+    kind: selection
+    why: >-
+      Required case 5. An ordinary Stage 1 implementation dispatch is exactly
+      the "other optional Codex worker consumption" the reserve suppresses.
+      Luna is excluded and the enabled Gemini alternative, though experimental
+      status, takes the routine work instead.
+    slot: DEFAULT_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.12, reset_at: "2026-09-08T12:00:00Z" }
+      antigravity:
+        pools:
+          gemini: { state: GREEN, available: true, source: ORCA_RUNTIME }
+    options:
+      allowExperimental: false
+      taskRisk: low
+      now: "2026-09-01T12:01:00Z"
+      activeRouterResourceKey: codex
+    expect:
+      status: SELECTED
+      provider: antigravity
+      model: AUTO_GEMINI
+
+  - name: router_critical_reserve_at_nine_percent_excludes_non_router_codex
+    kind: selection
+    why: >-
+      Required case 6. Nine percent crosses into ROUTER_CRITICAL_RESERVE.
+      Every non-Router Codex candidate on this slot is still excluded by the
+      same mechanism - the band names the severity, the exclusion mechanic is
+      identical across all three reserve bands.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.09, reset_at: "2026-09-08T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.90, reset_at: "2026-09-08T12:00:00Z" }
+      antigravity:
+        pools:
+          gemini: { state: GREEN, available: true, source: ORCA_RUNTIME }
+    options:
+      allowExperimental: false
+      taskRisk: medium
+      now: "2026-09-01T12:01:00Z"
+      activeRouterResourceKey: codex
+    expect:
+      status: SELECTED
+      provider: claude
+      model: sonnet
+
+  - name: router_emergency_reserve_at_four_percent_permits_only_router_use
+    kind: selection
+    why: >-
+      Required case 7. Four percent is ROUTER_EMERGENCY_RESERVE. The
+      autonomous Stage 2 dispatch is still excluded from the reserved pool -
+      only the Router slot itself (see the companion case immediately after)
+      may keep drawing from it.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.04, reset_at: "2026-09-08T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.90, reset_at: "2026-09-08T12:00:00Z" }
+    options:
+      allowExperimental: false
+      taskRisk: medium
+      now: "2026-09-01T12:01:00Z"
+      activeRouterResourceKey: codex
+    expect:
+      status: SELECTED
+      provider: claude
+      model: sonnet
+
+  - name: router_emergency_reserve_still_permits_the_router_itself
+    kind: selection
+    why: >-
+      The other half of required case 7. At the same four percent, the ROUTER
+      slot's own dispatch is unaffected - "only minimum necessary
+      Router/control-plane execution" is exactly what this is.
+    slot: ROUTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.04, reset_at: "2026-09-08T12:00:00Z" }
+    options:
+      allowExperimental: false
+      taskRisk: low
+      now: "2026-09-01T12:01:00Z"
+      isRouterSlot: true
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-luna
+
+  - name: router_reserve_never_triggers_from_unknown_budget
+    kind: selection
+    why: >-
+      Required case 8. The Router's pool is GREEN (so it competes fairly on
+      resource-state band with Claude, also GREEN) but carries no BUDGET
+      window at all - genuinely unread, not guessed. Reserve must not invent
+      a band from that silence; Terra keeps the registry-order head exactly
+      as it would if this mechanism did not exist.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.90, reset_at: "2026-09-08T12:00:00Z" }
+    options:
+      allowExperimental: false
+      taskRisk: medium
+      now: "2026-09-01T12:01:00Z"
+      activeRouterResourceKey: codex
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-terra
+
+  - name: router_reserve_ignores_a_near_exhausted_burst_window
+    kind: selection
+    why: >-
+      Required case 9. The Router's weekly BUDGET is healthy at 90 percent;
+      only its five-hour BURST window is nearly exhausted and about to reset.
+      Reserve reads BUDGET only - a short window says nothing about the
+      Router's long-horizon survival, so nothing is excluded.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        short_window: { remaining_ratio: 0.02, reset_at: "2026-09-01T14:00:00Z" }
+        weekly_window: { remaining_ratio: 0.90, reset_at: "2026-09-08T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.90, reset_at: "2026-09-08T12:00:00Z" }
+    options:
+      allowExperimental: false
+      taskRisk: medium
+      now: "2026-09-01T12:01:00Z"
+      activeRouterResourceKey: codex
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-terra
+
+  - name: human_pin_during_reserve_records_the_override
+    kind: selection
+    why: >-
+      Required case 10. Reserve is active on the Router's pool at nine
+      percent, but the current human instruction explicitly names Terra. The
+      pin is honoured - overriding reserve is a human decision, not something
+      the router grants itself - and the override actually spent reserved
+      capacity, so router_reserve_override records true.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.09, reset_at: "2026-09-08T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.90, reset_at: "2026-09-08T12:00:00Z" }
+    options:
+      allowExperimental: false
+      taskRisk: medium
+      now: "2026-09-01T12:01:00Z"
+      activeRouterResourceKey: codex
+      pinnedCandidate: { provider: codex, model: gpt-5.6-terra }
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-terra
+      router_reserve_band: ROUTER_CRITICAL_RESERVE
+      router_reserve_override: true
+
+  - name: human_pin_outside_the_reserved_pool_is_not_an_override
+    kind: selection
+    why: >-
+      The contrast case for required case 10: a pin that happens to land on a
+      candidate NOT sharing the Router's pool spends no reserved capacity, so
+      router_reserve_override stays false even though a pin is in effect.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.09, reset_at: "2026-09-08T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.90, reset_at: "2026-09-08T12:00:00Z" }
+    options:
+      allowExperimental: false
+      taskRisk: medium
+      now: "2026-09-01T12:01:00Z"
+      activeRouterResourceKey: codex
+      pinnedCandidate: { provider: claude, model: sonnet }
+    expect:
+      status: SELECTED
+      provider: claude
+      model: sonnet
+      router_reserve_override: false
+
+  - name: router_reserve_exhausting_every_alternative_blocks_rather_than_burns_reserve
+    kind: selection
+    why: >-
+      When excluding the reserved pool leaves nothing else qualified, the
+      answer is the existing BLOCKED machinery, not a silent fallback onto the
+      Router's own reserve. Disabling the only alternative candidate exercises
+      exactly the "no valid alternative exists" case named for
+      ROUTER_CRITICAL_RESERVE.
+    slot: DEFAULT_IMPLEMENTER
+    disable_models: [AUTO_GEMINI]
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.09, reset_at: "2026-09-08T12:00:00Z" }
+    options:
+      allowExperimental: false
+      taskRisk: low
+      now: "2026-09-01T12:01:00Z"
+      activeRouterResourceKey: codex
+    expect:
+      status: BLOCKED
+      code: POLICY_BLOCKED
+
+  - name: router_reserve_never_weakens_reviewer_disjointness
+    kind: selection
+    why: >-
+      Required case 13. Reserve on the Router's own pool must not become a
+      backdoor that lets a non-disjoint reviewer back in. Both codex
+      candidates are already excluded by disjointness regardless of reserve;
+      antigravity is independently unavailable here, so Claude is the only
+      candidate left standing - reserve had nothing left to touch, and
+      disjointness was not weakened to make room for it.
+    slot: INDEPENDENT_REVIEWER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.09, reset_at: "2026-09-08T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.90, reset_at: "2026-09-08T12:00:00Z" }
+      antigravity:
+        pools:
+          gemini: { available: false, source: ORCA_RUNTIME }
+    options:
+      allowExperimental: false
+      taskRisk: high
+      now: "2026-09-01T12:01:00Z"
+      activeRouterResourceKey: codex
+      excludeProvider: codex
+      excludeModelFamily: gpt-5.6
+    expect:
+      status: SELECTED
+      provider: claude
+      model: sonnet
+      disjoint_from: { provider: codex, model_family: gpt-5.6 }

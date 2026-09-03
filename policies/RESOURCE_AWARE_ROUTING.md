@@ -1,9 +1,9 @@
 # Resource-Aware Routing Policy
 
-Version: `0.5`
+Version: `0.6`
 Status: normative
 
-這份文件是 **resource state、freshness、quota window role（BURST / BUDGET）、conservation pressure、reset proximity / stranded capacity 與候選重排** 的 normative owner。
+這份文件是 **resource state、freshness、quota window role（BURST / BUDGET）、conservation pressure、reset proximity / stranded capacity、候選重排，以及 Router capacity reserve** 的 normative owner。
 
 **Quota 是 routing signal，不是 architecture authority。** 它只能在已達到相同 `minimum_tier` **且相同 capability `stage`** 的候選之間重排順序，永遠不能降低能力門檻、把候選拉到 slot 要求的 stage 之下、把 Stage 3 模型拉進 Stage 1/2 的 slot、改變架構決策，或繞過 human gate。Capability stage、stage admission、slot 與 candidate 演算法屬於 [`MODEL_ROUTING_POLICY.md`](MODEL_ROUTING_POLICY.md)；本文件的 overlay 一律在 stage eligibility **之後**才作用。特別是：「快要 reset 的閒置 BURST 額度」**不得**把 flagship（Stage 3）候選帶進 Stage 1/2 的工作。
 
@@ -653,6 +653,141 @@ Operational router 將其 normalize 為 facts（Codex BURST 剩約 0.59、BUDGET
 
 **人提供的是 resource facts，不是 model-selection instruction。** 「Codex 額度還多」
 不等於「用 Codex」；候選排序仍由本節與 `MODEL_ROUTING_POLICY.md` 決定。
+
+## Router capacity reserve
+
+**`Control-plane capacity has priority over optional workload capacity.`**
+
+本節是 **Router capacity reserve**——保護「承載 active Operational Router 的
+resource pool」不被自主（autonomous）的非 Router 派工提前耗盡——的 normative
+owner。這是 **resource routing 政策**，不改變 [`MODEL_REGISTRY.yaml`](MODEL_REGISTRY.yaml)
+的 candidate membership，也不改變 [`MODEL_ROUTING_POLICY.md`](MODEL_ROUTING_POLICY.md)
+的 capability stage。
+
+### 動機
+
+Router 是 control-plane capacity：task classification、slot selection、resource
+acquisition、model dispatch、continuation decision、reviewer routing、human gate、
+recovery / handoff synthesis 全部依賴它持續可用。若它所在 provider 的長期
+（BUDGET）quota 被 Terra / Sol / 一般 Luna worker 派工積極消耗，workflow 可能在
+還沒做完 routing、驗證、恢復與 handoff 之前，就先把 Router 自己的額度用完。
+
+### Active Router identity
+
+```text
+active_router_resource = MODEL_REGISTRY.capability_slots.ROUTER 目前選中的
+                          candidate 的 provider / resource_state_key
+```
+
+這個身分**由 ROUTER slot 目前實際選中的候選決定**，不得在 stable policy 文字或程式
+中寫死成任何特定 provider/model。author host 目前的 registry 把它解析為
+Codex / `gpt-5.6-luna`（`reasoning: max`），但 reserve 語意必須與 provider/model
+無關：human 若日後把 Router 換成別的 provider，reserve 保護的對象自動跟著換，
+不需要改這份文件或驗證程式。
+
+`role: ROUTER` 這個 role tag 會出現在**不只一個** slot 上（例如 `DEEP_REASONER`
+也標 `role: ROUTER`，用於 architecture reasoning dispatch）——**它不等於「這是
+承載 active Router 的 slot」**。只有 registry 中名為 `ROUTER` 的 slot 本身，才是
+本節保護的對象；`DEEP_REASONER` 這類同樣標 `ROUTER` role 的其他 slot，屬於「非
+Router 的自主派工」，一樣受 reserve 約束。
+
+### Reserve bands
+
+固定用**該 resource pool 的長期 BUDGET window 的 `remaining_ratio`**判斷，
+**不與 reset proximity 交叉**——不像 `conservation_pressure`，這裡只看剩多少，
+不看多快 reset。理由：control-plane capacity 的保護基準是「還剩多少」，不是
+「多快補回來」。
+
+| Band | 條件 | 行為 |
+|---|---|---|
+| `NORMAL` | `remaining_ratio > 0.15` | 既有 routing 行為不變 |
+| `ROUTER_RESERVE` | `remaining_ratio <= 0.15` | 對**同一 resource pool** 的自主非 Router 派工排除；優先改用其他 eligible provider |
+| `ROUTER_CRITICAL_RESERVE` | `remaining_ratio <= 0.10` | 同上，語氣更強：預設保留給 Router；沒有替代方案時回既有的 `HUMAN_GATE` / `RESOURCE_BLOCKED` / `ROUTING_UNAVAILABLE`，不得靜默耗用 reserve |
+| `ROUTER_EMERGENCY_RESERVE` | `remaining_ratio <= 0.05` | 同一機制，最嚴格：只允許最低限度的 Router/control-plane 使用 |
+
+**三個門檻是同一個排除機制的嚴重程度分級，不是三種不同的邏輯。** 一旦
+`remaining_ratio <= 0.15`，該 resource pool 上的自主非 Router 候選一律被排除；
+band 名稱只用於稽核與說明「排除得多嚴重」。`remaining_ratio` 讀不到
+（`UNKNOWN`）時**不觸發任何 reserve band**——見下方 UNKNOWN 一節。
+
+`ROUTER_RESERVE` 起，**不得為了留在同一 provider 而降低 task capability**（例如
+把 Stage 2 工作降到 Stage 1 candidate）。應該做的是改選其他 eligible provider；
+找不到才回既有的 blocked / human gate 結果——這與其他 hard eligibility filter
+（`enabled: false`、stage、disjointness）耗盡候選後的既有行為完全一致，本節
+不另建新的 blocked 語意。
+
+多個 BUDGET window 時，取**最嚴格者**（remaining_ratio 最低、對應 band 最嚴重的
+那個）——與 `conservation_pressure` 的聚合規則一致：任一長期 cap 都可能是真正
+先撞到的瓶頸。**只看 BUDGET window，不得只憑短期 BURST（例如 5 小時窗）觸發**：
+BURST 剩多少與 Router 的長期存續能力無關。
+
+### 排除範圍：只作用於同一 resource pool、只排除非 Router 派工
+
+Reserve 是一個 **exclusion 條件**，與 `enabled: false`、stage 不符、disjointness
+違反同一層評估，**不是**重排（reorder）：
+
+- 只在候選的 `resource_state_key` 與 active Router 的 `resource_state_key`
+  相同時才評估；其他 resource pool 完全不受影響。
+- **永遠不排除 ROUTER slot 自身**：Router 繼續使用自己的 pool，不因為自己的
+  reserve band 而被排除出局——保護的是它，不是禁止它。
+- 只排除**自主（autonomous）**派工；current human instruction 明確指名的
+  candidate（見下方 Human override）不受影響。
+
+因此它與既有的資源訊號分工清楚：`conservation_pressure` / `budget_expiry_opportunity`
+/ `stranded_capacity_risk` 在**已合格**的候選之間重排；Router capacity reserve
+決定某個候選**在特定 resource pool 上是否夠格**。兩者讀的都是 BUDGET/BURST
+window，但語意不同、產生的效果也不同——一個排序，一個排除。
+
+### Human override
+
+`current` human instruction 仍可明確要求使用被 reserve 排除的 provider/model
+（例如「用 Terra」），即使 reserve 目前生效中。這是既有 human explicit model
+selection 機制（見 `MODEL_ROUTING_POLICY.md` 的 *Human explicit model selection*）
+的直接延伸，**不是**另一個新的 override 通道：human pin 本來就排在整條 routing
+precedence 的最上層，Router capacity reserve 排在它之後，pin 自然生效。
+
+記錄方式沿用既有欄位：
+
+```yaml
+model_selection_source: HUMAN_EXPLICIT_OVERRIDE
+router_reserve_override: true      # 僅在此次 override 實際使用了被保留的 pool 時記 true
+```
+
+`router_reserve_override` 只是額外的稽核標籤，**不是**新的授權機制——真正的授權
+仍是 `HUMAN_EXPLICIT_OVERRIDE` 本身既有的 task id / instruction revision 綁定
+（見 `MODEL_ROUTING_POLICY.md` 的 *Selection provenance*）。override 是
+**task-local** 的：它不修改 `MODEL_REGISTRY.yaml`，也不解除未來 task 的 reserve；
+下一個 task 若沒有自己的 current override，reserve 照常評估。一個 task 之前的
+override 帶到後續 task 上，是既有的 `HUMAN_OVERRIDE_STALE` 情況，語意由
+`MODEL_ROUTING_POLICY.md` 定義，此處不重複。
+
+### 與既有 band / UNKNOWN 語意的關係
+
+Router capacity reserve 讀的是 BUDGET window 的原始 `remaining_ratio`，門檻與
+`conservation_pressure` 不同、且不與 proximity 交叉，因此是**獨立的訊號**，
+但仍遵守既有的 fail-closed / neutral 慣例：
+
+- 讀不到可信的 BUDGET remaining_ratio（entry 未過 source trust invariant、
+  `state` 為 `UNKNOWN`、entry stale 或 reset-expired、confidence 低於
+  `MEDIUM`、或該 pool 沒有任何 BUDGET window）→ band 為 `UNKNOWN`，**不觸發任何
+  reserve 行為**。**不得因為讀不到就假設它是 healthy，也不得假設它是 scarce
+  而預先啟動 reserve。**
+- Weekly reset generation 已過期時，依既有 *Reset-boundary invalidation* 規則
+  先 refresh；refresh 完成前該 entry 視為 `UNKNOWN`，reserve 判定同樣套用
+  UNKNOWN 的中性處理。
+- Reserve 的排除**不跨越** `GREEN` / `YELLOW` / `RED` / `UNKNOWN` 的 resource
+  state band——它是額外的一層排除條件，不是替代 band 邏輯。
+- Reserve 不影響 reviewer disjointness：disjointness 是更早一層的 hard filter，
+  reserve 只在 disjointness 已經滿足的候選集合中進一步排除，兩者互不放寬對方。
+
+### 記錄
+
+Reserve 造成的排除，其理由已隨既有的 rejected-candidate 機制自然出現在
+`ROUTING_UNAVAILABLE` / `POLICY_BLOCKED` 的 `reason` 字串中（標明
+`router capacity reserve (<band>)`），不需要另建一份平行的排除記錄。
+`router_reserve_override` 是唯一需要額外記錄的新欄位，且**只記標籤（band 名稱
+與 boolean），不記 `remaining_ratio` 的數值**——與本文件其餘資源訊號的記錄慣例
+一致。
 
 ## 不保存的內容
 

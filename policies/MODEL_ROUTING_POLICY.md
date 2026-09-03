@@ -77,7 +77,7 @@ AI **不得**：看 benchmark 後重排 registry、因某次任務失敗就永�
 
 ## Routing precedence（overall）
 
-從 human 意圖到最終候選，precedence 固定為十層，**下層不得推翻上層**：
+從 human 意圖到最終候選，precedence 固定為十一層，**下層不得推翻上層**：
 
 ```text
 1.  latest explicit human model instruction   (pin: provider / model / reasoning)
@@ -88,11 +88,19 @@ AI **不得**：看 benchmark 後重排 registry、因某次任務失敗就永�
 6.  reviewer disjointness                       (provider AND model family)
 7.  user-enabled registry candidates            (enabled: false → 排除)
 8.  resource / quota state
-9.  provider-specific budget pressure
-10. registry role preference / candidate order
+9.  Router capacity reserve                     (見下方說明；語意屬 RESOURCE_AWARE_ROUTING.md)
+10. provider-specific budget pressure
+11. registry role preference / candidate order
 ```
 
-**Evidence / benchmark 不在這條 chain 裡。** 第 3–10 層由 operational router 以下方 *Candidate 選擇演算法* 執行（該演算法的內部八層是這裡第 3–10 層的展開）。
+**Evidence / benchmark 不在這條 chain 裡。** 第 3–11 層由 operational router 以下方 *Candidate 選擇演算法* 執行（該演算法的內部九層是這裡第 3–11 層的展開）。
+
+第 9 層保護的是「承載 active Operational Router 的 resource pool」，不讓自主
+（autonomous）的非 Router 派工把它耗盡；current human instruction 的明確 pin
+（第 1 層）不受它約束。它**只排除**同一 resource pool 上的自主候選，不改變
+capability stage 或 registry membership。門檻、band 定義與排除範圍的唯一 owner
+是 [`RESOURCE_AWARE_ROUTING.md`](RESOURCE_AWARE_ROUTING.md) 的 *Router capacity
+reserve* 章節，此處不重複。
 
 ### Hard execution eligibility
 
@@ -285,7 +293,7 @@ Role 與 slot 名稱**永遠不得**被當成 capability tier 或 capability sta
 
 輸入：slot、`minimum_tier`、`selected_stage`、registry 的 ordered candidates、resource state snapshot、task context、（optional）role-preference 清單。
 
-排序優先級固定為八層，**下層永遠不能推翻上層**：
+排序優先級固定為九層，**下層永遠不能推翻上層**：
 
 ```text
 0. explicit human model pin       (見上方 Human explicit model selection；命中且通過 hard eligibility 即直接選中)
@@ -295,29 +303,33 @@ Role 與 slot 名稱**永遠不得**被當成 capability tier 或 capability sta
 4. independent-review disjointness   (provider AND model family)
 5. availability / resource state band
 接著（只在第 1–5 層都已滿足的候選之間）：
-6. long-horizon conservation     (BUDGET scarcity — 防守；並含 BUDGET expiry opportunity — 進攻)
-7. short-horizon opportunity      (BURST stranded capacity)
-8. registry preference
+6. Router capacity reserve       (只排除承載 active Router 的 resource pool 上的自主非 Router 候選；不作用於已通過第 0 層的 pin)
+7. long-horizon conservation     (BUDGET scarcity — 防守；並含 BUDGET expiry opportunity — 進攻)
+8. short-horizon opportunity      (BURST stranded capacity)
+9. registry preference
 ```
 
 第 2 層是新的硬門檻：**quota、burst opportunity 或 model-role preference 都不能把候選拉低到 slot 要求的 stage 之下，也不能把 Stage 3 模型拉進 Stage 1/2 的 slot。** 「快要 reset 的閒置額度」不得把 flagship 模型帶進 Stage 1/2。`minimum capability tier` 併入第 1 層：stage 已隱含 tier 下限，額外的 tier 檢查只是 fail-closed 的第二道。
 
-第 6、7 層只在前五層都已滿足的候選之間比較，且**第 6 層優先於第 7 層**——scarcity first, utilization second。第 6 層內部順序為 **conservation（降級）→ BUDGET expiry opportunity（升級）**：`BUDGET scarcity MUST override BUDGET expiry opportunity`，因此 expiry promotion 只作用於自身 `conservation_pressure` 不是 `HIGH` / `CRITICAL` 的候選。**Model-role preference 是第 8 層的一部分**：在 registry order 之前、所有資源訊號之後，作為最後一層 tie-break。三個資源訊號（`conservation_pressure`、`budget_expiry_opportunity`、`stranded_capacity_risk`）的推導矩陣、門檻與可重排範圍由 [`RESOURCE_AWARE_ROUTING.md`](RESOURCE_AWARE_ROUTING.md) 定義，此處不重複。
+第 6 層是一個 **exclusion**，不是 reorder，與第 1、2、4 層同性質：只在候選的 resource pool 與 active Router 目前所在的 resource pool相同、且該 slot 本身不是 `ROUTER` slot 時才評估；命中即整個排除該候選，不進入第 7、8 層的排序。門檻、band 定義由 [`RESOURCE_AWARE_ROUTING.md`](RESOURCE_AWARE_ROUTING.md) 的 *Router capacity reserve* 定義，此處不重複。
 
-1. 若 contract 帶 explicit human model pin：先確認該 model 在此 slot 的 candidate list（否則 `CONFIG_INVALID`），再走第 2–3 步的 hard eligibility；通過即直接回傳該候選（不進 band / conservation / opportunity / preference 排序），否則以該候選自身的失敗原因回傳對應 blocked code。
+第 7、8 層只在前六層都已滿足的候選之間比較，且**第 7 層優先於第 8 層**——scarcity first, utilization second。第 7 層內部順序為 **conservation（降級）→ BUDGET expiry opportunity（升級）**：`BUDGET scarcity MUST override BUDGET expiry opportunity`，因此 expiry promotion 只作用於自身 `conservation_pressure` 不是 `HIGH` / `CRITICAL` 的候選。**Model-role preference 是第 9 層的一部分**：在 registry order 之前、所有資源訊號之後，作為最後一層 tie-break。三個資源訊號（`conservation_pressure`、`budget_expiry_opportunity`、`stranded_capacity_risk`）的推導矩陣、門檻與可重排範圍由 [`RESOURCE_AWARE_ROUTING.md`](RESOURCE_AWARE_ROUTING.md) 定義，此處不重複。
+
+1. 若 contract 帶 explicit human model pin：先確認該 model 在此 slot 的 candidate list（否則 `CONFIG_INVALID`），再走第 2–3 步的 hard eligibility（**不含第 6 層 Router capacity reserve**——human pin 排在 reserve 之前，見上）；通過即直接回傳該候選（不進 band / reserve / conservation / opportunity / preference 排序），否則以該候選自身的失敗原因回傳對應 blocked code。
 2. 從指定 slot 讀取 registry 的 ordered `candidates`（順序具有意義），並檢查每個候選的 resource entry 是否通過 **source trust invariant**（見 [`RESOURCE_AWARE_ROUTING.md`](RESOURCE_AWARE_ROUTING.md)）：沒有宣告 `source`、`source` 不在允許集合、或 `source: UNKNOWN` 卻宣告非 `UNKNOWN` 的 state，一律 **fail closed**。完全沒有 entry 是「沒有讀數」，視為 `UNKNOWN`，正常參與排序。
 3. 移除下列候選：
    - `enabled` 為 `false`（human-authoritative；**唯一的 config gate**。`status` / `evidence_status` 不在此列）；
    - `available` 為 false；
    - `stage` 在 stage 順序上低於 slot 的 `stage`；
    - `capability_tier` 在 ladder 上低於 slot 的 `minimum_tier`；
-   - 進行 independent review 時，與 implementer **相同 provider 或相同 model family** 的候選。
+   - 進行 independent review 時，與 implementer **相同 provider 或相同 model family** 的候選；
+   - 該 slot 不是 `ROUTER` slot，且候選的 resource pool 與 active Router 目前所在的 resource pool 相同、該 pool 的 Router capacity reserve band 不是 `NORMAL`——除非此候選正是通過第 0 層 pin 選中的候選。
 4. 若存在合格的 `GREEN` 候選，進入 band 內排序；否則在 `YELLOW` 與 `UNKNOWN` 之間**維持 registry 順序**；再否則（且 `allow_red` 為 true）才用 `RED`。`YELLOW` 與 `UNKNOWN` 之間不建立優先級。
 5. Band 內排序：先由 registry 順序決定 head。`RESOURCE_AWARE_ROUTING.md` 的三個資源訊號只在與 head 相同 resource state 的候選之間作用，順序固定為先 conservation、後 opportunity——精確為 conservation 降級（`HIGH`/`CRITICAL`）→ BUDGET expiry 升級（`budget_expiry_opportunity` 為 `HIGH` 且自身 conservation 非 `HIGH`/`CRITICAL`）→ BURST 升級（`HIGH` stranded 且自身 conservation 為 `NONE`/`LOW`，且 expiry 未先移動選擇）。
-6. **Model-role preference tie-break**（第 8 層）：在第 5 步的結果上，若 caller 提供 role-preference 清單，把 `model` 命中清單的候選（依清單順序）穩定地排到前面——但 opportunity 的 promotion（第 7 層）仍優先於此。都沒有 preference 時維持 registry 順序。
-7. 任何重排都必須記入 routing evidence（見下方 Flagship admission 與 `RESOURCE_AWARE_ROUTING.md` 的記錄規則）。**只記標籤，不記數值。**
+6. **Model-role preference tie-break**（第 9 層）：在第 5 步的結果上，若 caller 提供 role-preference 清單，把 `model` 命中清單的候選（依清單順序）穩定地排到前面——但 opportunity 的 promotion（第 8 層）仍優先於此。都沒有 preference 時維持 registry 順序。
+7. 任何重排或排除都必須記入 routing evidence（見下方 Flagship admission 與 `RESOURCE_AWARE_ROUTING.md` 的記錄規則）。**只記標籤，不記數值。**
 8. 成功時回傳 `{status: SELECTED, candidate, selected_stage, ...}`。
-9. 沒有合格候選時，**不得跨越 `minimum_tier` 或 `stage`，也不得放棄 independent review 的 disjointness**。回傳 `{status: BLOCKED, code, reason}` 並進 human gate。
+9. 沒有合格候選時，**不得跨越 `minimum_tier` 或 `stage`，也不得放棄 independent review 的 disjointness**。回傳 `{status: BLOCKED, code, reason}` 並進 human gate——這同樣是「Router capacity reserve 排除到剩下沒有候選」時的正確結果，不得為了避免它而靜默耗用 reserve。
 
 Resource overlay **只能在達到相同 `minimum_tier`、相同 `stage` 的候選之間重排**。它不能把需要 Stage 2 的任務改派給 Stage 1 候選，不能改變 architecture authority，也不能繞過 human gate。
 
