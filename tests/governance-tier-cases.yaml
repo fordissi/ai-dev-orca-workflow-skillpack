@@ -1,0 +1,395 @@
+# Deterministic governance-tier conformance cases.
+#
+# These cases are executed by scripts/validate-policy-pack.mjs. They are a
+# conformance check on the Governance tiers section of
+# policies/WORKFLOW_POLICY.md, which stays normative: if a case and the
+# Markdown policy disagree, the case is what gets corrected.
+#
+# kind: governance_tier -> executed through classifyGovernanceTier(); expects
+#                          a tier and the process shape it implies.
+#
+# Every case supplies all four dimensions explicitly - production-relatedness,
+# test-suite size, file count, runtime and code complexity are never passed
+# in at all, because the safest way to guarantee they cannot force G3 is to
+# never let them reach the classifier.
+
+version: "0.3"
+
+cases:
+
+  - name: ui_text_change_in_production_is_g1
+    kind: governance_tier
+    why: >-
+      Required case 1. A production environment does not by itself raise the
+      tier - this fixture is deliberately production-facing and still G1,
+      because the four governance dimensions are all at their mildest.
+    dimensions:
+      data_sensitivity: LOW
+      reversibility: EASY
+      blast_radius: LOCAL
+      privilege_impact: NONE
+    expect:
+      governance_tier: G1_LIGHTWEIGHT
+      required_gates: []
+      required_review: OPTIONAL
+      fingerprint_required: false
+      hard_trigger_fired: null
+
+  - name: dashboard_report_change_is_g1
+    kind: governance_tier
+    why: >-
+      Required case 2. A non-sensitive derived view is exactly the shape
+      WORKFLOW_POLICY.md's Governance tiers section names as a G1 example.
+    dimensions:
+      data_sensitivity: LOW
+      reversibility: EASY
+      blast_radius: LOCAL
+      privilege_impact: NONE
+    expect:
+      governance_tier: G1_LIGHTWEIGHT
+      required_review: OPTIONAL
+
+  - name: employee_profile_schema_change_is_g2
+    kind: governance_tier
+    why: >-
+      Required case 3. Employee master-data logic with a module-scoped,
+      reversible schema evolution - moderate sensitivity and module blast
+      radius put the max severity at 1, never touching a hard trigger.
+    dimensions:
+      data_sensitivity: MODERATE
+      reversibility: MODERATE
+      blast_radius: MODULE
+      privilege_impact: NONE
+    expect:
+      governance_tier: G2_STANDARD
+      required_review: INDEPENDENT
+      fingerprint_required: false
+      hard_trigger_fired: null
+
+  - name: performance_scoring_logic_is_g2
+    kind: governance_tier
+    why: >-
+      Required case 4. Performance data is moderately sensitive employee
+      data but the change itself is module-scoped and reversible.
+    dimensions:
+      data_sensitivity: MODERATE
+      reversibility: EASY
+      blast_radius: MODULE
+      privilege_impact: NONE
+    expect:
+      governance_tier: G2_STANDARD
+      required_review: INDEPENDENT
+
+  - name: nondestructive_attendance_migration_is_g2
+    kind: governance_tier
+    why: >-
+      Required case 5. A non-destructive migration is explicitly named as a
+      G2 example - reversibility stays MODERATE (not HARD_IRREVERSIBLE)
+      precisely because it is non-destructive.
+    dimensions:
+      data_sensitivity: MODERATE
+      reversibility: MODERATE
+      blast_radius: MODULE
+      privilege_impact: NONE
+    expect:
+      governance_tier: G2_STANDARD
+      required_review: INDEPENDENT
+      hard_trigger_fired: null
+
+  - name: payroll_write_path_is_g3_via_hard_trigger
+    kind: governance_tier
+    why: >-
+      Required case 6. Payroll/compensation write paths are a named hard
+      trigger - G3 fires regardless of how mild the four dimensions read,
+      which this fixture deliberately sets to their mildest to prove the
+      trigger alone is sufficient.
+    dimensions:
+      data_sensitivity: LOW
+      reversibility: EASY
+      blast_radius: LOCAL
+      privilege_impact: NONE
+      hard_triggers: { payroll_or_compensation_write_path: true }
+    expect:
+      governance_tier: G3_HIGH_RISK
+      required_gates: [HUMAN_GATE]
+      required_review: INDEPENDENT_SECURITY
+      hard_trigger_fired: payroll_or_compensation_write_path
+
+  - name: rls_change_is_g3_via_hard_trigger
+    kind: governance_tier
+    why: Required case 7. An RLS policy change is a named hard trigger.
+    dimensions:
+      data_sensitivity: LOW
+      reversibility: EASY
+      blast_radius: LOCAL
+      privilege_impact: NONE
+      hard_triggers: { rls_policy_change: true }
+    expect:
+      governance_tier: G3_HIGH_RISK
+      required_gates: [HUMAN_GATE]
+      required_review: INDEPENDENT_SECURITY
+      hard_trigger_fired: rls_policy_change
+
+  - name: security_definer_function_is_g3_via_hard_trigger
+    kind: governance_tier
+    why: Required case 8. A SECURITY DEFINER function is a named hard trigger.
+    dimensions:
+      data_sensitivity: LOW
+      reversibility: EASY
+      blast_radius: LOCAL
+      privilege_impact: NONE
+      hard_triggers: { security_definer: true }
+    expect:
+      governance_tier: G3_HIGH_RISK
+      hard_trigger_fired: security_definer
+
+  - name: production_bulk_employee_import_is_g3
+    kind: governance_tier
+    why: >-
+      Required case 9. A production bulk master-data mutation is both a
+      named hard trigger AND, independently, a CROSS_SYSTEM_BULK blast
+      radius - either path alone reaches G3; this fixture exercises both at
+      once, which is the realistic shape of the incident category.
+    dimensions:
+      data_sensitivity: MODERATE
+      reversibility: HARD_IRREVERSIBLE
+      blast_radius: CROSS_SYSTEM_BULK
+      privilege_impact: NONE
+      hard_triggers: { production_bulk_master_data_mutation: true }
+    expect:
+      governance_tier: G3_HIGH_RISK
+      required_gates: [HUMAN_GATE]
+      required_review: INDEPENDENT_SECURITY
+      hard_trigger_fired: production_bulk_master_data_mutation
+
+  - name: bulk_blast_radius_alone_reaches_g3_without_a_hard_trigger
+    kind: governance_tier
+    why: >-
+      The dimension-only path to G3, isolated from case 9's hard trigger: a
+      cross-system/bulk blast radius reaches G3 by severity alone, proving
+      the four-dimension ladder and the hard-trigger list are two
+      independent routes to the same tier, not one disguised as the other.
+    dimensions:
+      data_sensitivity: LOW
+      reversibility: EASY
+      blast_radius: CROSS_SYSTEM_BULK
+      privilege_impact: NONE
+    expect:
+      governance_tier: G3_HIGH_RISK
+      hard_trigger_fired: null
+
+  - name: production_label_config_change_is_not_automatically_g3
+    kind: governance_tier
+    why: >-
+      Required case 10. A production label/config change is exactly the
+      "low-risk config change" G1 example - production-relatedness is not
+      even a field this classifier reads, so it cannot push the tier.
+    dimensions:
+      data_sensitivity: LOW
+      reversibility: EASY
+      blast_radius: LOCAL
+      privilege_impact: NONE
+    expect:
+      governance_tier: G1_LIGHTWEIGHT
+
+  - name: high_complexity_reversible_refactor_is_g2_not_g3
+    kind: governance_tier
+    why: >-
+      Required case 11. A module-wide refactor's blast radius alone caps it
+      at G2 (MODULE, severity 1) - complexity itself is never passed to the
+      classifier, so it has no way to push this to G3. The companion unit
+      test proves toggling a complexity signal changes nothing.
+    dimensions:
+      data_sensitivity: LOW
+      reversibility: EASY
+      blast_radius: MODULE
+      privilege_impact: NONE
+    expect:
+      governance_tier: G2_STANDARD
+      hard_trigger_fired: null
+
+  - name: fingerprint_not_required_by_g3_alone
+    kind: governance_tier
+    why: >-
+      Required case 12, negative half. Reaching G3 through a hard trigger
+      does not by itself require an exact-payload fingerprint - that is a
+      separate, explicitly-justified need.
+    dimensions:
+      data_sensitivity: LOW
+      reversibility: EASY
+      blast_radius: LOCAL
+      privilege_impact: NONE
+      hard_triggers: { security_definer: true }
+    expect:
+      governance_tier: G3_HIGH_RISK
+      fingerprint_required: false
+
+  - name: fingerprint_required_when_explicitly_justified
+    kind: governance_tier
+    why: >-
+      Required case 12, positive half. The same G3 task, but this time the
+      task specifically needs human approval of exact canonical payload
+      bytes - now fingerprint_required is true.
+    dimensions:
+      data_sensitivity: LOW
+      reversibility: EASY
+      blast_radius: LOCAL
+      privilege_impact: NONE
+      hard_triggers: { security_definer: true }
+      exact_payload_approval_needed: true
+    expect:
+      governance_tier: G3_HIGH_RISK
+      fingerprint_required: true
+
+  - name: fingerprint_required_flag_has_no_effect_at_g1
+    kind: governance_tier
+    why: >-
+      fingerprint_required is an independent axis, not gated on tier: even a
+      G1 task can carry an explicit exact-payload need if the task itself
+      calls for it, and the flag is honoured regardless of tier.
+    dimensions:
+      data_sensitivity: LOW
+      reversibility: EASY
+      blast_radius: LOCAL
+      privilege_impact: NONE
+      exact_payload_approval_needed: true
+    expect:
+      governance_tier: G1_LIGHTWEIGHT
+      fingerprint_required: true
+
+  - name: human_override_may_raise_a_g1_task_to_g3
+    kind: governance_tier
+    why: >-
+      Required case 13, raise direction. A human may decide a nominally
+      lightweight task deserves full G3 rigor; the override is honoured when
+      bound to the current task and instruction revision.
+    dimensions:
+      data_sensitivity: LOW
+      reversibility: EASY
+      blast_radius: LOCAL
+      privilege_impact: NONE
+    options:
+      current_task_id: "task-1"
+      current_instruction_revision: "rev-1"
+      human_override: { target_tier: G3_HIGH_RISK, task_id: "task-1", instruction_revision: "rev-1", reason: "extra caution requested" }
+    expect:
+      governance_tier: G3_HIGH_RISK
+      governance_source: HUMAN_EXPLICIT_OVERRIDE
+      required_gates: [HUMAN_GATE]
+
+  - name: human_override_may_lower_a_nontriggered_g2_task
+    kind: governance_tier
+    why: >-
+      Required case 13, lower direction, non-hard-triggered. A human may
+      accept lighter process on a dimension-computed G2 task - this is
+      allowed because no hard trigger fired.
+    dimensions:
+      data_sensitivity: MODERATE
+      reversibility: EASY
+      blast_radius: LOCAL
+      privilege_impact: NONE
+    options:
+      current_task_id: "task-2"
+      current_instruction_revision: "rev-1"
+      human_override: { target_tier: G1_LIGHTWEIGHT, task_id: "task-2", instruction_revision: "rev-1", reason: "human accepts responsibility" }
+    expect:
+      governance_tier: G1_LIGHTWEIGHT
+      governance_source: HUMAN_EXPLICIT_OVERRIDE
+
+  - name: human_override_cannot_lower_a_hard_triggered_g3_task
+    kind: governance_tier
+    why: >-
+      Required case 13, the security-hard-constraint half. A human may not
+      override away the process rigor a hard trigger requires - the tier
+      stays G3 no matter what the override asks for.
+    dimensions:
+      data_sensitivity: LOW
+      reversibility: EASY
+      blast_radius: LOCAL
+      privilege_impact: NONE
+      hard_triggers: { auth_provisioning_or_binding: true }
+    options:
+      current_task_id: "task-3"
+      current_instruction_revision: "rev-1"
+      human_override: { target_tier: G1_LIGHTWEIGHT, task_id: "task-3", instruction_revision: "rev-1", reason: "trying to skip the gate" }
+    expect:
+      governance_tier: G3_HIGH_RISK
+      governance_source: POLICY_DEFAULT
+      required_gates: [HUMAN_GATE]
+      hard_trigger_fired: auth_provisioning_or_binding
+
+  - name: stale_override_from_a_different_task_does_not_apply
+    kind: governance_tier
+    why: >-
+      An override bound to a different task_id must not silently apply to
+      this one - the same staleness posture used everywhere else in this
+      pack for human overrides.
+    dimensions:
+      data_sensitivity: MODERATE
+      reversibility: EASY
+      blast_radius: LOCAL
+      privilege_impact: NONE
+    options:
+      current_task_id: "task-5"
+      current_instruction_revision: "rev-1"
+      human_override: { target_tier: G1_LIGHTWEIGHT, task_id: "task-4", instruction_revision: "rev-1" }
+    expect:
+      governance_tier: G2_STANDARD
+      governance_source: POLICY_DEFAULT
+
+  - name: elevated_privilege_impact_alone_reaches_g3
+    kind: governance_tier
+    why: >-
+      Privilege escalation / security-boundary impact is independently
+      sufficient for G3 via the dimension ladder, without needing a named
+      hard trigger to also fire.
+    dimensions:
+      data_sensitivity: LOW
+      reversibility: EASY
+      blast_radius: LOCAL
+      privilege_impact: ELEVATED_SECURITY_BOUNDARY
+    expect:
+      governance_tier: G3_HIGH_RISK
+      required_review: INDEPENDENT_SECURITY
+
+  - name: hard_irreversible_reversibility_alone_reaches_g3
+    kind: governance_tier
+    why: An irreversible mutation reaches G3 through the ladder on its own.
+    dimensions:
+      data_sensitivity: LOW
+      reversibility: HARD_IRREVERSIBLE
+      blast_radius: LOCAL
+      privilege_impact: NONE
+    expect:
+      governance_tier: G3_HIGH_RISK
+
+  - name: unrecognised_dimension_value_defaults_to_moderate_not_lax
+    kind: governance_tier
+    why: >-
+      An unread or malformed dimension must not be treated as the mild end -
+      that would silently under-govern an unclassified task. It defaults to
+      at least G2, never quietly to G1.
+    dimensions:
+      data_sensitivity: UNKNOWN
+      reversibility: EASY
+      blast_radius: LOCAL
+      privilege_impact: NONE
+    expect:
+      governance_tier: G2_STANDARD
+
+  - name: other_policy_gate_requirement_is_honoured_even_at_g1
+    kind: governance_tier
+    why: >-
+      G2's "human gate only when ambiguity, production mutation, or another
+      policy requires it" extends naturally: an externally-flagged gate
+      requirement is honoured regardless of the computed tier, without this
+      function re-implementing what that other policy already decides.
+    dimensions:
+      data_sensitivity: LOW
+      reversibility: EASY
+      blast_radius: LOCAL
+      privilege_impact: NONE
+      other_policy_requires_gate: true
+    expect:
+      governance_tier: G1_LIGHTWEIGHT
+      required_gates: [HUMAN_GATE]

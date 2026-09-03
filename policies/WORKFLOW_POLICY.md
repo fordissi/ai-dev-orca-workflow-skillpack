@@ -19,7 +19,7 @@ SKILL → WORKFLOW_POLICY → CONCURRENCY_POLICY → MODEL_ROUTING_POLICY
 
 | Owner | 負責 | 不負責 |
 |---|---|---|
-| `WORKFLOW_POLICY.md` | 角色、precedence、lifecycle、execution lifecycle、continuation freshness、session lifecycle/cleanup、**Operational Router execution boundary**、handback、gate、permission ceiling 語意、cross-repo | 具體模型名稱、blocked reason code 語意、Router capacity reserve 的門檻與 band 定義 |
+| `WORKFLOW_POLICY.md` | 角色、precedence、lifecycle、execution lifecycle、continuation freshness、session lifecycle/cleanup、Operational Router execution boundary、**governance tier**、handback、gate、permission ceiling 語意、cross-repo | 具體模型名稱、blocked reason code 語意、Router capacity reserve 的門檻與 band 定義、capability stage |
 | `CONCURRENCY_POLICY.md` | concurrency mode 與啟用條件 | provider 選擇 |
 | `MODEL_ROUTING_POLICY.md` | task classification、slot 選擇、candidate 演算法、escalation | 即時 quota 數值 |
 | `MODEL_REGISTRY.yaml` | slot 的 ordered candidates、能力下限、repair budget | stable workflow 規則 |
@@ -970,11 +970,135 @@ ceiling（見上方 Permission ceiling 的能力分解）與 credential 政策�
 - architecture contract change
 - breaking DB/API change
 - destructive migration
-- auth / RBAC / RLS
-- privileged boundary change
+- auth / RBAC / RLS（含 auth provisioning/binding、RLS policy 變更）
+- privileged boundary change（含 `SECURITY DEFINER`、`BYPASSRLS` / `service_role`、privilege escalation 或 role-grant 變更）
 - production deploy
 - secrets 或 security config
+- production bulk master-data mutation（大量、跨系統的正式環境資料異動）
+- payroll / compensation write path
 - 同時存在多個長期架構方案
+
+**這份清單本身就是唯一的 owner。** 下方 Governance tiers 的 hard trigger 清單
+直接引用這裡的項目，不重新定義一份會分歧的清單。
+
+## Governance tiers
+
+**`Governance intensity must be proportional to actual task risk, not to
+production-relatedness alone.`** 這一節把上方 Human gates 的觸發條件、既有的
+risk / verification_need 分類，收斂成三個具名的治理強度等級，決定預設的
+workflow 形狀（要不要 preflight、要不要 mandatory human gate、要不要
+independent review、要不要 exact-payload fingerprint）。它**不是**新的
+task classification 系統：既有的六維分類（[`MODEL_ROUTING_POLICY.md`](MODEL_ROUTING_POLICY.md)）
+與 Stage admission 完全不變，這裡只是把「risk / blast radius 決定 gate 嚴格度」
+這個既有原則（見該文件的 *Risk is not capability requirement*）落成三個具體
+等級。
+
+### 三個等級
+
+| Tier | 典型例子 | 預設 workflow |
+|---|---|---|
+| `G1_LIGHTWEIGHT` | UI/文字/排版變更、報表與 dashboard、非敏感的 derived view、文件、獨立 bug fix、低風險 config、可逆的前端行為 | implement → focused tests → commit。Independent review 除非其他政策要求，否則 optional。無 mandatory human gate、無 fingerprint、無強制 preflight。 |
+| `G2_STANDARD` | employee master-data 邏輯、performance、attendance、workflow/case/task 邏輯、一般 schema 演進、一般 API、non-destructive migration、非特權 credential 的整合 | bounded plan → implementation → tests → independent review → deploy/commit。Human gate 只在 ambiguity、production mutation，或其他既有政策要求時才需要。預設無 fingerprint。 |
+| `G3_HIGH_RISK` | payroll/compensation、auth/identity binding、RLS、`SECURITY DEFINER`、`BYPASSRLS`/`service_role`、privilege grant/role membership、destructive schema 變更、production bulk import、不可逆異動、security-boundary 變更、大量 employee/account 變更 | preflight → explicit human gate → bounded implementation → independent security review → controlled execution → post-validation。**Exact-payload fingerprint 只在該 task 明確需要 human 核准精確 canonical payload bytes 時才要求，不因為是 G3 就自動需要。** |
+
+### 分類維度
+
+至少評估四個維度，各自三階：
+
+| 維度 | 值 |
+|---|---|
+| `DATA_SENSITIVITY` | `LOW` / `MODERATE` / `HIGH` |
+| `REVERSIBILITY` | `EASY` / `MODERATE` / `HARD_IRREVERSIBLE`（即 HARD / IRREVERSIBLE） |
+| `BLAST_RADIUS` | `LOCAL` / `MODULE` / `CROSS_SYSTEM_BULK`（即 CROSS_SYSTEM / BULK） |
+| `PRIVILEGE_IMPACT` | `NONE` / `NORMAL` / `ELEVATED_SECURITY_BOUNDARY`（即 ELEVATED / SECURITY_BOUNDARY） |
+
+**判定方式是語意分級，不是數字加總**：四個維度各自對應到三個嚴重程度
+（0/1/2），**取四者中最嚴重的那個**決定 tier——最嚴重為 0（全部落在
+`LOW`/`EASY`/`LOCAL`/`NONE`）→ `G1_LIGHTWEIGHT`；最嚴重為 1（任一維度到
+`MODERATE`/`MODULE`/`NORMAL`）→ `G2_STANDARD`；最嚴重為 2（任一維度到
+`HIGH`/`HARD_IRREVERSIBLE`/`CROSS_SYSTEM_BULK`/`ELEVATED_SECURITY_BOUNDARY`）
+→ `G3_HIGH_RISK`。這對應到本節建議的語意映射：G1 是「大致上四個維度都在最輕
+等級」；G2 是「sensitivity 到 moderate 或 module-level impact，但仍 bounded/
+reversible、沒有重大 security-boundary 變更」；G3 是「任一維度出現強烈的
+high sensitivity、hard irreversibility、bulk/cross-system impact，或
+elevated/security-boundary 的權限變更」。
+
+讀不到或無法辨識的維度值**不得視為最輕等級**——這與 quota `UNKNOWN` 的中性
+處理不同：治理分級的不確定性是安全相關的不確定性，預設當作至少 `MODERATE`
+等級（severity 1），不假設它是安全的。
+
+### Hard triggers：直接鎖定 G3
+
+以下任一為真時，**不論四個維度的計算結果，一律 `G3_HIGH_RISK`**：
+
+- auth provisioning / binding
+- RLS policy 變更
+- `SECURITY DEFINER`
+- `BYPASSRLS` / `service_role`
+- destructive production migration
+- production bulk master-data mutation
+- payroll / compensation write path
+- privilege escalation / role-grant 變更
+
+**這組 hard trigger 就是上方 Human gates 清單中對應項目的具體化，不是第二份
+清單。** 語意由 Human gates 一節唯一定義；這裡只是為了讓 Router 能程式化辨識
+而列出對應的判定旗標。
+
+### 不會單獨造成 G3 的訊號
+
+以下**不得**單獨把 tier 推到 `G3_HIGH_RISK`：
+
+- production 環境本身；
+- 測試套件很大；
+- 改動的檔案很多；
+- 執行時間很長；
+- 程式碼很複雜，但沒有敏感或不可逆的實際影響。
+
+**Production-relatedness 本身不自動等於 G3。** 一個機械上簡單、可逆、無敏感
+資料影響的 production config 變更可以維持 `G1_LIGHTWEIGHT`。一個複雜但可逆、
+非敏感的 refactor 最多因為 blast radius 落在 `MODULE` 而到 `G2_STANDARD`，
+不會因為複雜度本身被推到 `G3_HIGH_RISK`。
+
+### 與既有機制的關係
+
+**Governance tier 不是 capability stage。** 兩者正交，理由與
+[`MODEL_ROUTING_POLICY.md`](MODEL_ROUTING_POLICY.md) 的
+*Risk is not capability requirement* 完全一致：`G3_HIGH_RISK` 的 task 若範圍
+明確，仍可能由 `STAGE_1_DEFAULT` / `STAGE_2_ADVANCED` 的模型完成；`G1_LIGHTWEIGHT`
+的 task 若異常模糊，仍可能需要 `STAGE_3_FLAGSHIP` 的推理能力。**不得互相推導**：
+tier 高不代表要調高 stage，stage 高也不代表 tier 一定高。
+
+本節產出的 `required_gates` / `required_review` 是**額外**的下限，不取代既有
+規則——`verification_need` 為 `independent`/`adversarial`、Router capacity
+reserve、Router/Worker execution boundary、reviewer disjointness、exact
+dispatch identity attestation 全部照舊、不因 governance tier 而放寬或改寫。
+兩邊都要求時，取較嚴格者。
+
+### Router 輸出
+
+```yaml
+governance_tier:         # G1_LIGHTWEIGHT | G2_STANDARD | G3_HIGH_RISK
+governance_reasons:      # 簡短列出驅動判定的維度或 hard trigger
+required_gates:          # [] 或 ["HUMAN_GATE"]
+required_review:         # OPTIONAL | INDEPENDENT | INDEPENDENT_SECURITY
+fingerprint_required:    # true | false — 只在該 task 明確需要 exact-payload
+                         # 核准時為 true，不因為 G3 本身而自動 true
+```
+
+**Router 只需要簡短說明 tier 判定依據，不必產出冗長的 compliance 文字。**
+
+### Human override
+
+Human 可以明確調高或調降 process 嚴格度（例如「這個 G2 task 我要當 G3 處理」
+或「這個 dimension-computed G2 task 我明確承擔責任降級處理」），綁定 current
+task id 與 instruction revision——與本文件其他 override（continuation、
+Router execution、model pin）同一套 staleness 語意，此處不重複定義。
+
+**Security hard constraint 不可被 override 降級。** 任一 hard trigger 成立時，
+override 只能維持或無意義地「調高」`G3_HIGH_RISK`，**不得**把它降到
+`G2_STANDARD` 或 `G1_LIGHTWEIGHT`——這與 `allow_experimental` / `allow_red`
+不能被 operational router 自行翻轉是同一種設計理由：human 的授權範圍不包含
+解除安全邊界本身。
 
 ## Dispatch cost
 

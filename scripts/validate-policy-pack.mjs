@@ -3451,6 +3451,235 @@ export function validateRouterExecutionCases(document) {
 }
 
 /* ------------------------------------------------------------------------ *
+ * Governance tiers
+ *
+ * Governance intensity must be proportional to actual task risk, not to
+ * production-relatedness alone. WORKFLOW_POLICY.md owns this invariant; this
+ * section only makes it executable. It is a downstream refinement of the
+ * existing "risk / blast radius decides gate strictness" principle
+ * (MODEL_ROUTING_POLICY.md's Risk is not capability requirement) into three
+ * named tiers - it does not replace task classification, Stage admission,
+ * reviewer disjointness, Router capacity reserve, or the Router execution
+ * boundary, all of which apply independently and unchanged.
+ * ------------------------------------------------------------------------ */
+
+const GOVERNANCE_TIERS = ["G1_LIGHTWEIGHT", "G2_STANDARD", "G3_HIGH_RISK"];
+const GOVERNANCE_REVIEW_LEVELS = ["OPTIONAL", "INDEPENDENT", "INDEPENDENT_SECURITY"];
+
+// Each dimension is an ordered 3-rung ladder; the index IS the severity.
+// This is deliberately a semantic classifier (max-of-ladder), not a numeric
+// score: summing or weighting dimensions would let several mild signals add
+// up to a severity none of them individually justifies.
+const GOVERNANCE_DIMENSION_VALUES = {
+  data_sensitivity: ["LOW", "MODERATE", "HIGH"],
+  reversibility: ["EASY", "MODERATE", "HARD_IRREVERSIBLE"],
+  blast_radius: ["LOCAL", "MODULE", "CROSS_SYSTEM_BULK"],
+  privilege_impact: ["NONE", "NORMAL", "ELEVATED_SECURITY_BOUNDARY"],
+};
+
+const GOVERNANCE_DIMENSION_FIELDS = Object.keys(GOVERNANCE_DIMENSION_VALUES);
+
+// Named instances of the existing Human gates list in WORKFLOW_POLICY.md -
+// not a second, independently defined list. Any one of these fires
+// G3_HIGH_RISK regardless of how mild the four dimensions above read.
+const HARD_G3_TRIGGERS = [
+  "auth_provisioning_or_binding",
+  "rls_policy_change",
+  "security_definer",
+  "bypass_rls_or_service_role",
+  "destructive_production_migration",
+  "production_bulk_master_data_mutation",
+  "payroll_or_compensation_write_path",
+  "privilege_escalation_or_role_grant",
+];
+
+function dimensionSeverity(field, value) {
+  const index = GOVERNANCE_DIMENSION_VALUES[field].indexOf(value);
+  // An unread or unrecognised dimension is governance-relevant uncertainty,
+  // not resource-state UNKNOWN: it is never treated as the mild end. It
+  // defaults to the middle rung ("assume at least moderate") rather than
+  // silently under-governing an unclassified task.
+  return index === -1 ? 1 : index;
+}
+
+function tierForSeverity(severity) {
+  if (severity >= 2) return "G3_HIGH_RISK";
+  if (severity >= 1) return "G2_STANDARD";
+  return "G1_LIGHTWEIGHT";
+}
+
+function governanceTierIndex(tier) {
+  return GOVERNANCE_TIERS.indexOf(tier);
+}
+
+function currentGovernanceOverride(override, current) {
+  if (!isPlainObject(override) || !GOVERNANCE_TIERS.includes(override.target_tier)) return null;
+  const currentTask = current?.task_id ?? null;
+  const currentRevision = current?.instruction_revision ?? null;
+  const bound =
+    isNonEmptyString(currentTask) &&
+    isNonEmptyString(currentRevision) &&
+    currentTask === override.task_id &&
+    currentRevision === override.instruction_revision;
+  return bound ? override : null;
+}
+
+/**
+ * Classifies one task into a governance tier and the process shape it
+ * implies. Reads four dimensions (data sensitivity, reversibility, blast
+ * radius, privilege impact) plus an explicit set of hard triggers that are
+ * named instances of WORKFLOW_POLICY.md's Human gates list.
+ *
+ * Production-relatedness, test-suite size, file count, runtime, and code
+ * complexity are deliberately not inputs to this function at all - the
+ * safest way to guarantee they cannot force G3 is to never let them reach
+ * the classifier, rather than discount them after the fact.
+ */
+export function classifyGovernanceTier(input, options = {}) {
+  const d = isPlainObject(input) ? input : {};
+  const reasons = [];
+
+  const triggers = isPlainObject(d.hard_triggers) ? d.hard_triggers : {};
+  const firedTrigger = HARD_G3_TRIGGERS.find((name) => triggers[name] === true) ?? null;
+
+  const severities = GOVERNANCE_DIMENSION_FIELDS.map((field) => ({
+    field,
+    severity: dimensionSeverity(field, d[field]),
+    recognised: GOVERNANCE_DIMENSION_VALUES[field].includes(d[field]),
+  }));
+  const maxSeverity = Math.max(...severities.map((s) => s.severity));
+  const drivingFields = severities.filter((s) => s.severity === maxSeverity).map((s) => s.field);
+  for (const s of severities) {
+    if (!s.recognised) reasons.push(`${s.field} unread or unrecognised; treated as at least moderate`);
+  }
+
+  const baseTier = firedTrigger !== null ? "G3_HIGH_RISK" : tierForSeverity(maxSeverity);
+  reasons.push(
+    firedTrigger !== null
+      ? `hard trigger: ${firedTrigger}`
+      : `${drivingFields.join(", ")} at severity ${maxSeverity}`,
+  );
+
+  let tier = baseTier;
+  let governanceSource = "POLICY_DEFAULT";
+
+  const override = currentGovernanceOverride(options.human_override, {
+    task_id: options.current_task_id,
+    instruction_revision: options.current_instruction_revision,
+  });
+
+  if (isPlainObject(options.human_override) && override === null) {
+    reasons.push("human override present but not bound to the current task_id/instruction_revision; ignored as stale");
+  } else if (override !== null) {
+    if (firedTrigger !== null && governanceTierIndex(override.target_tier) < governanceTierIndex("G3_HIGH_RISK")) {
+      reasons.push(`human override to ${override.target_tier} rejected: hard trigger ${firedTrigger} cannot be downgraded`);
+    } else {
+      tier = override.target_tier;
+      governanceSource = "HUMAN_EXPLICIT_OVERRIDE";
+      reasons.push(`human override: ${baseTier} -> ${tier}${isNonEmptyString(override.reason) ? ` (${override.reason})` : ""}`);
+    }
+  }
+
+  const requiredGates =
+    tier === "G3_HIGH_RISK" || d.other_policy_requires_gate === true ? ["HUMAN_GATE"] : [];
+  const requiredReview =
+    tier === "G3_HIGH_RISK" ? "INDEPENDENT_SECURITY" : tier === "G2_STANDARD" ? "INDEPENDENT" : "OPTIONAL";
+  // Fingerprint is earned by an explicit need (human approval of exact
+  // canonical payload bytes), never merely by reaching G3.
+  const fingerprintRequired = d.exact_payload_approval_needed === true;
+
+  return {
+    governance_tier: tier,
+    governance_reasons: reasons,
+    required_gates: requiredGates,
+    required_review: requiredReview,
+    fingerprint_required: fingerprintRequired,
+    hard_trigger_fired: firedTrigger,
+    governance_source: governanceSource,
+  };
+}
+
+/* ------------------------------------------------------------------------ *
+ * Governance tier conformance cases
+ *
+ * tests/governance-tier-cases.yaml is a conformance check on the Governance
+ * tiers section of WORKFLOW_POLICY.md, which stays normative.
+ * ------------------------------------------------------------------------ */
+
+const GOVERNANCE_CASE_KINDS = ["governance_tier"];
+
+export function validateGovernanceTierCases(document) {
+  const findings = [];
+
+  if (!isPlainObject(document) || !Array.isArray(document.cases) || document.cases.length === 0) {
+    return ["governance tier cases: expected a non-empty `cases` list"];
+  }
+
+  const seen = new Set();
+
+  for (const [index, testCase] of document.cases.entries()) {
+    const named = isNonEmptyString(testCase?.name) ? testCase.name : `cases[${index}]`;
+
+    if (!isPlainObject(testCase)) {
+      findings.push(`${named}: expected a mapping`);
+      continue;
+    }
+    if (!isNonEmptyString(testCase.name)) {
+      findings.push(`${named}: a case needs a name`);
+      continue;
+    }
+    if (seen.has(testCase.name)) findings.push(`${named}: duplicate case name`);
+    seen.add(testCase.name);
+
+    if (!isNonEmptyString(testCase.why)) findings.push(`${named}: a case needs a \`why\``);
+
+    if (!GOVERNANCE_CASE_KINDS.includes(testCase.kind)) {
+      findings.push(`${named}: kind ${JSON.stringify(testCase.kind)} is not one of ${GOVERNANCE_CASE_KINDS.join("|")}`);
+      continue;
+    }
+
+    if (!isPlainObject(testCase.expect)) {
+      findings.push(`${named}: expected an \`expect\` mapping`);
+      continue;
+    }
+
+    const result = classifyGovernanceTier(testCase.dimensions, isPlainObject(testCase.options) ? testCase.options : {});
+
+    if (!GOVERNANCE_TIERS.includes(result.governance_tier)) {
+      findings.push(`${named}: produced unknown governance_tier ${JSON.stringify(result.governance_tier)}`);
+    }
+    if (!GOVERNANCE_REVIEW_LEVELS.includes(result.required_review)) {
+      findings.push(`${named}: produced unknown required_review ${JSON.stringify(result.required_review)}`);
+    }
+
+    if ("governance_tier" in testCase.expect && result.governance_tier !== testCase.expect.governance_tier) {
+      findings.push(`${named}: expected governance_tier ${JSON.stringify(testCase.expect.governance_tier)}, got ${JSON.stringify(result.governance_tier)}`);
+    }
+    if ("required_review" in testCase.expect && result.required_review !== testCase.expect.required_review) {
+      findings.push(`${named}: expected required_review ${JSON.stringify(testCase.expect.required_review)}, got ${JSON.stringify(result.required_review)}`);
+    }
+    if ("fingerprint_required" in testCase.expect && result.fingerprint_required !== testCase.expect.fingerprint_required) {
+      findings.push(`${named}: expected fingerprint_required ${JSON.stringify(testCase.expect.fingerprint_required)}, got ${JSON.stringify(result.fingerprint_required)}`);
+    }
+    if ("required_gates" in testCase.expect) {
+      const expectedGates = [...testCase.expect.required_gates].sort();
+      const actualGates = [...result.required_gates].sort();
+      if (JSON.stringify(expectedGates) !== JSON.stringify(actualGates)) {
+        findings.push(`${named}: expected required_gates ${JSON.stringify(testCase.expect.required_gates)}, got ${JSON.stringify(result.required_gates)}`);
+      }
+    }
+    if ("hard_trigger_fired" in testCase.expect && result.hard_trigger_fired !== testCase.expect.hard_trigger_fired) {
+      findings.push(`${named}: expected hard_trigger_fired ${JSON.stringify(testCase.expect.hard_trigger_fired)}, got ${JSON.stringify(result.hard_trigger_fired)}`);
+    }
+    if ("governance_source" in testCase.expect && result.governance_source !== testCase.expect.governance_source) {
+      findings.push(`${named}: expected governance_source ${JSON.stringify(testCase.expect.governance_source)}, got ${JSON.stringify(result.governance_source)}`);
+    }
+  }
+
+  return findings;
+}
+
+/* ------------------------------------------------------------------------ *
  * Repository validation (direct-run entry point)
  * ------------------------------------------------------------------------ */
 
@@ -3501,7 +3730,7 @@ function readInput(root, relativePath, parseAs, findings) {
 
 export function validateRepository(root = process.cwd()) {
   const findings = [];
-  const summary = { registry: 0, resourceExample: 0, routingCases: 0, executionCases: 0, continuationCases: 0, routerExecutionCases: 0, filesScanned: 0, scanFindings: 0, markdownFilesLinkChecked: 0 };
+  const summary = { registry: 0, resourceExample: 0, routingCases: 0, executionCases: 0, continuationCases: 0, routerExecutionCases: 0, governanceTierCases: 0, filesScanned: 0, scanFindings: 0, markdownFilesLinkChecked: 0 };
 
   const registry = readInput(root, "policies/MODEL_REGISTRY.yaml", "yaml", findings);
   if (registry !== undefined) {
@@ -3550,6 +3779,14 @@ export function validateRepository(root = process.cwd()) {
       findings.push(`tests/router-execution-cases.yaml: ${finding}`);
     }
     summary.routerExecutionCases = Array.isArray(routerExecutionCases?.cases) ? routerExecutionCases.cases.length : 0;
+  }
+
+  const governanceTierCases = readInput(root, "tests/governance-tier-cases.yaml", "yaml", findings);
+  if (governanceTierCases !== undefined) {
+    for (const finding of validateGovernanceTierCases(governanceTierCases)) {
+      findings.push(`tests/governance-tier-cases.yaml: ${finding}`);
+    }
+    summary.governanceTierCases = Array.isArray(governanceTierCases?.cases) ? governanceTierCases.cases.length : 0;
   }
 
   const invalidFixturePath = join(root, "tests", "fixtures", "invalid-model-registry.yaml");
@@ -3704,6 +3941,7 @@ if (process.argv[1] !== undefined && pathToFileURL(process.argv[1]).href === imp
       `routing cases: ${summary.routingCases} | execution cases: ${summary.executionCases} | ` +
       `continuation cases: ${summary.continuationCases} | ` +
       `router execution cases: ${summary.routerExecutionCases} | ` +
+      `governance tier cases: ${summary.governanceTierCases} | ` +
       `files scanned: ${summary.filesScanned} | ` +
       `markdown link-checked: ${summary.markdownFilesLinkChecked}`,
   );

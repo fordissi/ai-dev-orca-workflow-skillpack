@@ -41,6 +41,13 @@ Task classification 必須把下面四件事**分開評估**，任何一項都�
 - **Security-sensitive 但機械上簡單的 task**：可以維持 Stage 1/2，搭配更強的 review 與 gate。只有需要**對安全語意本身做推理**（RLS 設計、adversarial security 分析）才提高 stage。
 - **高 `risk` 本身**、**「這個 task 很重要」**、**「測試很多」**：都**不是** stage 訊號。
 
+上面第 2 點（risk / blast radius 決定 permission ceiling 嚴格度、independent
+review 需求、human gate）的具體落實，見
+[`WORKFLOW_POLICY.md`](WORKFLOW_POLICY.md) 的 *Governance tiers*——三個具名
+等級（`G1_LIGHTWEIGHT` / `G2_STANDARD` / `G3_HIGH_RISK`），語意由該節唯一定義，
+此處不重複。Governance tier 與 capability stage 是同一條「risk 不等於能力需求」
+不變式的兩個獨立應用，**互不推導**。
+
 ## Registry is user-authoritative configuration
 
 **硬性不變式：`Registry membership and enabled status are human-authoritative configuration, not an AI-generated capability verdict.`**

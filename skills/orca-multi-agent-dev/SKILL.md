@@ -111,7 +111,44 @@ classify -> slot -> overlay -> candidate -> contract -> dispatch
 7. **dispatch** — 逐字命令，**在命令列明確傳入 model、reasoning、sandbox 與
    approval 旗標**。散文式的權限或模型宣告會被 worker 的本機設定靜默覆蓋。
 
-## 4. Concurrency
+## 4. Governance tiers
+
+**Governance 強度要跟實際風險成正比，不是跟「碰到 production」成正比。**
+`classify` 步驟填六維分類的同時，另外評估四個維度：`DATA_SENSITIVITY`
+（LOW/MODERATE/HIGH）、`REVERSIBILITY`（EASY/MODERATE/HARD_IRREVERSIBLE）、
+`BLAST_RADIUS`（LOCAL/MODULE/CROSS_SYSTEM_BULK）、`PRIVILEGE_IMPACT`
+（NONE/NORMAL/ELEVATED_SECURITY_BOUNDARY）。**取四者中最嚴重的**決定：
+
+```text
+G1_LIGHTWEIGHT   implement → focused tests → commit
+G2_STANDARD      bounded plan → implementation → tests → independent review → deploy/commit
+G3_HIGH_RISK     preflight → explicit human gate → bounded implementation
+                 → independent security review → controlled execution → post-validation
+```
+
+以下任一為真時**直接鎖定 `G3_HIGH_RISK`**，不看四個維度：auth
+provisioning/binding、RLS policy 變更、`SECURITY DEFINER`、`BYPASSRLS`/
+`service_role`、destructive production migration、production bulk
+master-data mutation、payroll/compensation write path、privilege
+escalation/role-grant 變更——**這些就是 [`WORKFLOW_POLICY.md`](../../policies/WORKFLOW_POLICY.md)
+Human gates 清單中對應項目的具體化，不是第二份清單。**
+
+**Production 環境本身、測試套件大小、改動檔案數、執行時間、程式碼複雜度**都
+**不是**輸入——不會單獨把 tier 推到 `G3_HIGH_RISK`。
+
+**Governance tier 不是 capability stage**，兩者正交：G3 task 範圍夠清楚時仍可
+用 Stage 1/2 模型；G1 task 異常模糊時仍可能需要 Stage 3 推理。不得互相推導。
+
+Fingerprint（exact-payload 核准）只在該 task 明確需要 human 核准精確
+canonical payload bytes 時才要求，不因為是 G3 就自動要求。Human 可以調高或
+調降 process 嚴格度，但**命中 hard trigger 時不得被 override 降級**。
+
+Router 輸出精簡：`governance_tier` / `governance_reasons` / `required_gates`
+/ `required_review` / `fingerprint_required`，不必產出冗長的 compliance 文字。
+完整語意見 [`WORKFLOW_POLICY.md`](../../policies/WORKFLOW_POLICY.md) 的
+Governance tiers。
+
+## 5. Concurrency
 
 預設 `SEQUENTIAL`。改為 `PARALLEL_INDEPENDENT` 前，
 [`CONCURRENCY_POLICY.md`](../../policies/CONCURRENCY_POLICY.md) 的五項檢查必須全為是。
@@ -119,7 +156,7 @@ classify -> slot -> overlay -> candidate -> contract -> dispatch
 
 同一條 implementation chain 留在同一 worktree。fresh session 不等於 fresh worktree。
 
-## 5. Review
+## 6. Review
 
 `verification_need` 為 `independent` 或 `adversarial` 時，reviewer 的 **provider 與
 model family 都必須**與 implementer 不同。找不到 disjoint 候選就回 `BLOCKED`，
@@ -131,7 +168,7 @@ selection authority；它必須接收已解析的 workflow contract，不能自�
 Current human instruction 才能產生 `HUMAN_EXPLICIT_OVERRIDE`；一次完成工作的
 `HUMAN_RETROACTIVE_ACCEPTANCE` 只留在 audit history，不會擴充 registry。
 
-## 6. 執行中：等待、權限、max turns
+## 7. 執行中：等待、權限、max turns
 
 **慢不是壞。** 輪詢逾時、總執行時間長、terminal 安靜、還沒給結論——四者都不是失敗，
 不得回 `BLOCKED`。
@@ -182,7 +219,7 @@ max turns 都不是 `PERMISSION_BLOCKED`。
 Permission ceiling 的能力分解與 Execution lifecycle semantics；命令細節見
 [`OFFICIAL_COMMANDS.md`](../../references/OFFICIAL_COMMANDS.md)。
 
-## 7. Continuation 與 session cleanup
+## 8. Continuation 與 session cleanup
 
 **Resume 前先比對 human intent，不是先看 worker 還活著沒。** 一次真實 cycle 曾經
 續跑舊 task，即使新的 human instruction 早已要求不同的 task——worker 與 reviewer
@@ -234,7 +271,7 @@ Continuation freshness 與 Session lifecycle and cleanup；目前 Orca 沒有
 per-terminal close/list 的已驗證命令，實際限制見
 [`OFFICIAL_COMMANDS.md`](../../references/OFFICIAL_COMMANDS.md)。
 
-## 8. 停止
+## 9. 停止
 
 `BLOCKED` 必須附 reason code：`CONFIG_INVALID`、`ROUTING_UNAVAILABLE`、
 `POLICY_BLOCKED`、`RESOURCE_BLOCKED`、`PERMISSION_BLOCKED`。
@@ -246,7 +283,7 @@ auth/RBAC/RLS、privileged boundary、production deploy、secrets/security confi
 
 `failed_repair_count >= max_repair_attempts` 時升級或停止。初次 attempt 不算 repair。
 
-## 9. 回報（Worker → Operational Router）
+## 10. 回報（Worker → Operational Router）
 
 ```text
 TASK_RESULT
@@ -274,7 +311,7 @@ source_summary:
 `DISPATCH_IDENTITY_MATCH`。
 讀不到 quota 就整段 `UNKNOWN`——**禁止為了填滿欄位而猜測**。
 
-## 10. Handback（Operational Router → Strategic Router）
+## 11. Handback（Operational Router → Strategic Router）
 
 回報鏈固定為：
 
@@ -333,7 +370,7 @@ provider conversation ID。
 current project handoff。改到 durable state 時先更新 handoff，再用 `HANDOFF_UPDATE`
 指出改了哪裡。
 
-## 11. 改動這個 pack 之前
+## 12. 改動這個 pack 之前
 
 命令範例以本機 `--help` 為準，見
 [`OFFICIAL_COMMANDS.md`](../../references/OFFICIAL_COMMANDS.md)。

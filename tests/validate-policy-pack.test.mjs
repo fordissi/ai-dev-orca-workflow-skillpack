@@ -9,6 +9,7 @@ import {
   canonicalFingerprint,
   canonicalContinuationFacts,
   checkReasoningDispatch,
+  classifyGovernanceTier,
   parseRelativeDuration,
   refreshRequired,
   relativeResetAt,
@@ -46,6 +47,7 @@ import {
   validateResourceState,
   validateRepository,
   validateRouterExecutionCases,
+  validateGovernanceTierCases,
   validateRouterExecutionRecord,
   validateRoutingCases,
 } from "../scripts/validate-policy-pack.mjs";
@@ -3255,5 +3257,203 @@ test("the Operational Router execution boundary is owned in one place and cross-
   const registryText = await readFile("policies/MODEL_REGISTRY.yaml", "utf8");
   for (const leaked of ["router_execution_class", "router_execution_decision", "ROUTER_RESERVE_SELF_CONSUMPTION", "CONTROL_PLANE_PROBE"]) {
     assert.ok(!registryText.includes(leaked), `the model registry must not carry ${leaked}`);
+  }
+});
+
+/* ------------------------------------------------------------------------ *
+ * Governance tiers
+ *
+ * Proportional governance: workflow rigor should track actual task risk
+ * (sensitivity, reversibility, blast radius, privilege impact), not
+ * production-relatedness or code complexity by themselves. These tests
+ * cover what the YAML cases cannot - proving fields that must never move the
+ * tier really cannot, and single-owner/no-duplication checks.
+ * ------------------------------------------------------------------------ */
+
+test("complexity, file count, runtime and test-suite size have no effect on governance tier", () => {
+  const mild = { data_sensitivity: "LOW", reversibility: "EASY", blast_radius: "MODULE", privilege_impact: "NONE" };
+
+  // These fields are not part of the function's contract at all - passing
+  // them (however alarming they sound) must produce byte-identical results
+  // to omitting them, because the classifier never reads them.
+  const withNoise = {
+    ...mild,
+    complexity: "high",
+    files_changed: 400,
+    runtime_minutes: 90,
+    test_suite_size: 5000,
+    production: true,
+  };
+
+  assert.deepEqual(classifyGovernanceTier(mild), classifyGovernanceTier(withNoise));
+  assert.equal(classifyGovernanceTier(withNoise).governance_tier, "G2_STANDARD");
+});
+
+test("production-relatedness alone cannot force G3", () => {
+  const productionButMild = {
+    data_sensitivity: "LOW", reversibility: "EASY", blast_radius: "LOCAL", privilege_impact: "NONE",
+    production: true, environment: "production",
+  };
+  assert.equal(classifyGovernanceTier(productionButMild).governance_tier, "G1_LIGHTWEIGHT");
+});
+
+test("governance tier and capability stage are independent - neither implies the other", async () => {
+  const workflow = await readFile("policies/WORKFLOW_POLICY.md", "utf8");
+  const routing = await readFile("policies/MODEL_ROUTING_POLICY.md", "utf8");
+
+  // A G3 task with clear scope: nothing in this function or its inputs
+  // touches stage/tier at all - proving independence structurally, not just
+  // by assertion.
+  const g3 = classifyGovernanceTier({
+    data_sensitivity: "LOW", reversibility: "EASY", blast_radius: "LOCAL", privilege_impact: "NONE",
+    hard_triggers: { rls_policy_change: true },
+  });
+  assert.equal(g3.governance_tier, "G3_HIGH_RISK");
+  assert.ok(!("selected_stage" in g3) && !("capability_tier" in g3) && !("minimum_tier" in g3));
+
+  assert.ok(workflow.includes("Governance tier 不是 capability stage"));
+  assert.ok(routing.includes("Governance tier 與 capability stage 是同一條"));
+});
+
+test("hard triggers are named instances of the existing Human gates list, not a second definition", async () => {
+  const workflow = await readFile("policies/WORKFLOW_POLICY.md", "utf8");
+
+  assert.match(workflow, /## Human gates/);
+  assert.match(workflow, /## Governance tiers/);
+  assert.ok(
+    workflow.includes("這份清單本身就是唯一的 owner。") && workflow.includes("不重新定義一份會分歧的清單"),
+    "the Human gates list must declare itself the single owner the hard triggers point back to",
+  );
+  assert.ok(
+    workflow.includes("這組 hard trigger 就是上方 Human gates 清單中對應項目的具體化，不是第二份"),
+    "the Governance tiers section must defer to Human gates rather than restate it",
+  );
+
+  // Every hard trigger name used by the classifier must be traceable to a
+  // concept actually named in the (single) Human gates list.
+  for (const concept of ["auth provisioning", "RLS policy", "SECURITY DEFINER", "BYPASSRLS", "destructive production migration", "production bulk master-data mutation", "payroll", "role-grant"]) {
+    assert.ok(workflow.includes(concept), `Human gates list is missing the concept behind a hard trigger: ${concept}`);
+  }
+});
+
+test("a human override can never downgrade a hard-triggered G3 task, in either raise or lower framing", () => {
+  const bound = (target) => ({
+    human_override: { target_tier: target, task_id: "t", instruction_revision: "r" },
+    current_task_id: "t",
+    current_instruction_revision: "r",
+  });
+  const triggered = { data_sensitivity: "LOW", reversibility: "EASY", blast_radius: "LOCAL", privilege_impact: "NONE", hard_triggers: { security_definer: true } };
+
+  for (const target of ["G1_LIGHTWEIGHT", "G2_STANDARD"]) {
+    const result = classifyGovernanceTier(triggered, bound(target));
+    assert.equal(result.governance_tier, "G3_HIGH_RISK");
+    assert.equal(result.governance_source, "POLICY_DEFAULT");
+    assert.ok(result.governance_reasons.some((r) => r.includes("rejected")));
+  }
+
+  // "Raising" an already-G3 task to G3 is a no-op, not an error - it simply
+  // has nowhere higher to go.
+  const noop = classifyGovernanceTier(triggered, bound("G3_HIGH_RISK"));
+  assert.equal(noop.governance_tier, "G3_HIGH_RISK");
+});
+
+test("required_review escalates strictly with tier and fingerprint is independent of tier", () => {
+  const g1 = classifyGovernanceTier({ data_sensitivity: "LOW", reversibility: "EASY", blast_radius: "LOCAL", privilege_impact: "NONE" });
+  const g2 = classifyGovernanceTier({ data_sensitivity: "MODERATE", reversibility: "EASY", blast_radius: "LOCAL", privilege_impact: "NONE" });
+  const g3 = classifyGovernanceTier({ data_sensitivity: "HIGH", reversibility: "EASY", blast_radius: "LOCAL", privilege_impact: "NONE" });
+  assert.deepEqual([g1.required_review, g2.required_review, g3.required_review], ["OPTIONAL", "INDEPENDENT", "INDEPENDENT_SECURITY"]);
+
+  // fingerprint_required tracks only the explicit flag, at every tier.
+  for (const tier of [g1, g2, g3]) assert.equal(tier.fingerprint_required, false);
+  const withFingerprint = classifyGovernanceTier({ data_sensitivity: "LOW", reversibility: "EASY", blast_radius: "LOCAL", privilege_impact: "NONE", exact_payload_approval_needed: true });
+  assert.equal(withFingerprint.fingerprint_required, true);
+  assert.equal(withFingerprint.governance_tier, "G1_LIGHTWEIGHT", "the flag must not itself raise the tier");
+});
+
+test("repository governance tier cases all conform to the executable semantics", async () => {
+  const cases = parse(await readFile("tests/governance-tier-cases.yaml", "utf8"));
+  const names = new Set(cases.cases.map(({ name }) => name));
+
+  for (const required of [
+    "ui_text_change_in_production_is_g1",
+    "dashboard_report_change_is_g1",
+    "employee_profile_schema_change_is_g2",
+    "performance_scoring_logic_is_g2",
+    "nondestructive_attendance_migration_is_g2",
+    "payroll_write_path_is_g3_via_hard_trigger",
+    "rls_change_is_g3_via_hard_trigger",
+    "security_definer_function_is_g3_via_hard_trigger",
+    "production_bulk_employee_import_is_g3",
+    "production_label_config_change_is_not_automatically_g3",
+    "high_complexity_reversible_refactor_is_g2_not_g3",
+    "fingerprint_required_when_explicitly_justified",
+    "human_override_may_raise_a_g1_task_to_g3",
+    "human_override_may_lower_a_nontriggered_g2_task",
+    "human_override_cannot_lower_a_hard_triggered_g3_task",
+  ]) {
+    assert.ok(names.has(required), `governance tier cases are missing ${required}`);
+  }
+
+  assert.ok(cases.cases.length >= 13, "governance tier cases must cover at least the 13 required scenarios");
+  assert.deepEqual(validateGovernanceTierCases(cases), []);
+});
+
+test("governance tier case validator rejects a case whose expectation drifts", () => {
+  const drifted = {
+    cases: [
+      {
+        name: "wrong_tier",
+        kind: "governance_tier",
+        why: "a fixture asserting the wrong thing must be caught",
+        dimensions: { data_sensitivity: "HIGH", reversibility: "EASY", blast_radius: "LOCAL", privilege_impact: "NONE" },
+        expect: { governance_tier: "G1_LIGHTWEIGHT" },
+      },
+    ],
+  };
+  assert.match(validateGovernanceTierCases(drifted).join("\n"), /expected governance_tier "G1_LIGHTWEIGHT", got "G3_HIGH_RISK"/);
+  assert.deepEqual(validateGovernanceTierCases({ cases: [] }), ["governance tier cases: expected a non-empty `cases` list"]);
+});
+
+test("governance tiers do not touch the model registry, stages, reserve, or the router execution boundary", async () => {
+  const registryText = await readFile("policies/MODEL_REGISTRY.yaml", "utf8");
+  const registryParsed = parse(registryText);
+  const resource = await readFile("policies/RESOURCE_AWARE_ROUTING.md", "utf8");
+  const workflow = await readFile("policies/WORKFLOW_POLICY.md", "utf8");
+
+  for (const leaked of ["G1_LIGHTWEIGHT", "G2_STANDARD", "G3_HIGH_RISK", "governance_tier", "DATA_SENSITIVITY"]) {
+    assert.ok(!registryText.includes(leaked), `the model registry must not carry ${leaked}`);
+  }
+  assert.deepEqual(registryParsed.capability_tier_order, ["CHEAP", "DEFAULT", "STRONG", "DEEP"]);
+  assert.deepEqual(validateRegistry(registryParsed), []);
+
+  // Router capacity reserve's own thresholds/bands are untouched.
+  for (const token of ["ROUTER_RESERVE", "ROUTER_CRITICAL_RESERVE", "ROUTER_EMERGENCY_RESERVE", "0.15", "0.10", "0.05"]) {
+    assert.ok(resource.includes(token), `Router capacity reserve section lost ${token}`);
+  }
+
+  // Router/Worker execution boundary section is present and untouched in
+  // structure (still owns its own invariant sentence).
+  assert.match(workflow, /## Operational Router execution boundary/);
+  assert.ok(workflow.includes("The Operational Router is control-plane capacity, not the default workload executor."));
+
+  // Reviewer disjointness and exact dispatch rules are untouched.
+  assert.match(workflow, /## Human gates/);
+  const routing = await readFile("policies/MODEL_ROUTING_POLICY.md", "utf8");
+  assert.match(routing, /reviewer 的 provider 與 model family \*\*都必須\*\*與 implementer 不同/);
+  assert.match(routing, /DISPATCH_IDENTITY_MATCH/);
+});
+
+test("the contract template separates strategic governance input from operational governance resolution", async () => {
+  const contract = await readFile("templates/ROUTER_EXECUTION_CONTRACT_TEMPLATE.md", "utf8");
+
+  const strategicIndex = contract.indexOf("governance_input:");
+  const operationalIndex = contract.indexOf("governance_resolution:");
+  assert.ok(strategicIndex > -1 && operationalIndex > -1 && strategicIndex < operationalIndex);
+
+  for (const field of ["data_sensitivity", "reversibility", "blast_radius", "privilege_impact", "hard_triggers", "exact_payload_approval_needed"]) {
+    assert.ok(contract.includes(field), `contract template cannot express governance_input.${field}`);
+  }
+  for (const field of ["governance_tier", "governance_reasons", "required_gates", "required_review", "fingerprint_required", "hard_trigger_fired", "governance_source"]) {
+    assert.ok(contract.includes(field), `contract template cannot express governance_resolution.${field}`);
   }
 });

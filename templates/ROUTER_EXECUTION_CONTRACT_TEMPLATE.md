@@ -39,6 +39,20 @@ classification:               # 六個維度全部必填
   architecture_involvement:   # true | false
   security_involvement:       # true | false
 
+# Governance tier 的輸入（見 WORKFLOW_POLICY.md 的 Governance tiers）。與上面
+# 的六維 classification 及下面的 selected_stage 正交：governance tier 決定
+# process 嚴格度（gate、review、fingerprint），不是能力需求，不得互相推導。
+# 這四個維度與 hard_triggers 是 strategic router 可從 task 描述本身判斷的
+# 事實，不需要檔案系統；實際 tier 判定留給 OPERATIONAL RESOLUTION。
+governance_input:
+  data_sensitivity:            # LOW | MODERATE | HIGH
+  reversibility:               # EASY | MODERATE | HARD_IRREVERSIBLE
+  blast_radius:                # LOCAL | MODULE | CROSS_SYSTEM_BULK
+  privilege_impact:            # NONE | NORMAL | ELEVATED_SECURITY_BOUNDARY
+  hard_triggers:                # 命中 WORKFLOW_POLICY.md Human gates 清單中
+                                 # 具名項目時列出，例如 [rls_policy_change]；未命中留空
+  exact_payload_approval_needed: false  # true 才需要 fingerprint；不因 G3 本身而自動 true
+
 implementation_role:          # ROUTER | IMPLEMENTATION | LONG_CONTEXT_DISCOVERY | ...
 implementation_slot:          # 能力需求，不是模型名稱
 selected_stage:               # STAGE_1_DEFAULT | STAGE_2_ADVANCED | STAGE_3_FLAGSHIP
@@ -292,6 +306,20 @@ router_execution:
   human_override:               # unresolved，或 none — 綁定 task_id/instruction_revision，
                                 # 語意同 MODEL_ROUTING_POLICY.md 的 HUMAN_EXPLICIT_OVERRIDE
                                 # / HUMAN_OVERRIDE_STALE
+
+# Governance tier 的判定結果。輸入見上方 STRATEGIC CONTRACT 的
+# governance_input；判定與 process 形狀由 WORKFLOW_POLICY.md 的
+# Governance tiers 定義，此處不重複。
+governance_resolution:
+  governance_tier:              # unresolved — G1_LIGHTWEIGHT | G2_STANDARD | G3_HIGH_RISK
+  governance_reasons:           # unresolved — 簡短列出驅動判定的維度或 hard trigger
+  required_gates:                # unresolved — [] 或 [HUMAN_GATE]
+  required_review:              # unresolved — OPTIONAL | INDEPENDENT | INDEPENDENT_SECURITY
+  fingerprint_required:          # unresolved
+  hard_trigger_fired:           # unresolved，或 none
+  governance_source:            # unresolved — POLICY_DEFAULT | HUMAN_EXPLICIT_OVERRIDE
+  human_override:                # unresolved，或 none — 綁定 task_id/instruction_revision；
+                                 # 命中 hard trigger 時不得用來把 governance_tier 降級
 
 dispatch_command:             # unresolved
   # 逐字命令，且必須在命令列明確傳入 model、reasoning、sandbox 與 approval 旗標。
