@@ -7,11 +7,13 @@ re-verified **2026-09-03** against `agy 1.1.24` — `gemini-3.8-flash-{low,
 medium,high}` now resolves and dispatches (see the Antigravity section below).
 
 Provider-native **resource probe** invocations (Codex `/status`, Claude
-`/usage`, Antigravity `agy` `/usage`) — verified account/session state, quota
-fields observable, and blockers — live in
-[`RESOURCE_PROBES.md`](RESOURCE_PROBES.md); the acquisition precedence and
-source-trust rules are in
+`/usage`, Antigravity `agy --print "/usage" --output-format json`) — verified
+account/session state, quota fields observable, and blockers — live in
+[`RESOURCE_PROBES.md`](RESOURCE_PROBES.md); the acquisition precedence,
+source-trust rules, and the **provider-native quota probe vs `orca account
+list` integration-visibility** separation are in
 [`../policies/RESOURCE_AWARE_ROUTING.md`](../policies/RESOURCE_AWARE_ROUTING.md).
+`orca account list` is integration evidence only — never a quota source.
 
 ## Version verification rule
 
@@ -269,8 +271,17 @@ JSON.** 在它們存在之前，**不得**假造這些命令的旗標或行為�
 
 **Orca 目前沒有 read-only 的 quota / rate-limit CLI 介面。** `orca status --json`
 回報 app、runtime、capabilities，但不含 normalize 後的 rate-limit 狀態。因此
-`RESOURCE_STATE` 目前只能由 `USER_STATEMENT` 或 `UNKNOWN` 填充，無法自動取得
-`ORCA_RUNTIME` 這個 HIGH trust 來源。
+`RESOURCE_STATE` 目前只能由 provider-native probe、`USER_STATEMENT` 或 `UNKNOWN`
+填充，無法自動取得 `ORCA_RUNTIME` 這個 HIGH trust 來源。
+
+**`orca account list --json` 不是 quota 來源。** 它回報 Orca 對某個 provider
+integration 的 **visibility**（看得到 / 能不能啟動），不含任何 quota 數值。
+它 unavailable **不等於** 該 provider 的 quota 耗盡或不可 dispatch——先跑
+provider-native probe（Codex `/status`、Claude `/usage`、
+`agy --print "/usage" --output-format json`）。分開追蹤
+`provider_resource_state` 與 `orca_integration_state`，語意見
+[`../policies/RESOURCE_AWARE_ROUTING.md`](../policies/RESOURCE_AWARE_ROUTING.md)
+的 *Provider-native quota probe precedence*。
 
 理想的上游介面是把 normalize 後的 RateLimitService 狀態以唯讀 JSON 暴露出來，例如：
 
@@ -442,6 +453,7 @@ agy --model "<model id>"
 agy --effort "<low|medium|high>"
 agy -p "<prompt>"
 agy --print "<prompt>"
+agy --print "/usage" --output-format json --print-timeout <duration>   # quota probe
 ```
 
 **一律以 `agy models` 作為 live model source，不得永久寫死 display name。**
@@ -475,6 +487,13 @@ agy --print "<prompt>"
   用 approval-bypass 旗標可以繞過，但那對 read-only 合規驗證沒有意義。這是 Gemini
   目前在本 pack 維持 `status: experimental` 的具體 blocker，記於
   [`MODEL_EVIDENCE.md`](MODEL_EVIDENCE.md)。
+- **例外（實測 2026-09-04）：`agy --print "/usage" --output-format json
+  --print-timeout <duration>` 可在 headless 下回傳有效 quota**——`command` 權限的
+  fail-close 擋的是 headless dispatch 要用的 file/command 工具，不擋 `/usage`
+  這個 slash command 本身。因此 quota probe 首選這個 headless 形式，
+  `orca terminal` interactive 路徑作 fallback。這**不改變** reviewer /
+  repo-discovery dispatch 仍受上一點限制的事實，也不改變 Gemini 的
+  `status: experimental`。
 - `agy --mode plan` 是 read-only 模式，但**不解除**上述 headless 權限限制。
 
 ### 重要：Antigravity 會提供非 Gemini 模型

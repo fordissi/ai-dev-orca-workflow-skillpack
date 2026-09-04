@@ -86,6 +86,11 @@ classify -> slot -> overlay -> candidate -> contract -> dispatch
 2. **slot** — 查 [`MODEL_ROUTING_POLICY.md`](../../policies/MODEL_ROUTING_POLICY.md)
    的 slot 決策表，得出 `role`、`slot`、`minimum_tier`。高風險規則優先於成本規則。
 3. **overlay** — 讀 resource state。**讀不到就是 `UNKNOWN`，不准估算。**
+   quota facts 先 provider-native probe（Codex `/status`、Claude `/usage`、
+   `agy --print "/usage" --output-format json`），再 fallback。
+   **`orca account list` 是 integration visibility，不是 quota 來源**——它
+   unavailable 不等於 quota 耗盡；分開追蹤 `provider_resource_state` 與
+   `orca_integration_state`，成功的 probe 不被 Orca aggregate 覆蓋。
    `YELLOW` 與 `UNKNOWN` 同權，依 registry 順序。
    同一 band、同一 state 之內再看兩個資源訊號，**順序固定：先稀缺，後利用率**。
    - **BUDGET**（weekly / monthly 等長期上限）→ `conservation_pressure`。

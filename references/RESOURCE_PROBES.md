@@ -1,9 +1,10 @@
 # Provider-Native Resource Probes
 
 Verified against the authoring host on **2026-09-02** (baseline commit
-`587d29b`). Re-verify against your own installed CLIs and accounts before
-relying on any invocation here — this file records what was *observed*, not a
-guarantee.
+`587d29b`); Antigravity non-interactive `/usage` and the `orca account list`
+distinction corrected **2026-09-04** on human-observed evidence. Re-verify
+against your own installed CLIs and accounts before relying on any invocation
+here — this file records what was *observed*, not a guarantee.
 
 Normative rules (acquisition precedence, source trust, pre-dispatch flow,
 UNKNOWN semantics, terminal hygiene) live in
@@ -29,6 +30,15 @@ supported provider-native probe to be attempted before falling to UNKNOWN.
 3. USER_STATEMENT            fresh human-supplied facts
 4. UNKNOWN                   neutral, never a block
 ```
+
+`ORCA_RUNTIME` here means *normalized rate-limit numbers* exposed as read-only
+JSON — which Orca does not have yet. It is **not** `orca account list`: that
+command reports whether Orca can currently see / launch a provider integration
+(integration visibility), never a quota figure. For quota facts, a successful
+provider-native probe outranks Orca aggregate / account visibility, and an
+`orca account list` "unavailable" must never be read as a spent quota — see
+`RESOURCE_AWARE_ROUTING.md`, *Provider-native quota probe precedence*. Track
+`provider_resource_state` and `orca_integration_state` as two separate axes.
 
 ## Driving an interactive TUI probe through Orca
 
@@ -151,12 +161,27 @@ orca terminal close  --terminal <handle> --tab --json                 # release 
   wording, negative, non-numeric) → `reset_at` UNKNOWN. Never invent a reset
   time. Executable form: `parseRelativeDuration()` / `relativeResetAt()` in
   `scripts/validate-policy-pack.mjs`.
-- **Blocker:** `agy -p` / print (headless) mode fail-closes on any tool that
-  needs the `command` permission (*"a tool required the 'command' permission
-  that headless mode cannot prompt for"*), so a headless probe cannot read
-  `/usage`. The **interactive** path via `orca terminal` works. Record a
-  headless attempt as `PROBE_PERMISSION_BLOCKED` and fall through to the
-  interactive probe.
+- **Non-interactive `/usage` (corrected 2026-09-04 on human-observed
+  evidence).** A live Router check ran
+  `agy --print "/usage" --output-format json --print-timeout 30s` and got valid
+  provider-native quota back (Gemini weekly + 5h and Claude/GPT pool weekly + 5h
+  all 100% remaining). So `agy --print "/usage" --output-format json
+  --print-timeout <duration>` (or the installed-version equivalent) **is** a
+  usable headless quota probe — the earlier "headless mode cannot read
+  `/usage`" note was too broad. The `command`-permission fail-close
+  (*"a tool required the 'command' permission that headless mode cannot prompt
+  for"*) still applies to headless dispatch that needs file/command tools
+  (reviewer, repo discovery) — it does **not** block the `/usage` slash command
+  itself. Prefer the `--print "/usage" --output-format json` probe; keep the
+  `orca terminal` interactive path as a fallback. A headless run that *does*
+  hit the permission wall is still `PROBE_PERMISSION_BLOCKED` → fall through.
+- **`orca account list` is not a quota source.** It reports Orca's integration
+  visibility for the Antigravity account, not `agy`'s quota. A live check saw
+  `orca account list --json` report Antigravity **unavailable** while
+  `agy --print "/usage"` reported every window at 100%. Correct reading:
+  `provider_resource_state = AVAILABLE`, `orca_integration_state = UNAVAILABLE`
+  — a valid combination, not a contradiction. `agy models` is a third,
+  separate thing: model catalog / `AUTO_GEMINI` resolver evidence, never quota.
 
 ## Gemini (standalone `gemini` CLI)
 

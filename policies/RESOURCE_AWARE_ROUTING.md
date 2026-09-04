@@ -199,11 +199,113 @@ first.`**
 4. UNKNOWN
 ```
 
+Tier 1 的「structured runtime resource source」指的是 **Orca 以唯讀 JSON 暴露的
+normalize 後 rate-limit 數值**（目前尚不存在，見
+[`../references/OFFICIAL_COMMANDS.md`](../references/OFFICIAL_COMMANDS.md)）。
+它**不是** `orca account list` 這類 aggregate / account **visibility** 輸出——後者
+是 integration evidence，不是 quota evidence，排在 provider-native probe **之後**
+（見下方 *Provider-native quota probe precedence*）。
+
 **不得**從「Orca inventory 沒有 quota 欄位」直接跳到 `UNKNOWN` 而不先考慮受支援的
 provider-native probe。
 
 **`Resource ranking happens after required resource acquisition attempts, not
 before them.`**
+
+### Provider-native quota probe precedence（vs Orca aggregate / account visibility）
+
+一次 live Router quota check 暴露的 routing/evidence 缺陷：Router 跑了
+`orca account list --json`，Orca 回報 Antigravity **unavailable**，Router 就推論
+Antigravity 的 **quota** 不可用、不可 dispatch。人工更正後直接跑
+`agy --print "/usage" --output-format json --print-timeout 30s`，拿到有效的
+provider-native quota：Gemini 週窗與 5h 窗、Claude/GPT pool 週窗與 5h 窗皆
+100% remaining。
+
+**Orca integration visibility 與 provider quota availability 不是同一件事。**
+必須至少分開追蹤兩個概念，不得合併成單一 status：
+
+| 概念 | 來源 | 值域 |
+|---|---|---|
+| `provider_resource_state` | provider-native probe → 等價權威 adapter → fresh `USER_STATEMENT` | `AVAILABLE` / `PRESSURED` / `EXHAUSTED` / `UNKNOWN` |
+| `orca_integration_state` | `orca account list` 等 Orca aggregate / account 視圖 | `AVAILABLE` / `UNAVAILABLE` / `DEGRADED` / `UNKNOWN` |
+
+quota / resource facts 的取得順序：
+
+```text
+1. provider-native probe
+   - Codex：原生 status/usage surface（5h/BURST、weekly/BUDGET、remaining、reset）
+   - Claude：原生 usage/status surface（session/current window、weekly、remaining/reset、
+     approximation caveat）
+   - Antigravity：agy --print "/usage" --output-format json --print-timeout <duration>
+     （或該安裝版的等價命令）
+2. 具備等價權威證據的 provider-specific adapter
+3. Orca aggregate / account visibility          ← 只是 integration evidence
+4. UNKNOWN
+```
+
+**`Orca aggregate / account state MUST NOT override a successful provider-native
+probe.`** 一個 provider 可以同時是：
+
+```text
+provider_resource_state = AVAILABLE
+orca_integration_state  = UNAVAILABLE
+```
+
+這是**合法**狀態，不是矛盾。上例的正確解讀是 `provider_quota_state = AVAILABLE` ＋
+`orca_integration_visibility = UNAVAILABLE`，**不是** `provider_quota_state =
+UNAVAILABLE`。
+
+Probe 失敗時 `provider_resource_state = UNKNOWN`，再看 fallback evidence。
+**若只有 Orca integration 說 unavailable，不得把 `UNKNOWN` 轉成 `EXHAUSTED`。**
+Orca integration 說 available 可作為 weak fallback evidence（integration 可達），
+但不因此得到有信心的 `AVAILABLE` quota 讀數——那仍需要 provider-native 證據。
+成功的 provider-native `reset_at` 優先於任何 stale aggregate reset。
+
+執行形式：`separateQuotaEvidence()` in
+[`../scripts/validate-policy-pack.mjs`](../scripts/validate-policy-pack.mjs)。
+`provider_resource_state` 只由 provider-native 證據設定，Orca aggregate state
+沒有任何路徑能改動它（`aggregate_overrode_probe` 結構上恆為 `false`）。
+
+#### Quota availability 不等於 dispatchability
+
+`quota_available` 與 `dispatch_runtime_available` 是**兩個**欄位，不得合併。
+`agy /usage` 成功但 Orca 無法啟動 Antigravity worker 時：
+
+```text
+quota_available            = YES
+dispatch_runtime_available = NO / UNKNOWN
+```
+
+quota 充足**不證明**可 dispatch。最終 dispatch 仍需 runtime availability、registry
+eligibility、capability/stage fit、Router capacity reserve、reviewer
+disjointness、exact dispatch identity——這些檢查一個都不因為 quota resolution
+被更正而放寬。Router capacity reserve 讀的仍是 BUDGET window 的原始
+`remaining_ratio`，在 corrected quota resolution **之後**照常評估。
+
+#### 人工明確詢問 quota 時
+
+人明確要求「檢查 quota / 剩餘額度 / reset 時間 / provider 可用性 / 資源配置」時，
+Router **必須**直接 probe 每一個相關的 provider-native 來源（有支援的話），
+**不得**只憑 `orca account list` 回答。
+
+#### Antigravity：三種證據分開
+
+- `agy --print "/usage" --output-format json` ＝ **quota evidence**。
+- `agy models` ＝ **model catalog / resolver evidence**（`AUTO_GEMINI` 世代解析）。
+- `orca account list` 的 Antigravity visibility ＝ **integration evidence only**。
+
+`agy /usage` 成功時，**不得**從 Orca visibility 失敗推論 quota 耗盡或
+dispatch 不合格；改為記 `quota_available = YES` ＋
+`dispatch_runtime_available = NO/UNKNOWN`。`AUTO_GEMINI` 的語意不變——
+`agy models` → 最新相容世代 → 精確 requested effort；quota probing **不得**寫死
+任何 Gemini 世代。世代解析與 quota state 是分開的事實。
+
+#### Quota recommendation 的邊界
+
+`separateQuotaEvidence()` 是**純證據解析**：不回傳 stage、model、provider、
+reasoning effort 或任何 registry 欄位，也不改變 `MODEL_REGISTRY.yaml` 的
+membership 或人工 requested 的 reasoning effort。quota state 只在既有 overlay
+那一層作為 routing signal。
 
 ### RESOURCE_PROBE_ADAPTER
 

@@ -1106,6 +1106,128 @@ export function resolveResourceAcquisition(tiers, options = {}) {
   };
 }
 
+// Two facts a quota check must never collapse into one status.
+// `provider_resource_state` is how much quota the provider itself reports;
+// `orca_integration_state` is only whether Orca can currently see / launch the
+// provider integration (`orca account list` and friends).
+export const PROVIDER_RESOURCE_STATES = ["AVAILABLE", "PRESSURED", "EXHAUSTED", "UNKNOWN"];
+export const ORCA_INTEGRATION_STATES = ["AVAILABLE", "UNAVAILABLE", "DEGRADED", "UNKNOWN"];
+
+// Maps a normalized provider reading to a coarse resource band. A stale,
+// low-confidence or unreadable entry is UNKNOWN - never EXHAUSTED, so a failed
+// probe cannot be mistaken for an empty quota.
+function classifyProviderResourceState(entry, now) {
+  const readable = isPlainObject(entry) ? readableEntry(entry, now) : null;
+  if (readable === null || !readable.usable) return "UNKNOWN";
+  if (entry.available === false || readable.state === "RED") return "EXHAUSTED";
+  if (readable.state === "YELLOW") return "PRESSURED";
+
+  const ratios = resourceWindows(entry)
+    .map((w) => w.remaining_ratio)
+    .filter((r) => typeof r === "number" && Number.isFinite(r) && r >= 0 && r <= 1);
+  if (ratios.length > 0) {
+    const min = Math.min(...ratios);
+    if (min <= 0.05) return "EXHAUSTED";
+    if (min <= 0.2) return "PRESSURED";
+    return "AVAILABLE";
+  }
+  return readable.state === "GREEN" ? "AVAILABLE" : "UNKNOWN";
+}
+
+// The reset_at from the authoritative provider reading (BUDGET window first).
+// This is what wins over any reset hint carried on an Orca aggregate view.
+function firstProviderReset(entry) {
+  const windows = resourceWindows(entry);
+  const budgetWindow = windows.find((w) => w.role === "BUDGET" && w.reset_at != null);
+  if (budgetWindow) return budgetWindow.reset_at;
+  const anyWindow = windows.find((w) => w.reset_at != null);
+  return anyWindow ? anyWindow.reset_at : null;
+}
+
+/**
+ * Separates provider quota evidence from Orca integration visibility so the
+ * Router cannot read an `orca account list` "unavailable" as a spent quota.
+ * RESOURCE_AWARE_ROUTING.md's "Provider-native quota probe precedence" section
+ * is the owner; this makes the two-axis rule executable.
+ *
+ * `provider_resource_state` is set ONLY by a successful provider-native probe,
+ * an equivalent authoritative adapter, or fresh USER_STATEMENT facts. Orca
+ * aggregate / account visibility never sets it - not up, not down. A successful
+ * provider-native probe is therefore never overridden by Orca aggregate state
+ * (`aggregate_overrode_probe` is structurally always false), and an Orca
+ * "unavailable" never turns an UNKNOWN provider reading into EXHAUSTED.
+ *
+ * `quota_available` and `dispatch_runtime_available` stay distinct: quota
+ * sufficiency does not prove dispatchability, which still needs a separate
+ * runtime check plus registry / stage / reserve / disjointness / identity.
+ *
+ * Pure evidence resolution: it returns no stage, model, provider, reasoning
+ * effort or registry field, and recommends nothing.
+ */
+export function separateQuotaEvidence(inputs = {}, options = {}) {
+  const { now = Date.now() } = options;
+  const i = isPlainObject(inputs) ? inputs : {};
+
+  const probe = isPlainObject(i.provider_probe) ? i.provider_probe : null;
+  const adapter = isPlainObject(i.provider_adapter) ? i.provider_adapter : null;
+  const userStatement = isPlainObject(i.user_statement) ? i.user_statement : null;
+
+  const usableProbe = probe !== null && probe.probe_status === "PROBE_OK" && entryUsableNow(probe.entry, now);
+  const usableAdapter =
+    adapter !== null && adapter.status === "ADAPTER_OK" && entryUsableNow(adapter.entry, now);
+  const userEntry = userStatement !== null ? userStatement.entry ?? userStatement : null;
+  const usableUser = userEntry !== null && entryUsableNow(userEntry, now);
+
+  let providerEntry = null;
+  let evidenceSource = "UNKNOWN";
+  if (usableProbe) {
+    providerEntry = probe.entry;
+    evidenceSource = "PROVIDER_NATIVE_PROBE";
+  } else if (usableAdapter) {
+    providerEntry = adapter.entry;
+    evidenceSource = "PROVIDER_ADAPTER";
+  } else if (usableUser) {
+    providerEntry = userEntry;
+    evidenceSource = "USER_STATEMENT";
+  }
+
+  const providerOffered = probe !== null || adapter !== null || userStatement !== null;
+  const staleEvidenceSeen = providerOffered && providerEntry === null;
+
+  const providerState = providerEntry !== null ? classifyProviderResourceState(providerEntry, now) : "UNKNOWN";
+  const providerReset = providerEntry !== null ? firstProviderReset(providerEntry) : null;
+
+  const orca = isPlainObject(i.orca_integration) ? i.orca_integration : null;
+  const orcaState =
+    orca !== null && ORCA_INTEGRATION_STATES.includes(orca.visibility) ? orca.visibility : "UNKNOWN";
+
+  const quotaAvailable =
+    providerState === "AVAILABLE" ? "YES" : providerState === "EXHAUSTED" ? "NO" : "UNKNOWN";
+
+  const dispatchRuntime = isPlainObject(i.dispatch_runtime) ? i.dispatch_runtime : null;
+  const dispatchRuntimeAvailable =
+    dispatchRuntime !== null && ["YES", "NO", "UNKNOWN"].includes(dispatchRuntime.available)
+      ? dispatchRuntime.available
+      : "UNKNOWN";
+
+  return {
+    provider_resource_state: providerState,
+    orca_integration_state: orcaState,
+    resource_evidence_source: evidenceSource,
+    quota_available: quotaAvailable,
+    dispatch_runtime_available: dispatchRuntimeAvailable,
+    provider_reset_at: providerReset,
+    // Orca aggregate state has no path to change provider_resource_state.
+    aggregate_overrode_probe: false,
+    // A successful probe is not implied by Orca availability; weak corroboration only.
+    orca_fallback_usable: providerState === "UNKNOWN" && orcaState === "AVAILABLE",
+    // Explicit human quota question, or no usable provider reading yet.
+    provider_native_probe_required: i.human_quota_query === true || !usableProbe,
+    // Stale / unknown provider evidence must be refreshed before a new dispatch.
+    refresh_before_dispatch: staleEvidenceSeen || providerState === "UNKNOWN",
+  };
+}
+
 function readableEntry(entry, now) {
   if (!isPlainObject(entry)) return null;
   if (resourceEntryTrust(entry) !== null) return null;
