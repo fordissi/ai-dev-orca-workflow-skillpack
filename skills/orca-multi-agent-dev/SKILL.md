@@ -290,6 +290,22 @@ auth/RBAC/RLS、privileged boundary、production deploy、secrets/security confi
 
 ## 10. 回報（Worker → Operational Router）
 
+Worker / Reviewer 結束時依 `return_profile` 回報（語意見 [`WORKFLOW_POLICY.md`](../../policies/WORKFLOW_POLICY.md) 的 Tiered return and handoff profiles）。收件人是 operational router，不是 strategic router。
+
+**預設（INTERNAL_COMPACT）：** 一般成功之內部執行採用精簡格式：
+
+```text
+STATUS: PASS
+ARTIFACT: <commit/result/reference>
+VALIDATION: PASS
+EXCEPTIONS: NONE
+```
+
+clean PASS 下**不需重複輸出**已由合約與測試保證之機器不變式（例如 `secret_in_git: NO`、`worker_receives_secret: NO` 等）。
+若非 clean happy path（`STATUS` 為 `HUMAN_GATE`、`BLOCKED`、`RETRYABLE`，或有例外/偏差），**自動展開**並附：`reason_code`、`evidence`、`unresolved_state`、`required_next_action`。
+
+**詳細 / 稽核（AUDIT_FULL / Legacy 相容）：** 明確要求完整技術輸出或稽核時採用：
+
 ```text
 TASK_RESULT
 status: PASS | FAIL | BLOCKED
@@ -343,9 +359,9 @@ worker result
 - remaining risks
 
 格式見
-[`templates/STRATEGIC_RETURN_TEMPLATE.md`](../../templates/STRATEGIC_RETURN_TEMPLATE.md)，
-lifecycle 規則見
-[`WORKFLOW_POLICY.md`](../../policies/WORKFLOW_POLICY.md) 的 Operational → Strategic handback。
+[`templates/STRATEGIC_RETURN_TEMPLATE.md`](../../templates/STRATEGIC_RETURN_TEMPLATE.md)（實作 `EXTERNAL_HANDOFF` profile），
+lifecycle 規則與 profile 語意見
+[`WORKFLOW_POLICY.md`](../../policies/WORKFLOW_POLICY.md) 的 Operational → Strategic handback 與 Tiered return and handoff profiles。這是跨軟體邊界的 context-serialization 契約，使外部大腦在無檔案系統與 transcript 下仍能接續推理。僅在明確稽核要求時採用 `AUDIT_FULL`。
 
 ```text
 STRATEGIC_RETURN

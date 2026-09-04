@@ -144,6 +144,9 @@ stop_conditions:
 escalation_policy:
 human_gate_required:          # true | false
 human_gate_reason:
+# Return profile。決定回報詳細程度（見 WORKFLOW_POLICY.md 的 Tiered return and handoff profiles）。
+# 內部派工預設 INTERNAL_COMPACT；需要完整稽核時填 AUDIT_FULL。不影響 model routing、capability 或 governance。
+return_profile:               # INTERNAL_COMPACT | AUDIT_FULL | unresolved（預設依 context 解析）
 ```
 
 ---
@@ -417,7 +420,24 @@ Execution lifecycle semantics 與 routing policy 的 Blocked reason codes。
 
 ## Completion footers（Worker → Operational router）
 
-Worker 結束時原樣回傳這兩段。它們的收件人是 operational router，不是 strategic router。
+Worker 結束時的回報格式依 `return_profile` 決定（語意見 [`policies/WORKFLOW_POLICY.md`](../policies/WORKFLOW_POLICY.md) 的 *Tiered return and handoff profiles*）。它們的收件人是 operational router，不是 strategic router。
+
+### 1. 預設：INTERNAL_COMPACT（一般成功內部執行）
+
+```text
+STATUS: PASS
+ARTIFACT: <commit/result/reference>
+VALIDATION: PASS
+EXCEPTIONS: NONE
+```
+
+可選 compact 欄位（僅在實質相關時填入）：`tests:`、`dispatch_attestation:`、`changed_scope:`、`next_action:`。已由合約與測試保證之機器不變式在 clean PASS 下不需重複輸出。
+
+若非 clean happy path（`STATUS` 為 `HUMAN_GATE`、`BLOCKED`、`RETRYABLE`，或有例外、capability 失敗、mismatch），**自動展開**並附：`reason_code:`、`evidence:`、`unresolved_state:`、`required_next_action:`。
+
+### 2. 詳細 / 稽核：AUDIT_FULL（或 Legacy 相容）
+
+需要完整技術細節或稽核時，Worker 仍可回傳完整的兩段結構化 footer：
 
 ```text
 TASK_RESULT

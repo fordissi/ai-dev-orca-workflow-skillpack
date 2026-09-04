@@ -2,8 +2,8 @@
 
 Version: `0.3`
 
-`STRATEGIC_RETURN` 是 **operational router → strategic router / human** 的回報格式。
-它是一份 **decision packet**，不是執行紀錄。
+`STRATEGIC_RETURN` 是 **operational router → strategic router / human** 的回報格式，實現了 `EXTERNAL_HANDOFF` profile（語意見 [`policies/WORKFLOW_POLICY.md`](../policies/WORKFLOW_POLICY.md) 的 *Tiered return and handoff profiles*）。
+它是一份 **decision packet** 與 **context-serialization boundary**，不是執行紀錄。
 
 Handback lifecycle 的 normative owner 是
 [`policies/WORKFLOW_POLICY.md`](../policies/WORKFLOW_POLICY.md) 的
@@ -44,6 +44,7 @@ changed files、測試輸出、reviewer findings、contract drift 與 routing ev
 ```text
 STRATEGIC_RETURN
 return_version: "0.3"
+return_profile: "EXTERNAL_HANDOFF"  # EXTERNAL_HANDOFF（預設）| AUDIT_FULL
 task_id:
 cycle:                      # 本 task 的第幾次 operational cycle
 status:                     # PASS | FAIL | BLOCKED | HUMAN_GATE
@@ -127,6 +128,8 @@ HANDOFF_UPDATE:
 | `FAIL` | 已執行但未達成 acceptance criteria | `KEY_FINDINGS` 必須說明失敗點 |
 | `BLOCKED` | 無法在現有授權或資源下繼續 | `BLOCKED_REASON` 必須帶 canonical reason code |
 | `HUMAN_GATE` | 停在需要人為決策的點 | `HUMAN_DECISIONS_REQUIRED` 必須列出確切待決事項 |
+
+注意區分 `HUMAN_ACTION` 與 `HUMAN_GATE`：`HUMAN_ACTION`（如在互動式 prompt 局部提供暫時性 credential）為本機操作性步驟，不構成權威躍遷或政策放行；`HUMAN_GATE` 則是進入特權操作、權限提升或不可逆決策前的明確人為放行閘門（語意見 [`policies/WORKFLOW_POLICY.md`](../policies/WORKFLOW_POLICY.md)）。
 
 Continuation freshness 判定為 `CONTINUATION_REJECTED_STALE` 或
 `LEGACY_CONTINUATION_REQUIRES_FRESH_CONTRACT` 時（定義見

@@ -4151,6 +4151,356 @@ export function classifyCallbackRecovery(evidence) {
 }
 
 /* ------------------------------------------------------------------------ *
+ * Tiered return and handoff profiles
+ *
+ * Three communication boundaries with distinct context requirements:
+ *   1. Worker / Reviewer -> Operational Router (INTERNAL_COMPACT)
+ *   2. Orca Router internal synthesis / recovery
+ *   3. Operational Router -> Human / external Strategic Router (EXTERNAL_HANDOFF)
+ *
+ * The return_profile controls REPORTING DETAIL only. It must NEVER alter:
+ * authority, allowed operations, governance tier, capability resolution,
+ * privilege, model selection, reasoning effort, reviewer requirements,
+ * human gates, validation requirements, or callback recovery.
+ *
+ * WORKFLOW_POLICY.md's "Tiered return and handoff profiles" is the normative
+ * owner; this implements deterministic profile resolution, exception
+ * expansion, and handoff context-completeness checks.
+ * ------------------------------------------------------------------------ */
+
+export const RETURN_PROFILES = ["INTERNAL_COMPACT", "EXTERNAL_HANDOFF", "AUDIT_FULL"];
+
+export const RETURN_BOUNDARIES = [
+  "WORKER_TO_ROUTER",
+  "REVIEWER_TO_ROUTER",
+  "ROUTER_TO_EXTERNAL",
+];
+
+export const NORMALIZED_EXECUTION_STATUSES = [
+  "PASS",
+  "RETRYABLE",
+  "HUMAN_GATE",
+  "BLOCKED",
+];
+
+export const HUMAN_INTERACTION_TYPES = ["HUMAN_ACTION", "HUMAN_GATE"];
+
+/**
+ * Resolves the deterministic return_profile for a given context and boundary.
+ *
+ * Rules:
+ *   - Worker / Reviewer -> Router defaults to INTERNAL_COMPACT
+ *   - Router -> External defaults to EXTERNAL_HANDOFF
+ *   - Explicit human audit request or policy-required audit resolves to AUDIT_FULL
+ *   - Absence of return_profile resolves deterministically to the context default
+ *   - G1 success does NOT default to AUDIT_FULL
+ *   - G3 does NOT automatically force every internal return to AUDIT_FULL
+ *   - Profile request cannot suppress a material exception or policy deviation
+ */
+export function resolveReturnProfile(context = {}) {
+  const c = isPlainObject(context) ? context : {};
+
+  // Explicit human audit request or policy-required full audit always escalates to AUDIT_FULL.
+  if (
+    c.explicit_audit_request === true ||
+    c.audit_requested === true ||
+    c.policy_audit_required === true ||
+    c.requested_profile === "AUDIT_FULL"
+  ) {
+    return {
+      profile: "AUDIT_FULL",
+      reason:
+        c.explicit_audit_request || c.audit_requested
+          ? "explicit human audit request"
+          : c.policy_audit_required
+            ? "policy-required detailed audit evidence"
+            : "requested AUDIT_FULL profile",
+      expanded: true,
+    };
+  }
+
+  // Determine boundary
+  let boundary = c.boundary;
+  if (!boundary) {
+    if (
+      c.sender === "router" ||
+      c.role === "ROUTER" ||
+      c.destination === "external" ||
+      c.recipient === "strategic_router" ||
+      c.recipient === "human"
+    ) {
+      boundary = "ROUTER_TO_EXTERNAL";
+    } else if (c.role === "REVIEWER" || c.sender === "reviewer") {
+      boundary = "REVIEWER_TO_ROUTER";
+    } else {
+      boundary = "WORKER_TO_ROUTER";
+    }
+  }
+
+  // Check for material exception or deviation
+  const hasException =
+    c.has_exception === true ||
+    c.policy_exception === true ||
+    c.security_exception === true ||
+    c.security_deviation === true ||
+    c.capability_failure === true ||
+    c.dispatch_mismatch === true ||
+    c.partial_validation === true ||
+    c.unexpected_mutation === true ||
+    c.stale_evidence === true ||
+    c.callback_ambiguity === true ||
+    (isNonEmptyString(c.status) && ["HUMAN_GATE", "BLOCKED", "RETRYABLE", "FAIL"].includes(c.status)) ||
+    (Array.isArray(c.exceptions) && c.exceptions.length > 0 && c.exceptions[0] !== "NONE");
+
+  // Router to external default
+  if (boundary === "ROUTER_TO_EXTERNAL") {
+    return {
+      profile: "EXTERNAL_HANDOFF",
+      boundary: "ROUTER_TO_EXTERNAL",
+      reason: "default profile for Router -> external Strategic Router / human handback",
+      expanded: hasException,
+    };
+  }
+
+  // Worker / Reviewer to Router default
+  // INTERNAL_COMPACT must auto-expand if there is an exception or non-happy-path
+  return {
+    profile: "INTERNAL_COMPACT",
+    boundary,
+    reason: hasException
+      ? "internal compact profile expanded due to non-clean execution path or exception"
+      : "default compact profile for successful internal worker/reviewer execution",
+    expanded: hasException,
+  };
+}
+
+/**
+ * Normalizes high-level execution state to: PASS | RETRYABLE | HUMAN_GATE | BLOCKED
+ * Keeps detailed conditions as reason_code rather than proliferating top-level states.
+ */
+export function normalizeExecutionState(input) {
+  const i = isPlainObject(input) ? input : typeof input === "string" ? { status: input } : {};
+  const rawStatus = (i.status ?? "PASS").toUpperCase();
+  let status = rawStatus;
+  let reasonCode = i.reason_code ?? null;
+
+  if (rawStatus === "FAIL") {
+    // If retryable failure or transport failure -> RETRYABLE
+    if (
+      i.retryable === true ||
+      i.is_retryable === true ||
+      i.callback_transport === "FAILED_RECOVERED" ||
+      i.reason_code === "CALLBACK_TRANSPORT_FAILURE"
+    ) {
+      status = "RETRYABLE";
+      reasonCode = reasonCode ?? "EXECUTION_RETRYABLE";
+    } else {
+      status = "BLOCKED";
+      reasonCode = reasonCode ?? "EXECUTION_FAILURE";
+    }
+  } else if (!NORMALIZED_EXECUTION_STATUSES.includes(status)) {
+    // Unknown or unnormalized status fails closed to BLOCKED
+    status = "BLOCKED";
+    reasonCode = reasonCode ?? `UNNORMALIZED_STATUS_${rawStatus}`;
+  }
+
+  return { status, reason_code: reasonCode };
+}
+
+/**
+ * Validates whether an internal or external return payload conforms to its profile requirements.
+ */
+export function validateReturnPayload(payload, options = {}) {
+  const p = isPlainObject(payload) ? payload : {};
+  const findings = [];
+
+  // Determine profile: explicit in payload or options, else resolve from context
+  const resolved = resolveReturnProfile({
+    requested_profile: p.return_profile ?? options.return_profile,
+    boundary: options.boundary,
+    sender: options.sender,
+    explicit_audit_request: options.explicit_audit_request ?? p.explicit_audit_request,
+    policy_audit_required: options.policy_audit_required ?? p.policy_audit_required,
+    governance_tier: options.governance_tier ?? p.governance_tier,
+    status: p.status ?? p.STATUS,
+    has_exception: options.has_exception ?? p.has_exception,
+    policy_exception: options.policy_exception ?? p.policy_exception,
+    security_exception: options.security_exception ?? p.security_exception,
+  });
+
+  const profile = p.return_profile ?? options.return_profile ?? resolved.profile;
+  const status = (p.status ?? p.STATUS ?? "").toUpperCase();
+
+  // Check if a worker attempted to suppress a policy or security exception
+  const hasUnreportedException =
+    (options.policy_exception === true && (p.exceptions === "NONE" || p.EXCEPTIONS === "NONE")) ||
+    (options.security_exception === true && (p.exceptions === "NONE" || p.EXCEPTIONS === "NONE")) ||
+    (p.security_deviation === true && (p.exceptions === "NONE" || p.EXCEPTIONS === "NONE")) ||
+    (p.policy_exception === true && (p.exceptions === "NONE" || p.EXCEPTIONS === "NONE"));
+
+  if (hasUnreportedException) {
+    findings.push("compact profile cannot suppress policy or security exception; exceptions must be reported");
+  }
+
+  if (profile === "INTERNAL_COMPACT") {
+    // Check status
+    if (!status) {
+      findings.push("INTERNAL_COMPACT requires status");
+    }
+
+    const isCleanPass =
+      (status === "PASS" || status === "COMPLETE") &&
+      (!p.exceptions || p.exceptions === "NONE" || (Array.isArray(p.exceptions) && p.exceptions.length === 0)) &&
+      (!p.EXCEPTIONS || p.EXCEPTIONS === "NONE" || (Array.isArray(p.EXCEPTIONS) && p.EXCEPTIONS.length === 0)) &&
+      !options.has_exception &&
+      !options.policy_exception &&
+      !options.security_exception &&
+      !p.policy_exception &&
+      !p.security_deviation;
+
+    if (isCleanPass) {
+      // Clean happy path: minimum needed is status, artifact, validation, exceptions
+      const hasArtifact = isNonEmptyString(p.artifact) || isNonEmptyString(p.ARTIFACT);
+      const hasValidation = isNonEmptyString(p.validation) || isNonEmptyString(p.VALIDATION);
+      if (!hasArtifact) findings.push("INTERNAL_COMPACT happy-path requires artifact pointer");
+      if (!hasValidation) findings.push("INTERNAL_COMPACT happy-path requires validation status");
+    } else {
+      // Exception expansion required!
+      // Must include: reason_code, evidence, unresolved_state, required_next_action
+      const reasonCode = p.reason_code ?? p.REASON_CODE ?? p.blocked_reason_code ?? p.BLOCKED_REASON;
+      const evidence = p.evidence ?? p.EVIDENCE ?? p.KEY_EVIDENCE;
+      const unresolvedState = p.unresolved_state ?? p.UNRESOLVED_STATE ?? p.unresolved;
+      const requiredNextAction = p.required_next_action ?? p.REQUIRED_NEXT_ACTION ?? p.next_action ?? p.NEXT_GATE;
+
+      if (!reasonCode) findings.push("INTERNAL_COMPACT exception expansion requires reason_code");
+      if (!evidence) findings.push("INTERNAL_COMPACT exception expansion requires evidence");
+      if (!unresolvedState) findings.push("INTERNAL_COMPACT exception expansion requires unresolved_state");
+      if (!requiredNextAction) findings.push("INTERNAL_COMPACT exception expansion requires required_next_action");
+    }
+  } else if (profile === "EXTERNAL_HANDOFF") {
+    // External handoff is a context-serialization boundary.
+    // Must contain: status, current_state, artifact, next_gate, not_done, key_evidence
+    if (!status) findings.push("EXTERNAL_HANDOFF requires status");
+
+    const currentState = p.current_state ?? p.CURRENT_STATE;
+    if (!currentState || (typeof currentState !== "object" && typeof currentState !== "string")) {
+      findings.push("EXTERNAL_HANDOFF requires current_state");
+    }
+
+    const artifact = p.artifact ?? p.ARTIFACT ?? p.commit ?? p.result;
+    if (!artifact) findings.push("EXTERNAL_HANDOFF requires authoritative artifact (commit/result)");
+
+    const nextGate = p.next_gate ?? p.NEXT_GATE ?? p.NEXT_RECOMMENDED_GATE;
+    if (!nextGate) findings.push("EXTERNAL_HANDOFF requires next_gate");
+
+    const notDone = p.not_done ?? p.NOT_DONE;
+    if (notDone === undefined) findings.push("EXTERNAL_HANDOFF requires not_done field");
+
+    const keyEvidence = p.key_evidence ?? p.KEY_EVIDENCE ?? p.VERIFICATION;
+    if (!keyEvidence) findings.push("EXTERNAL_HANDOFF requires key_evidence");
+
+    // If sensitive capability was used, check material boundary evidence
+    if (options.sensitive_capability_used === true || p.sensitive_capability_used === true) {
+      const boundaries = p.boundaries ?? p.BOUNDARIES ?? {};
+      const hasWrapper =
+        boundaries.capability_wrapper_used !== undefined ||
+        boundaries.wrapper !== undefined ||
+        p.capability_wrapper_used !== undefined;
+      const hasSecretPossession =
+        boundaries.worker_receives_secret !== undefined || p.worker_receives_secret !== undefined;
+      const hasPrivOp =
+        boundaries.privileged_operation_performed !== undefined || p.privileged_operation_performed !== undefined;
+      if (!hasWrapper && !hasSecretPossession && !hasPrivOp) {
+        findings.push("external sensitive capability result must preserve material boundary evidence");
+      }
+    }
+  } else if (profile === "AUDIT_FULL") {
+    // Full audit retains structured detail
+    if (!status) findings.push("AUDIT_FULL requires status");
+  }
+
+  return {
+    valid: findings.length === 0,
+    profile,
+    findings,
+  };
+}
+
+/**
+ * Verifies that an EXTERNAL_HANDOFF contains sufficient information for a
+ * separate Strategic Router to safely continue without transcript access.
+ *
+ * Answers the 9 critical questions:
+ * 1. Did the task succeed? (status)
+ * 2. What is now authoritative? (current_state + artifact)
+ * 3. What changed? (current_state.changed / what_changed / what_was_done)
+ * 4. What important invariants were actually proven? (key_evidence / verification)
+ * 5. Was any privileged / production mutation performed? (boundaries)
+ * 6. What was explicitly NOT performed? (not_done)
+ * 7. Is evidence fresh or uncertain? (evidence freshness in key_evidence)
+ * 8. What commit/result should future work anchor to? (artifact)
+ * 9. What is the next human gate or next safe action? (next_gate)
+ */
+export function verifyExternalHandoffCompleteness(handoff) {
+  const h = isPlainObject(handoff) ? handoff : {};
+  const missing = [];
+
+  // Q1: Did task succeed?
+  const status = h.status ?? h.STATUS;
+  if (!status) missing.push("Q1_status");
+
+  // Q2 & Q8: What is now authoritative & what commit/result to anchor to?
+  const artifact = h.artifact ?? h.ARTIFACT ?? h.commit ?? h.result;
+  if (!artifact) missing.push("Q2_Q8_authoritative_artifact");
+
+  // Q3: What changed?
+  const currentState = h.current_state ?? h.CURRENT_STATE;
+  const whatChanged =
+    currentState?.what_changed ??
+    currentState?.changed ??
+    h.what_changed ??
+    h.WHAT_WAS_DONE ??
+    h.changed_files;
+  if (!whatChanged && !currentState) missing.push("Q3_what_changed");
+
+  // Q4: What invariants proven?
+  const evidence = h.key_evidence ?? h.KEY_EVIDENCE ?? h.VERIFICATION;
+  if (!evidence) missing.push("Q4_key_evidence");
+
+  // Q5: Privileged/production mutation performed?
+  const boundaries = h.boundaries ?? h.BOUNDARIES;
+  if (
+    boundaries === undefined &&
+    h.privileged_operation_performed === undefined &&
+    h.production_mutation_performed === undefined
+  ) {
+    missing.push("Q5_boundary_invariants");
+  }
+
+  // Q6: Explicitly NOT performed?
+  const notDone = h.not_done ?? h.NOT_DONE;
+  if (notDone === undefined) missing.push("Q6_not_done");
+
+  // Q7: Evidence fresh or uncertain?
+  const freshness =
+    evidence?.freshness ??
+    h.evidence_freshness ??
+    h.freshness ??
+    (typeof evidence === "string" ? evidence : null);
+  if (!freshness && !evidence) missing.push("Q7_evidence_freshness");
+
+  // Q9: Next human gate or safe action?
+  const nextGate = h.next_gate ?? h.NEXT_GATE ?? h.NEXT_RECOMMENDED_GATE;
+  if (!nextGate) missing.push("Q9_next_gate");
+
+  return {
+    complete: missing.length === 0,
+    missing,
+    can_continue_without_transcript: missing.length === 0,
+  };
+}
+
+/* ------------------------------------------------------------------------ *
  * Repository validation (direct-run entry point)
  * ------------------------------------------------------------------------ */
 

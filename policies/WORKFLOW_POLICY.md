@@ -19,7 +19,7 @@ SKILL → WORKFLOW_POLICY → CONCURRENCY_POLICY → MODEL_ROUTING_POLICY
 
 | Owner | 負責 | 不負責 |
 |---|---|---|
-| `WORKFLOW_POLICY.md` | 角色、precedence、lifecycle、execution lifecycle、continuation freshness、session lifecycle/cleanup、Operational Router execution boundary、**governance tier**、handback、gate、permission ceiling 語意、cross-repo | 具體模型名稱、blocked reason code 語意、Router capacity reserve 的門檻與 band 定義、capability stage |
+| `WORKFLOW_POLICY.md` | 角色、precedence、lifecycle、execution lifecycle、continuation freshness、session lifecycle/cleanup、Operational Router execution boundary、**governance tier**、handback、tiered return / handoff profiles、gate、permission ceiling 語意、cross-repo | 具體模型名稱、blocked reason code 語意、Router capacity reserve 的門檻與 band 定義、capability stage |
 | `CONCURRENCY_POLICY.md` | concurrency mode 與啟用條件 | provider 選擇 |
 | `MODEL_ROUTING_POLICY.md` | task classification、slot 選擇、candidate 演算法、escalation | 即時 quota 數值 |
 | `MODEL_REGISTRY.yaml` | slot 的 ordered candidates、能力下限、repair budget | stable workflow 規則 |
@@ -953,11 +953,106 @@ Repair 必須交回**單一** implementation owner，不得同時派給多個 wo
 
 ## Completion reporting
 
-Worker 結束時回傳 `TASK_RESULT` 與 `RESOURCE_STATUS` 兩段結構化 footer。
+Worker 結束時依 `return_profile` 回傳結果。一般成功之內部執行預設為 `INTERNAL_COMPACT`；需要詳細狀態或稽核時採用 `AUDIT_FULL` 或既有 `TASK_RESULT` 與 `RESOURCE_STATUS` 兩段結構化 footer。
 
 **Provider、model、model family 與 reasoning effort 由 router 記錄，不由 worker 自行判定。** Worker 通常無法可靠地內省自己正在以哪個模型執行；要求它自報等於誘導它猜測。這些欄位必須由 router 在 contract 中寫定並以 attestation 比對；contract 或 runtime 未載明時填 `UNKNOWN`，不得假裝 exact match。
 
 `RESOURCE_STATUS` 可以整段為 `UNKNOWN`。Worker 不得為了填滿 footer 而猜測 quota 數值。
+
+## Tiered return and handoff profiles
+
+這一節是 **return / handoff profiles（`return_profile`）** 的 normative owner。
+工作流在不同通訊邊界上具有不同的脈絡需求：
+
+1. **Worker / Reviewer → Orca Operational Router**：內部執行回報，預設 `INTERNAL_COMPACT`。
+2. **Orca Router 內部 synthesis / recovery**：控制面整合與驗證。
+3. **Orca Operational Router → Human / external Strategic Router（例如 ChatGPT web）**：外部 handback，預設 `EXTERNAL_HANDOFF`。
+
+### 核心不變式
+
+```text
+The return profile controls reporting detail only.
+```
+
+`return_profile` **絕不改變**：
+- authority 或授權邊界
+- allowed operations 與 permission ceiling
+- Governance Tier
+- capability resolution 與 effective privilege
+- privilege level
+- model selection 與 candidate ranking
+- reasoning effort
+- reviewer disjointness 與 requirements
+- human gates
+- validation requirements
+- callback recovery
+
+### 三個語意 Profiles
+
+| Profile | 目的與邊界 | 預設場景 | 內容重點 |
+|---|---|---|---|
+| `INTERNAL_COMPACT` | Worker / Reviewer → Operational Router | 一般成功之內部派工 | 僅保留 orchestration 所需之最小資訊。Happy-path 格式：`STATUS: PASS`、`ARTIFACT: <commit/result>`、`VALIDATION: PASS`、`EXCEPTIONS: NONE`。已由 contract/tests 驗證之不變式（`secret_in_git: NO`、`secret_in_logs: NO`、`secret_in_argv: NO`、`router_env_dependency: NO`、`worker_receives_secret: NO`、重複的 `target_match`）在 clean PASS 下**不需重複輸出**。 |
+| `EXTERNAL_HANDOFF` | Operational Router → Human / external Strategic Router | 跨執行環境 handback | **Context-serialization boundary**。外部 Strategic Router 沒有本機檔案系統、terminal transcript 或 Orca 狀態，因此必須保存足夠資訊以在另一環境安全接續推理。格式涵蓋：`STATUS`、`CURRENT_STATE`（變更範疇與 authoritative repo 狀態）、`KEY_EVIDENCE`（驗證事實）、`DECISIONS`、`BOUNDARIES`（關鍵安全/權威邊界事實）、`ARTIFACT`（commit/result/reference）、`NOT_DONE`（刻意未執行之操作）、`NEXT_GATE`（下一個決策點）、`DISPATCH`。避免 redundant aliases（不重複 `target_match`、`target`、`database_target`）。 |
+| `AUDIT_FULL` | 深度稽核、高風險證據、或明確人工要求 | 高風險 / 例外調查 | 保留完整結構化輸出與所有診斷細節。僅在 G3 證據確實需要完整細節、security/Auth/RLS/payroll/特權操作/破壞性操作需要詳細證據、發生政策偏差、除錯調查，或 human 明確要求時使用。不得僅因技術複雜而預設為 `AUDIT_FULL`。 |
+
+### 預設 Profile 選擇（Deterministic Rules）
+
+- **Worker / Reviewer → Router**：預設 `INTERNAL_COMPACT`。
+- **Router → Human / external Strategic Router**：預設 `EXTERNAL_HANDOFF`。
+- **明確要求或政策需要詳細稽核**：`AUDIT_FULL`。
+- `G1_LIGHTWEIGHT` 成功回傳**絕不預設** `AUDIT_FULL`。
+- `G3_HIGH_RISK` 任務若機器驗證已足夠，內部成功回傳**不自動強制全量冗長輸出**（維持 `INTERNAL_COMPACT`；僅在 external handoff 呈現重要 boundary 證據，或在明確 audit 要求時採用 `AUDIT_FULL`）。
+- 未指定 `return_profile` 時，依邊界自動 deterministically 解析為對應預設值，不使 legacy caller 失效。
+
+### Exception Expansion（例外自動展開）
+
+`INTERNAL_COMPACT` 在執行**非 clean happy path** 時**必須自動展開**，不得隱藏任何實質失敗或政策偏差資訊。
+觸發展開的情境包括：
+- `STATUS` 為 `HUMAN_GATE`、`BLOCKED`、`RETRYABLE`
+- 發生 policy exception 或 security-relevant deviation
+- capability failure（例如 `CAPABILITY_UNAVAILABLE`、`PRIVILEGE_LEVEL_MISMATCH`）
+- dispatch identity mismatch（`DISPATCH_CONTRACT_MISMATCH`）
+- partial validation（validation 未完全通過）
+- unexpected mutation
+- stale 或 ambiguous evidence
+- callback recovery ambiguity
+
+展開時**必須包含**：
+- `reason_code`
+- `evidence`
+- `unresolved_state`
+- `required_next_action`
+
+**Worker 不得透過指定精簡 profile 試圖壓制或隱藏 material exception 或 policy violation。** Runtime 與通訊邊界掌握最低必要資訊層級。
+
+### External Handoff 必備資訊（9 項判準）
+
+外部 handback（`EXTERNAL_HANDOFF`）必須使外部 Strategic Router 能直接回答以下 9 個問題，無需讀取 transcript：
+1. **Did the task succeed?**（`STATUS`）
+2. **What is now authoritative?**（`CURRENT_STATE` + `ARTIFACT`）
+3. **What changed?**（`CURRENT_STATE` 變更摘要）
+4. **What important invariants were actually proven?**（`KEY_EVIDENCE`）
+5. **Was any privileged / production mutation performed?**（`BOUNDARIES`）
+6. **What was explicitly NOT performed?**（`NOT_DONE`）
+7. **Is evidence fresh or uncertain?**（`KEY_EVIDENCE` 中的 freshness）
+8. **What commit/result should future work anchor to?**（`ARTIFACT`）
+9. **What is the next human gate or next safe action?**（`NEXT_GATE`）
+
+敏感 capability 執行時，`EXTERNAL_HANDOFF` 呈現實質邊界證據（例如使用的 capability wrapper、`worker_receives_secret: NO`、`privileged_operation_performed: NO`、`target_match: PASS`），而不需列出無關的內部細節或重複別名。
+
+### Human Action vs Human Gate
+
+- `HUMAN_ACTION`：操作性步驟（例如在互動式 prompt 本機輸入暫時性 credential），**本身不代表權威轉移或核准**。
+- `HUMAN_GATE`：在權限提升、特權執行、不可逆操作或政策規定決策前的**明確放行核准**。
+
+### State / Reason Model
+
+高階狀態正規化為：`PASS`、`RETRYABLE`、`HUMAN_GATE`、`BLOCKED`。
+具體狀況以 `reason_code` 表達，避免頂層狀態過度膨脹：
+- `STATUS: HUMAN_GATE` + `reason_code: AUTHORIZATION_REQUIRED`
+- `STATUS: BLOCKED` + `reason_code: CAPABILITY_UNAVAILABLE`
+- `STATUS: RETRYABLE` + `reason_code: CALLBACK_TRANSPORT_FAILURE`
+既有 externally consumed reason code enums 保持相容。
 
 ## Operational → Strategic handback
 
