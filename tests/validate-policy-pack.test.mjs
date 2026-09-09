@@ -1435,6 +1435,32 @@ test("PACE collapses to UNKNOWN whenever generation continuity breaks", () => {
     base({ checked_at: at(-5 * 60 * 1000), remaining_ratio: 0.5 }),
   ];
   assert.equal(resolvePace({ observations: lowConf }, { now: NOW }).pace_pressure, "UNKNOWN");
+
+  // A capacity grant: remaining rises materially with the SAME reset_at. Still
+  // a generation break, never a negative burn.
+  const granted = [
+    base({ checked_at: at(-4 * HOUR), remaining_ratio: 0.30 }),
+    base({ checked_at: at(-2 * HOUR), remaining_ratio: 0.22 }),
+    base({ checked_at: at(-5 * 60 * 1000), remaining_ratio: 0.85 }),
+  ];
+  assert.equal(resolvePace({ observations: granted }, { now: NOW }).pace_pressure, "UNKNOWN");
+
+  // A same-generation series whose reset boundary has already passed.
+  const past = [
+    { checked_at: at(-3 * HOUR), remaining_ratio: 0.4, reset_at: at(-30 * 60 * 1000) },
+    { checked_at: at(-2 * HOUR), remaining_ratio: 0.3, reset_at: at(-30 * 60 * 1000) },
+    { checked_at: at(-5 * 60 * 1000), remaining_ratio: 0.2, reset_at: at(-30 * 60 * 1000) },
+  ];
+  assert.equal(resolvePace({ observations: past }, { now: NOW }).pace_pressure, "UNKNOWN");
+
+  // An operator may widen or tighten the evidence contract, but only through
+  // the documented config hook - never silently.
+  const twoOnly = [base({ checked_at: at(-2 * HOUR), remaining_ratio: 0.7 }), base({ checked_at: at(-5 * 60 * 1000), remaining_ratio: 0.4 })];
+  assert.equal(resolvePace({ observations: twoOnly }, { now: NOW }).pace_pressure, "UNKNOWN");
+  assert.notEqual(
+    resolvePace({ observations: twoOnly }, { now: NOW, paceConfig: { min_observations: 2 } }).pace_pressure,
+    undefined,
+  );
 });
 
 test("the resolved signal carries labels only, never quota numbers", () => {
@@ -2501,6 +2527,16 @@ test("the hierarchy is owned in one place and applied in the other", async () =>
     "README must state the invariant this refinement adds",
   );
   assert.deepEqual(validateMarkdownLinks(skill, { path: "skills/orca-multi-agent-dev/SKILL.md", root: process.cwd() }), []);
+
+  // NEW_WORK-only scope for defensive resource pressure is owned by the
+  // workflow lifecycle, cross-referenced from the signal owner - not a second
+  // interruption path.
+  const workflow = await readFile("policies/WORKFLOW_POLICY.md", "utf8");
+  assert.match(workflow, /Resource pressure 只作用於 NEW_WORK/);
+  for (const cls of ["CONTINUATION", "CRITICAL_REPAIR"]) {
+    assert.ok(workflow.includes(cls), `the workflow policy must exempt ${cls} from resource pressure`);
+  }
+  assert.match(workflow, /都不是\*\*中斷理由/);
 });
 
 /* ------------------------------------------------------------------------ *

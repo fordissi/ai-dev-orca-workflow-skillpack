@@ -208,6 +208,42 @@ the next acquisition tier. None of them disables a model, marks it
 unqualified, mutates `MODEL_REGISTRY.yaml`, or increments
 `failed_repair_count`.
 
+## Quota-generation metadata (for PACE / trajectory)
+
+`RESOURCE_AWARE_ROUTING.md`'s *Long-horizon pace / trajectory* signal needs to
+know whether two readings belong to the same quota generation. **No probe
+verified here exposes that directly:**
+
+| Provider | reset evidence | generation id / start |
+|---|---|---|
+| Codex `/status` | absolute (`resets 10:39 on 7 Sep`) | none |
+| Claude `/usage` | absolute (`Resets Sep 3, 3:59am`) | none |
+| Antigravity `agy --print "/usage"` | **relative** (`Refreshes in 160h 46m`), normalized to `reset_at` with `reset_at_source: RELATIVE_PROVIDER_DURATION` | none |
+
+So `pace_confidence: HIGH` (explicit provider generation metadata) is currently
+**`OUTSIDE_REPOSITORY`** — unreachable until a provider or a runtime adapter
+supplies it. The reachable path is `pace_confidence: MEDIUM` from a series of
+consistent same-generation observations, which requires the optional local
+telemetry layer (a single live `RESOURCE_STATE` snapshot never yields a pace
+reading). A window with `reset_at_source: RELATIVE_PROVIDER_DURATION` is
+compared by *implied remaining duration shrinking in step with elapsed time*,
+not by a constant `reset_at`.
+
+**Adapter contract.** A runtime that can persist observations should hand the
+router, per `resource_state_key`, an optional `pace_observations` array of:
+
+```yaml
+- checked_at:            # ISO timestamp, required
+  remaining_ratio:       # 0..1, required
+  reset_at:              # ISO timestamp, or null
+  reset_at_source:       # RELATIVE_PROVIDER_DURATION | absolute | null
+  remaining_confidence:  # HIGH | MEDIUM | LOW | UNKNOWN, optional
+  generation_id:         # opaque, optional - only a provider/runtime may set it
+```
+
+The router never fabricates this series and never derives
+`window_start = reset_at - 7d`.
+
 ## Security
 
 Probe output may contain an account email / name (Codex `/status` and `agy`

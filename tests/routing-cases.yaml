@@ -3425,3 +3425,30 @@ cases:
       pace_pressure: UNKNOWN
       pace_demotion: false
       resource_pressure_rank: CLEAR
+
+  - name: pace_high_but_only_one_eligible_candidate_still_selects_it
+    kind: selection
+    why: >-
+      Stage-1 implementation, Gemini disabled, and the Codex entry carries a
+      same-generation series projecting exhaustion before reset. pace_pressure
+      is acute, but a demotion with no eligible target is still a selection -
+      never a manufactured ineligible fallback, never BLOCKED.
+    slot: DEFAULT_IMPLEMENTER
+    disable_models: [AUTO_GEMINI]
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: PROVIDER_NATIVE_PROBE
+        checked_at: "2026-09-09T11:57:00Z"
+        weekly_window: { remaining_ratio: 0.52, reset_at: "2026-09-10T08:00:00Z" }
+        pace_observations:
+          - { checked_at: "2026-09-09T08:00:00Z", remaining_ratio: 0.78, reset_at: "2026-09-10T08:00:00Z" }
+          - { checked_at: "2026-09-09T10:00:00Z", remaining_ratio: 0.66, reset_at: "2026-09-10T08:00:00Z" }
+          - { checked_at: "2026-09-09T11:57:00Z", remaining_ratio: 0.52, reset_at: "2026-09-10T08:00:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-09T12:00:00Z" }
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-luna
+      resource_pressure_rank: SOFT_PRESSURED

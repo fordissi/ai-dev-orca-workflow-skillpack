@@ -789,6 +789,28 @@ reviewer dispatch、新 task），才在 candidate selection 之前套用
 [`RESOURCE_AWARE_ROUTING.md`](RESOURCE_AWARE_ROUTING.md) 的 reset-aware
 resource refresh。兩者不得混為一談。
 
+### Resource pressure 只作用於 NEW_WORK
+
+[`RESOURCE_AWARE_ROUTING.md`](RESOURCE_AWARE_ROUTING.md) 的 defensive resource
+訊號——`conservation_pressure`、`burst_depletion_pressure`、`pace_pressure`——
+**只在 `NEW_WORK` 的 routing decision 生效**。它們是排序偏好，不是中斷條件：
+
+| 工作類別 | resource pressure 的作用 |
+|---|---|
+| `NEW_WORK` | 依 unified defensive composition 降級（見 signal owner） |
+| `CONTINUATION` | **不適用**——健康的 worker 不因 band / pressure 改變而換模型 |
+| 同一 worker 的 `RETRY` | **不適用** |
+| `REVIEW` continuation | **不適用** |
+| `CRITICAL_REPAIR` | **不適用**——優先完成，重建 context 的成本高於軟性壓力 |
+
+只有**實際的 provider failure / unavailability**，或既有的 continuation 規則
+（stale intent、`MAX_TURNS_REACHED` 後需新 worker 等）才會中斷一條健康的
+chain。`burst_depletion_pressure` 惡化、`conservation_pressure` 變動、
+`pace_pressure` 改變——**都不是**中斷理由。`ROUTER` slot 另外完全豁免
+`burst_depletion_pressure` 與 `pace_pressure`（control plane 由 Router capacity
+reserve 保護）。極端軌跡壓力若真的需要在 continuation boundary 介入，屬於既有
+escalation / human gate 的範圍，由既有規則決定，本節不新增中斷路徑。
+
 ### 核心不變式
 
 ```text
