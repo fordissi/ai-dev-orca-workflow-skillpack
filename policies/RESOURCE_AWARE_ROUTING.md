@@ -1,6 +1,6 @@
 # Resource-Aware Routing Policy
 
-Version: `0.7`
+Version: `0.8`
 Status: normative
 
 這份文件是 **resource state、freshness、quota window role（BURST / BUDGET）、conservation pressure、reset proximity / stranded capacity、候選重排，以及 Router capacity reserve** 的 normative owner。
@@ -512,12 +512,23 @@ unavailable / 已知 exhausted 狀態仍照既有政策作用。
 本節是 window role、conservation pressure、budget expiry opportunity、reset
 proximity、stranded capacity 與 window 聚合的 normative owner。
 
-三個 derived signal 的分工：**conservation pressure 是防守的**（長週期預算稀缺 →
-保留），**budget expiry opportunity 是進攻的**（長週期預算剩很多且即將 reset →
-在同資格候選中優先用掉，以免浪費），**stranded capacity 是更短時間尺度的次要
-最佳化**（BURST 即將 reset 的閒置容量）。防守永遠壓過同尺度的進攻：
-`budget_expiry_opportunity` 不得讓一個自身 `conservation_pressure` 為 `HIGH` /
-`CRITICAL` 的候選被提前。
+derived signal 的分工，**防守優先於進攻**：
+
+- **conservation pressure 是防守的**（長週期 BUDGET 稀缺 → 保留）。
+- **burst_depletion_pressure 是防守的**（短窗 BURST 快耗盡、又不會馬上 reset →
+  新工作改派他處，讓短窗有時間回補）。
+- **pace_pressure 是防守的**（長週期消耗**軌跡**不永續 → 保留）；它是
+  **evidence-gated**，單一 snapshot 一律 `UNKNOWN`、無 routing 效果。
+- **budget expiry opportunity 是進攻的**（長週期預算剩很多且即將 reset → 在同資格
+  候選中優先用掉，以免浪費）。
+- **stranded capacity 是進攻的、更短時間尺度的次要最佳化**（BURST 即將 reset 的
+  閒置容量）。
+
+三個防守訊號複合成**單一 defensive rank**（見下方 *重排規則*），一次套用，
+**不是逐一疊加的 reorder pass**。防守永遠壓過同尺度的進攻：任一進攻 promotion
+不得提前一個自身 `conservation_pressure` 為 `HIGH` / `CRITICAL`、或自身
+`pace_pressure` 為 `HIGH` / `CRITICAL`（且 `pace_confidence ≥ MEDIUM`）的候選。
+`BUDGET 絕對稀缺 > PACE / BURST 軟性壓力`。
 
 ### 兩種 window role
 
@@ -525,8 +536,8 @@ Quota window 由**角色**決定意義，不由名字決定：
 
 | Role | 例子 | 負責 | 提供的訊號 |
 |---|---|---|---|
-| `BURST` | 5h、hourly、short rolling window | burst capacity、短期 reset 的利用率 | `stranded_capacity_risk`（**utilization**） |
-| `BUDGET` | weekly、monthly、provider 定義的長期上限 | scarcity、conservation、長期預算永續性 | `conservation_pressure`（**scarcity**） |
+| `BURST` | 5h、hourly、short rolling window | burst capacity、短期 reset 的利用率與短窗永續 | `stranded_capacity_risk`（**utilization**）、`burst_depletion_pressure`（**short-horizon scarcity**） |
+| `BUDGET` | weekly、monthly、provider 定義的長期上限 | scarcity、conservation、長期預算永續性與**軌跡** | `conservation_pressure`（**scarcity**）、`budget_expiry_opportunity`（**expiry**）、`pace_pressure`（**trajectory, evidence-gated**） |
 
 `BUDGET` 的 resource-governance authority **高於** `BURST`。兩者不是平權訊號，
 **不得取 max 之後一視同仁**。
@@ -580,12 +591,18 @@ Legacy 具名寫法（見下方 backward compatibility）仍然有效，且可�
 
 ```yaml
 reset_proximity:              # NEAR | MEDIUM | FAR | UNKNOWN
-stranded_capacity_risk:       # HIGH | MEDIUM | LOW | UNKNOWN      ← BURST
+stranded_capacity_risk:       # HIGH | MEDIUM | LOW | UNKNOWN      ← BURST (offensive)
+burst_reset_proximity:        # NEAR | MEDIUM | FAR | UNKNOWN      ← BURST，門檻較 reset_proximity 緊
+burst_depletion_pressure:     # NONE | LOW | MEDIUM | HIGH | UNKNOWN            ← BURST (defensive)
 conservation_pressure:        # NONE | LOW | MEDIUM | HIGH | CRITICAL | UNKNOWN  ← BUDGET (defensive)
 budget_expiry_opportunity:    # HIGH | MEDIUM | LOW | UNKNOWN      ← BUDGET (offensive)
+pace_pressure:                # NONE | LOW | ELEVATED | HIGH | CRITICAL | UNKNOWN  ← BUDGET trajectory (defensive, evidence-gated)
+pace_confidence:              # HIGH | MEDIUM | UNKNOWN
+pace_reason:                  # WEEKLY_OVERBURN | PROJECTED_EARLY_EXHAUSTION | <null>
+resource_pressure_rank:       # CLEAR | SOFT_PRESSURED | BUDGET_SCARCE  ← 三個防守訊號複合後的 rank
 ```
 
-`reset_proximity` 對兩種 role 用同一組門檻：
+`reset_proximity` 對 `stranded_capacity_risk` 與 `conservation_pressure` 用同一組門檻：
 
 | 距離 reset | 值 |
 |---|---|
@@ -608,6 +625,50 @@ budget_expiry_opportunity:    # HIGH | MEDIUM | LOW | UNKNOWN      ← BUDGET (o
 | 無可信讀數 | `UNKNOWN` | `UNKNOWN` | `UNKNOWN` | `UNKNOWN` |
 
 多個 `BURST` window 時取**風險最高者**：任一短窗即將浪費掉容量，就是浪費。
+
+### BURST → burst_depletion_pressure（scarcity, NEW_WORK 防守）
+
+`stranded_capacity_risk` 的**防守鏡像**，形狀相反：需要**剩得少，且短時間內不會
+回補**。近 reset 的短窗即使快耗盡也幾乎不構成問題，因為它會在被派工作的時間尺度
+內自行回滿——所以 proximity 在這裡**減低**壓力，與 `conservation_pressure` 同向、
+與 `stranded_capacity_risk` 反向。它**永不到 `CRITICAL`**：一個 5h 窗不是長週期的
+存續風險。
+
+`burst_reset_proximity` 用**比 `reset_proximity` 更緊的門檻**，因為短窗對「近」的
+感受不同於週窗：
+
+| 距離 reset | `burst_reset_proximity` |
+|---|---|
+| ≤ 30 分鐘 | `NEAR`（幾乎立刻回補） |
+| > 30 分鐘且 ≤ 3 小時 | `MEDIUM` |
+| > 3 小時 | `FAR` |
+| 沒有可信 `reset_at`，或已過去 | `UNKNOWN` |
+
+| `remaining_ratio` \ `burst_reset_proximity` | `NEAR` | `MEDIUM` | `FAR` | `UNKNOWN` |
+|---|---|---|---|---|
+| ≥ 0.5 | `NONE` | `NONE` | `NONE` | `UNKNOWN` |
+| ≥ 0.25 且 < 0.5 | `NONE` | `NONE` | `LOW` | `UNKNOWN` |
+| ≥ 0.1 且 < 0.25 | `NONE` | `LOW` | `MEDIUM` | `UNKNOWN` |
+| < 0.1 | `LOW` | `MEDIUM` | `HIGH` | `UNKNOWN` |
+| 無可信讀數 | `UNKNOWN` | `UNKNOWN` | `UNKNOWN` | `UNKNOWN` |
+
+多個 `BURST` window 時取**壓力最高者**。
+
+**Scope（硬性）：**
+
+- **只降級，不排除。** `burst_depletion_pressure` 只會把候選排到同 rank 之後，
+  永遠不使 provider `unavailable`、不產生 blocked code。
+- **只作用於 NEW_WORK。** 不中斷健康的 `CONTINUATION` / 同一 worker 的 `RETRY` /
+  `REVIEW` continuation / `CRITICAL_REPAIR`（見 [`WORKFLOW_POLICY.md`](WORKFLOW_POLICY.md)
+  的 continuation 規則）。
+- **ROUTER slot 豁免。** 承載 active Router 的 `ROUTER` slot 的候選不受
+  `burst_depletion_pressure` 影響——control-plane 由 Router capacity reserve
+  保護，不由這個訊號。
+- **從屬於 BUDGET 絕對稀缺。** 自身 `conservation_pressure` 為 `HIGH` / `CRITICAL`
+  的候選已在 `BUDGET_SCARCE` rank，`burst_depletion_pressure` 不再另外加碼。
+- **`UNKNOWN` 中性。** 讀不到短窗或 proximity → 不降級。
+- **不降 `minimum_tier` / `stage`、不繞 human gate、不破壞 disjointness、不改
+  registry。**
 
 ### BUDGET → conservation_pressure（scarcity）
 
@@ -653,10 +714,67 @@ budget_expiry_opportunity:    # HIGH | MEDIUM | LOW | UNKNOWN      ← BUDGET (o
 `CRITICAL` scarcity 壓過 weekly 的 expiry opportunity——不得因 weekly 即將 reset
 而消耗已經很稀缺的 monthly budget。
 
-### 何時三個訊號一律為 UNKNOWN
+### Long-horizon pace / trajectory（evidence-gated）
 
-以下任一成立時，`stranded_capacity_risk`、`conservation_pressure` 與
-`budget_expiry_opportunity` 皆為 `UNKNOWN`，不參與重排：
+`pace_pressure` 回答一個 `conservation_pressure` 回答不了的問題：**以觀察到的消耗
+速率，這個 pool 會不會在 reset 之前就把長週期額度用到見底？** 一個 BUDGET window
+可以「絕對剩餘還很多」（`conservation_pressure` 低）但「軌跡不永續」
+（`pace_pressure` 高）。
+
+**單一 snapshot 不足以安全計算軌跡。** 因此：
+
+- **不得**推導 `window_start = reset_at - 7d`。
+- **不得**假設「weekly」＝固定七天 generation。
+- provider 可能提前 reset、額外發放額度、改變 `reset_at`、切換 quota generation。
+- 只有一筆觀察時：`pace_pressure = UNKNOWN`、`pace_confidence = UNKNOWN`，
+  **無 routing 效果**。
+
+**Evidence 階層：**
+
+| `pace_confidence` | 條件 |
+|---|---|
+| `HIGH` | provider 明確暴露 `generation_id` / `generation_start` / explicit reset event（目前無任何 CLI 提供 → `OUTSIDE_REPOSITORY`） |
+| `MEDIUM` | 無 generation metadata，但多筆（預設 ≥ 3）看似同一 generation、間隔足夠、且無 reset discontinuity 的觀察，足以估出 burn velocity |
+| `UNKNOWN` | 只有一筆 snapshot、continuity 建立不了、`reset_at` 有實質變動、`remaining_ratio` 向上跳、confidence 不足、或可能已跨 generation |
+
+**計算方向（非 elapsed-window ratio）：** 用 **observed burn velocity + remaining
+capacity + time until reset** 推 `projected_exhaustion_at`，與 `reset_at` 比較。
+`elapsed_fraction = elapsed / 7d` **不是**權威輸入（早窗不穩、且假設固定 generation
+start）。velocity 讀不到 → `PACE = UNKNOWN`，不猜。
+
+**門檻（versioned，不是隱性政策真理）：** 最少觀察數、最短觀察總跨度、
+`reset_at` 同 generation 容差、向上跳判定比例等，定義於 conformance checker 的
+`PACE_EVIDENCE` 常數，可由 operator 透過 `paceConfig` 覆寫。
+
+**Scope（與 `burst_depletion_pressure` 相同）：** 只降級不排除；只作用於
+NEW_WORK；ROUTER slot 豁免；從屬於 BUDGET 絕對稀缺；`pace_confidence` 為
+`UNKNOWN` 時完全中性；不降 `minimum_tier` / `stage`；`PACE_CRITICAL` **不**
+使 provider 全域 unavailable——軌跡壓力代表**永續性**，不代表**能力不足**。
+
+**`pace_reason` 是 label，不是 state。** `WEEKLY_OVERBURN` 是 `pace_pressure` 為
+`HIGH` / `CRITICAL` 時附帶的原因標籤；不另設 `DAILY_OVERBURN` / `MONTHLY_OVERBURN`
+——window role 已分辨 horizon。
+
+### Generation continuity
+
+軌跡證據在下列任一情況**必須失效並回到 `pace_pressure = UNKNOWN`**（不跨界沿用
+velocity、**絕不算出負 burn**）：
+
+- `reset_at` 有實質變動（超過 versioned 容差）——relative-duration window
+  （`reset_at_source = RELATIVE_PROVIDER_DURATION`）比較的是「隱含剩餘時長是否
+  隨經過時間等比縮短」，不是 `reset_at` 是否不變；
+- 相鄰兩筆之間 `remaining_ratio` **向上跳**超過門檻 → `QUOTA_GENERATION_CHANGED`
+  或等值的 evidence reset（提前 reset、額度發放），不是負消耗；
+- 觀察序列內任一 window 已越過 reset boundary；
+- 觀察數不足、或總跨度太短、不足以排除中間發生過未觀察到的 reset；
+- 任一筆 `remaining_confidence` 低於 `MEDIUM`，或 `source` 信任等級改變。
+
+### 何時 defensive 訊號一律為 UNKNOWN
+
+以下任一成立時，`stranded_capacity_risk`、`conservation_pressure`、
+`budget_expiry_opportunity` 與 `burst_depletion_pressure` 皆為 `UNKNOWN`，
+不參與重排（`pace_pressure` 另依上方 evidence 階層，單 snapshot 時亦為
+`UNKNOWN`）：
 
 - entry 未通過 source trust invariant；
 - `state` 為 `UNKNOWN`——沒有可信 state 就沒有可信的資源讀數；
@@ -668,22 +786,41 @@ budget_expiry_opportunity:    # HIGH | MEDIUM | LOW | UNKNOWN      ← BUDGET (o
 
 ### 重排規則：scarcity first, utilization second
 
-Registry 順序先決定該 band 的 head。三個訊號都**只在與 head 相同 resource state
-的候選之間**作用，順序固定：
+Registry 順序先決定該 band 的 head。所有訊號都**只在與 head 相同 resource state
+的候選之間**作用。順序固定為 **unified defensive composition，然後 utilization
+promotion**：
 
-1. **Conservation 先跑，且只會降級。** `conservation_pressure` 為 `HIGH` 或
-   `CRITICAL` 的候選排到其餘候選之後。`MEDIUM` / `LOW` / `NONE` / `UNKNOWN` 皆為中性。
-2. **BUDGET expiry opportunity 次跑，且只會升級。** `budget_expiry_opportunity`
-   為 `HIGH` **且該候選自身的 `conservation_pressure` 不是 `HIGH` / `CRITICAL`** 的
-   候選可以提前。這一步在 burst opportunity 之前——長週期 expiry 比短窗 stranded
-   更值得優化。
-3. **Burst opportunity 最後跑，且只會升級。** 僅在 expiry 沒有移動選擇時：
-   `stranded_capacity_risk` 為 `HIGH` **且該候選自身的 `conservation_pressure` 為
-   `NONE` 或 `LOW`** 的候選可以提前。
-4. 都沒有時維持 registry 順序。
+**Step 1 — 複合 defensive rank（一次分組，取代逐一疊加的 reorder pass）。**
+每個候選依三個防守訊號落入一個 `resource_pressure_rank`：
+
+| rank | 條件 |
+|---|---|
+| `CLEAR` | `conservation_pressure` 非 `HIGH`/`CRITICAL`、`burst_depletion_pressure` 非 `HIGH`、且非「confident acute PACE」 |
+| `SOFT_PRESSURED` | 非 `BUDGET_SCARCE`，且（`burst_depletion_pressure` 為 `HIGH` **或** `pace_pressure` 為 `HIGH`/`CRITICAL` 且 `pace_confidence ≥ MEDIUM`） |
+| `BUDGET_SCARCE` | `conservation_pressure` 為 `HIGH` 或 `CRITICAL` |
+
+候選依 `CLEAR → SOFT_PRESSURED → BUDGET_SCARCE` 排序；同 rank 內維持 registry
+順序（model-role preference 是同 rank 內的最後 tie-break）。**`BUDGET 絕對稀缺 >
+PACE / BURST 軟性壓力`**：一個 pace 或 burst 軟性壓力的候選不會被排到一個 BUDGET
+稀缺的候選之後。降級是偏好不是拒絕：群組內全部候選都在壓力下時，該 band 仍依
+registry 順序在最嚴重 rank 內選出候選，**不會 `BLOCKED`**。
+
+**Step 2 — BUDGET expiry opportunity（進攻，只升級）。**
+`budget_expiry_opportunity` 為 `HIGH`、**且該候選自身 `conservation_pressure` 不是
+`HIGH`/`CRITICAL`、且自身不是 confident acute PACE** 的候選可以提前。這一步在
+burst opportunity 之前。
+
+**Step 3 — BURST stranded opportunity（進攻，只升級）。**
+僅在 expiry 沒有移動選擇時：`stranded_capacity_risk` 為 `HIGH`、**且該候選自身
+`conservation_pressure` 為 `NONE`/`LOW`、`burst_depletion_pressure` 不是 `HIGH`、
+且自身不是 confident acute PACE** 的候選可以提前。
+
+**Step 4 —** 都沒有時維持 registry 順序。
 
 `BUDGET scarcity MUST override BUDGET expiry opportunity`：週預算只剩 8%、reset
-為 `FAR` 時，即使其他訊號有 opportunity，仍應 conserve。
+為 `FAR` 時，即使其他訊號有 opportunity，仍應 conserve。同理 promotion 不得救回一個
+`burst_depletion_pressure = HIGH` 或 confident `pace_pressure ∈ {HIGH, CRITICAL}`
+的候選。
 
 Conservation 表達的是偏好，不是拒絕：若群組內每個候選都在壓力下，該 band 依然
 會依 registry 順序選出候選，**不會因此 `BLOCKED`**。
@@ -732,14 +869,21 @@ v0.3 的具名 window 寫法仍然合法，不需要遷移：
 ### 記錄
 
 重排實際改變了選擇時，operational router 必須在 routing evidence 中記錄
-**被跳過的候選**與造成該結果的標籤（`conservation_pressure`、
-`budget_reset_proximity` + `budget_expiry_opportunity`，或
-`reset_proximity` + `stranded_capacity_risk`）。未記錄的重排等同不可稽核的重排。
-expiry 造成的提前記為 `expiry_promotion`，burst 造成的記為 `stranded_promotion`，
-兩者互斥（expiry 優先）。
+**被跳過的候選**與造成該結果的標籤：
 
-**只記錄標籤，不記錄數值。** `remaining_ratio`、`reset_at` 與任何原始 quota 讀數
-都不得寫入 execution artifact——這是本文件「不保存原始 quota payload」規則的延伸。
+- defensive 造成的降級：`conservation_demotion`（head 為 `BUDGET_SCARCE`）、
+  `burst_depletion_demotion`（head 為 `burst_depletion_pressure = HIGH`）、
+  `pace_demotion`（head 為 confident acute PACE）——可同時出現多個，每個都要記
+  `over: <被排到後面的候選>`；另記 pick 的 `resource_pressure_rank`。
+- 進攻造成的提前：`expiry_promotion` 或 `stranded_promotion`，兩者互斥
+  （expiry 優先）。
+
+未記錄的重排等同不可稽核的重排。
+
+**只記錄標籤，不記錄數值。** `remaining_ratio`、`reset_at`、burn velocity、
+`pace_ratio` 與任何原始 quota 讀數都不得寫入 execution artifact——這是本文件
+「不保存原始 quota payload」規則的延伸。粗粒度 bucket 的量化持久化只允許在
+選用的、gitignored 的 operational telemetry 層，不進 routing evidence。
 
 ### 人工輸入的 resource facts
 

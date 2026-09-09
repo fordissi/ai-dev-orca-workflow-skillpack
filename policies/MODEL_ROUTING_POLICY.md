@@ -317,7 +317,7 @@ regression/test execution、domain reasoning 等 worker-shaped 訊號對應到�
 5. availability / resource state band
 接著（只在第 1–5 層都已滿足的候選之間）：
 6. Router capacity reserve       (只排除承載 active Router 的 resource pool 上的自主非 Router 候選；不作用於已通過第 0 層的 pin)
-7. long-horizon conservation     (BUDGET scarcity — 防守；並含 BUDGET expiry opportunity — 進攻)
+7. long-horizon conservation     (unified defensive composition：BUDGET conservation ＋ BURST depletion ＋ evidence-gated PACE 複合成單一 rank；並含 BUDGET expiry opportunity — 進攻)
 8. short-horizon opportunity      (BURST stranded capacity)
 9. registry preference
 ```
@@ -326,7 +326,7 @@ regression/test execution、domain reasoning 等 worker-shaped 訊號對應到�
 
 第 6 層是一個 **exclusion**，不是 reorder，與第 1、2、4 層同性質：只在候選的 resource pool 與 active Router 目前所在的 resource pool相同、且該 slot 本身不是 `ROUTER` slot 時才評估；命中即整個排除該候選，不進入第 7、8 層的排序。門檻、band 定義由 [`RESOURCE_AWARE_ROUTING.md`](RESOURCE_AWARE_ROUTING.md) 的 *Router capacity reserve* 定義，此處不重複。
 
-第 7、8 層只在前六層都已滿足的候選之間比較，且**第 7 層優先於第 8 層**——scarcity first, utilization second。第 7 層內部順序為 **conservation（降級）→ BUDGET expiry opportunity（升級）**：`BUDGET scarcity MUST override BUDGET expiry opportunity`，因此 expiry promotion 只作用於自身 `conservation_pressure` 不是 `HIGH` / `CRITICAL` 的候選。**Model-role preference 是第 9 層的一部分**：在 registry order 之前、所有資源訊號之後，作為最後一層 tie-break。三個資源訊號（`conservation_pressure`、`budget_expiry_opportunity`、`stranded_capacity_risk`）的推導矩陣、門檻與可重排範圍由 [`RESOURCE_AWARE_ROUTING.md`](RESOURCE_AWARE_ROUTING.md) 定義，此處不重複。
+第 7、8 層只在前六層都已滿足的候選之間比較，且**第 7 層優先於第 8 層**——scarcity first, utilization second。第 7 層是**單一 unified defensive composition**（**不是**逐一疊加的 reorder pass）：三個防守訊號 `conservation_pressure`（BUDGET 絕對稀缺）、`burst_depletion_pressure`（短窗快耗盡且不會馬上 reset）、`pace_pressure`（長週期消耗軌跡不永續，`pace_confidence ≥ MEDIUM` 才參與）複合成單一 `resource_pressure_rank`（`CLEAR` → `SOFT_PRESSURED` → `BUDGET_SCARCE`）並依此降級——**先 conservation、後 opportunity**。`BUDGET 絕對稀缺永遠壓過 PACE / BURST 軟性壓力`；接著 **BUDGET expiry opportunity（升級）** 只作用於自身 `conservation_pressure` 不是 `HIGH` / `CRITICAL`、且自身不是 confident acute PACE 的候選：`BUDGET scarcity MUST override BUDGET expiry opportunity`。**Model-role preference 是第 9 層的一部分**：在 registry order 之前、所有資源訊號之後，作為最後一層 tie-break。`burst_depletion_pressure` / `pace_pressure` 都**只降級不排除**、**只作用於 NEW_WORK**、**ROUTER slot 豁免**（control-plane 由第 6 層保護），`PACE_CRITICAL` 不使 provider 全域 unavailable。所有防守/進攻訊號的推導矩陣、門檻、evidence contract 與可重排範圍由 [`RESOURCE_AWARE_ROUTING.md`](RESOURCE_AWARE_ROUTING.md) 定義，此處不重複。
 
 1. 若 contract 帶 explicit human model pin：先確認該 model 在此 slot 的 candidate list（否則 `CONFIG_INVALID`），再走第 2–3 步的 hard eligibility（**不含第 6 層 Router capacity reserve**——human pin 排在 reserve 之前，見上）；通過即直接回傳該候選（不進 band / reserve / conservation / opportunity / preference 排序），否則以該候選自身的失敗原因回傳對應 blocked code。
 2. 從指定 slot 讀取 registry 的 ordered `candidates`（順序具有意義），並檢查每個候選的 resource entry 是否通過 **source trust invariant**（見 [`RESOURCE_AWARE_ROUTING.md`](RESOURCE_AWARE_ROUTING.md)）：沒有宣告 `source`、`source` 不在允許集合、或 `source: UNKNOWN` 卻宣告非 `UNKNOWN` 的 state，一律 **fail closed**。完全沒有 entry 是「沒有讀數」，視為 `UNKNOWN`，正常參與排序。
@@ -338,7 +338,7 @@ regression/test execution、domain reasoning 等 worker-shaped 訊號對應到�
    - 進行 independent review 時，與 implementer **相同 provider 或相同 model family** 的候選；
    - 該 slot 不是 `ROUTER` slot，且候選的 resource pool 與 active Router 目前所在的 resource pool 相同、該 pool 的 Router capacity reserve band 不是 `NORMAL`——除非此候選正是通過第 0 層 pin 選中的候選。
 4. 若存在合格的 `GREEN` 候選，進入 band 內排序；否則在 `YELLOW` 與 `UNKNOWN` 之間**維持 registry 順序**；再否則（且 `allow_red` 為 true）才用 `RED`。`YELLOW` 與 `UNKNOWN` 之間不建立優先級。
-5. Band 內排序：先由 registry 順序決定 head。`RESOURCE_AWARE_ROUTING.md` 的三個資源訊號只在與 head 相同 resource state 的候選之間作用，順序固定為先 conservation、後 opportunity——精確為 conservation 降級（`HIGH`/`CRITICAL`）→ BUDGET expiry 升級（`budget_expiry_opportunity` 為 `HIGH` 且自身 conservation 非 `HIGH`/`CRITICAL`）→ BURST 升級（`HIGH` stranded 且自身 conservation 為 `NONE`/`LOW`，且 expiry 未先移動選擇）。
+5. Band 內排序：先由 registry 順序決定 head。`RESOURCE_AWARE_ROUTING.md` 的資源訊號只在與 head 相同 resource state 的候選之間作用，順序固定為先 conservation、後 opportunity——精確為 **unified defensive composition** 降級（三個防守訊號複合成 `resource_pressure_rank`：`CLEAR` → `SOFT_PRESSURED`〔`burst_depletion_pressure` 為 `HIGH` 或 confident acute `pace_pressure`〕→ `BUDGET_SCARCE`〔conservation `HIGH`/`CRITICAL`〕）→ BUDGET expiry 升級（`budget_expiry_opportunity` 為 `HIGH` 且自身 conservation 非 `HIGH`/`CRITICAL` 且非 confident acute PACE）→ BURST 升級（`HIGH` stranded 且自身 conservation 為 `NONE`/`LOW`、`burst_depletion_pressure` 非 `HIGH`、非 confident acute PACE，且 expiry 未先移動選擇）。`burst_depletion_pressure` 與 `pace_pressure` 對 `ROUTER` slot 一律 inert。
 6. **Model-role preference tie-break**（第 9 層）：在第 5 步的結果上，若 caller 提供 role-preference 清單，把 `model` 命中清單的候選（依清單順序）穩定地排到前面——但 opportunity 的 promotion（第 8 層）仍優先於此。都沒有 preference 時維持 registry 順序。
 7. 任何重排或排除都必須記入 routing evidence（見下方 Flagship admission 與 `RESOURCE_AWARE_ROUTING.md` 的記錄規則）。**只記標籤，不記數值。**
 8. 成功時回傳 `{status: SELECTED, candidate, selected_stage, ...}`。

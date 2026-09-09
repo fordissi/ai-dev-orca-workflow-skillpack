@@ -92,13 +92,24 @@ classify -> slot -> overlay -> candidate -> contract -> dispatch
    unavailable 不等於 quota 耗盡；分開追蹤 `provider_resource_state` 與
    `orca_integration_state`，成功的 probe 不被 Orca aggregate 覆蓋。
    `YELLOW` 與 `UNKNOWN` 同權，依 registry 順序。
-   同一 band、同一 state 之內再看兩個資源訊號，**順序固定：先稀缺，後利用率**。
-   - **BUDGET**（weekly / monthly 等長期上限）→ `conservation_pressure`。
-     `HIGH` / `CRITICAL` 的候選**降級**。
-   - **BURST**（5h / hourly 等短窗）→ `stranded_capacity_risk`。
-     `HIGH` **且自身 conservation 為 `NONE`/`LOW`** 才能**提前**。
-   **短窗機會不得推翻長期稀缺**：週預算只剩 8% 時，5h 窗剩再多也不提前。
-   BUDGET 讀不到就兩邊都不動（不當 healthy，也不當 scarce）。
+   同一 band、同一 state 之內套 **unified defensive composition，然後 utilization
+   promotion**，**順序固定：先稀缺/永續，後利用率**。三個防守訊號複合成單一
+   `resource_pressure_rank`（`CLEAR` → `SOFT_PRESSURED` → `BUDGET_SCARCE`）：
+   - **BUDGET**（weekly / monthly 等長期上限）→ `conservation_pressure`
+     `HIGH` / `CRITICAL` → `BUDGET_SCARCE`（**降級**）；
+     `budget_expiry_opportunity` `HIGH` 且自身非稀缺 → 可**提前**。
+   - **BURST**（5h / hourly 等短窗）→ `stranded_capacity_risk` `HIGH` 且自身
+     conservation `NONE`/`LOW`、`burst_depletion_pressure` 非 `HIGH` → 可**提前**；
+     `burst_depletion_pressure` `HIGH`（剩得少且短時間不 reset）→ `SOFT_PRESSURED`
+     （**新工作降級**，近 reset 則壓力自動降低）。
+   - **PACE**（長週期消耗**軌跡**）→ `pace_pressure`，**evidence-gated**：只有多筆
+     同 generation 觀察才可能非 `UNKNOWN`；單一 snapshot 一律 `UNKNOWN`、不影響
+     routing。`HIGH`/`CRITICAL` 且 `pace_confidence ≥ MEDIUM` → `SOFT_PRESSURED`。
+   **`BUDGET 絕對稀缺 > PACE / BURST 軟性壓力`**；短窗機會不得推翻長期稀缺。
+   `burst_depletion_pressure` / `pace_pressure` **只降級不排除**、**只作用於
+   NEW_WORK**（不動健康 continuation / retry / review / critical-repair）、
+   **ROUTER slot 豁免**（control-plane 由 Router capacity reserve 保護）。
+   讀不到就是 `UNKNOWN`、中性（不當 healthy，也不當 scarce）。
    任何重排都要記錄被跳過的是誰。它只重排已合格的候選——**不降 `minimum_tier`、
    不換掉 disjoint reviewer、不繞 human gate、不改 slot membership**。
    見 [`RESOURCE_AWARE_ROUTING.md`](../../policies/RESOURCE_AWARE_ROUTING.md)。

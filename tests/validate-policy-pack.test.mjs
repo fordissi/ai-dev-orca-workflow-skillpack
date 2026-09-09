@@ -6,6 +6,10 @@ import {
   attemptResume,
   attestDispatchIdentity,
   budgetExpiryOpportunity,
+  burstDepletionPressure,
+  burstResetProximity,
+  resolveBurstDepletion,
+  resolvePace,
   canonicalFingerprint,
   canonicalContinuationFacts,
   checkReasoningDispatch,
@@ -1310,6 +1314,129 @@ test("stranded risk needs both a full pool and a near reset", () => {
   assert.equal(strandedCapacityRisk(-0.1, "NEAR"), "UNKNOWN");
 });
 
+test("burst depletion is the defensive mirror: nearly spent AND not refilling soon", () => {
+  // A short window's sense of "near" is tighter than a weekly window's.
+  assert.equal(burstResetProximity(at(20 * 60 * 1000), NOW), "NEAR"); // 20 min
+  assert.equal(burstResetProximity(at(90 * 60 * 1000), NOW), "MEDIUM"); // 90 min
+  assert.equal(burstResetProximity(at(5 * HOUR), NOW), "FAR");
+  assert.equal(burstResetProximity(at(-60 * 1000), NOW), "UNKNOWN");
+  assert.equal(burstResetProximity(null, NOW), "UNKNOWN");
+
+  // Nearly empty AND a distant reset: the case the signal exists for.
+  assert.equal(burstDepletionPressure(0.04, "FAR"), "HIGH");
+  assert.equal(burstDepletionPressure(0.04, "MEDIUM"), "MEDIUM");
+  // The same window refilling almost immediately strands almost no work.
+  assert.equal(burstDepletionPressure(0.04, "NEAR"), "LOW");
+
+  // Mild scarcity.
+  assert.equal(burstDepletionPressure(0.18, "FAR"), "MEDIUM");
+  assert.equal(burstDepletionPressure(0.18, "NEAR"), "NONE");
+
+  // Ample capacity never argues for conservation, and it never reaches CRITICAL.
+  assert.equal(burstDepletionPressure(0.6, "FAR"), "NONE");
+  assert.ok(!["CRITICAL"].includes(burstDepletionPressure(0.0, "FAR")));
+
+  // No usable reading is neutral.
+  assert.equal(burstDepletionPressure(0.05, "UNKNOWN"), "UNKNOWN");
+  assert.equal(burstDepletionPressure(null, "FAR"), "UNKNOWN");
+  assert.equal(burstDepletionPressure(1.5, "FAR"), "UNKNOWN");
+});
+
+test("resolveBurstDepletion takes the most pressured short window and carries labels only", () => {
+  const acute = pool({
+    source: "PROVIDER_NATIVE_PROBE",
+    windows: [
+      { key: "five_hour", role: "BURST", remaining_ratio: 0.03, reset_at: at(4 * HOUR) },
+      { key: "hourly", role: "BURST", remaining_ratio: 0.9, reset_at: at(40 * 60 * 1000) },
+    ],
+  });
+  const r = resolveBurstDepletion(acute, { now: NOW });
+  assert.equal(r.burst_depletion_pressure, "HIGH");
+  assert.equal(r.burst_reset_proximity, "FAR");
+  for (const [k, v] of Object.entries(r)) {
+    if (typeof v === "number") assert.fail(`resolveBurstDepletion leaked a number at ${k}`);
+  }
+
+  // A BUDGET-only entry has nothing to say about short-window depletion.
+  assert.equal(resolveBurstDepletion(pool(budget(0.5, at(120 * HOUR))), { now: NOW }).burst_depletion_pressure, "UNKNOWN");
+  // A stale / unreadable entry is neutral.
+  assert.equal(resolveBurstDepletion(undefined, { now: NOW }).burst_depletion_pressure, "UNKNOWN");
+});
+
+test("PACE is UNKNOWN from a single snapshot and never infers a fixed 7-day window", () => {
+  // A bare entry - the live path - always yields UNKNOWN.
+  const single = pool({
+    source: "PROVIDER_NATIVE_PROBE",
+    weekly_window: { remaining_ratio: 0.52, reset_at: at(6 * 24 * HOUR) },
+  });
+  assert.deepEqual(resolvePace(single, { now: NOW }), {
+    pace_pressure: "UNKNOWN",
+    pace_confidence: "UNKNOWN",
+    pace_reason: null,
+  });
+  assert.equal(resolvePace({ observations: [] }, { now: NOW }).pace_pressure, "UNKNOWN");
+});
+
+test("PACE reads a multi-observation series and projects exhaustion vs reset", () => {
+  const reset = at(20 * HOUR);
+  const obs = [
+    { checked_at: at(-4 * HOUR), remaining_ratio: 0.78, reset_at: reset },
+    { checked_at: at(-2 * HOUR), remaining_ratio: 0.66, reset_at: reset },
+    { checked_at: at(-5 * 60 * 1000), remaining_ratio: 0.52, reset_at: reset },
+  ];
+  // ~0.26 consumed over 4h -> ~0.065/h; 0.52 left -> ~8h runway vs ~20h to reset.
+  const r = resolvePace({ observations: obs }, { now: NOW });
+  assert.equal(r.pace_confidence, "MEDIUM");
+  assert.ok(["HIGH", "CRITICAL"].includes(r.pace_pressure), `expected acute pace, got ${r.pace_pressure}`);
+  assert.equal(r.pace_reason, "WEEKLY_OVERBURN");
+
+  // A gentle burn that comfortably outlasts the reset is not pressured.
+  const gentle = [
+    { checked_at: at(-6 * HOUR), remaining_ratio: 0.9, reset_at: reset },
+    { checked_at: at(-3 * HOUR), remaining_ratio: 0.87, reset_at: reset },
+    { checked_at: at(-5 * 60 * 1000), remaining_ratio: 0.84, reset_at: reset },
+  ];
+  const g = resolvePace({ observations: gentle }, { now: NOW });
+  assert.ok(["NONE", "LOW"].includes(g.pace_pressure));
+  assert.equal(g.pace_reason, null);
+});
+
+test("PACE collapses to UNKNOWN whenever generation continuity breaks", () => {
+  const base = (over) => ({
+    checked_at: at(-3 * HOUR),
+    remaining_ratio: 0.7,
+    reset_at: at(20 * HOUR),
+    ...over,
+  });
+  // Too few observations.
+  assert.equal(
+    resolvePace({ observations: [base(), base({ checked_at: at(-1 * HOUR), remaining_ratio: 0.5 })] }, { now: NOW })
+      .pace_pressure,
+    "UNKNOWN",
+  );
+  // Upward jump in remaining -> a new generation, not negative burn.
+  const jumped = [
+    base({ checked_at: at(-4 * HOUR), remaining_ratio: 0.2 }),
+    base({ checked_at: at(-2 * HOUR), remaining_ratio: 0.12 }),
+    base({ checked_at: at(-5 * 60 * 1000), remaining_ratio: 0.97, reset_at: at(30 * HOUR) }),
+  ];
+  assert.equal(resolvePace({ observations: jumped }, { now: NOW }).pace_pressure, "UNKNOWN");
+  // reset_at discontinuity mid-series.
+  const movedReset = [
+    base({ checked_at: at(-4 * HOUR), remaining_ratio: 0.7, reset_at: at(20 * HOUR) }),
+    base({ checked_at: at(-2 * HOUR), remaining_ratio: 0.6, reset_at: at(20 * HOUR) }),
+    base({ checked_at: at(-5 * 60 * 1000), remaining_ratio: 0.5, reset_at: at(40 * HOUR) }),
+  ];
+  assert.equal(resolvePace({ observations: movedReset }, { now: NOW }).pace_pressure, "UNKNOWN");
+  // A low-confidence reading taints the series.
+  const lowConf = [
+    base({ checked_at: at(-4 * HOUR), remaining_ratio: 0.7 }),
+    base({ checked_at: at(-2 * HOUR), remaining_ratio: 0.6, remaining_confidence: "LOW" }),
+    base({ checked_at: at(-5 * 60 * 1000), remaining_ratio: 0.5 }),
+  ];
+  assert.equal(resolvePace({ observations: lowConf }, { now: NOW }).pace_pressure, "UNKNOWN");
+});
+
 test("the resolved signal carries labels only, never quota numbers", () => {
   const signal = resolveStrandedCapacity(
     pool({ short_window: { used: 0.41, remaining_ratio: 0.59, reset_at: at(3.75 * HOUR) } }),
@@ -1628,9 +1755,28 @@ test("resource policy owns the opportunity signal without claiming capability", 
   for (const token of [
     "remaining_ratio", "reset_at", "remaining_confidence",
     "reset_proximity", "stranded_capacity_risk", "conservation_pressure",
+    "burst_depletion_pressure", "burst_reset_proximity",
+    "pace_pressure", "pace_confidence", "pace_reason", "resource_pressure_rank",
+    "CLEAR", "SOFT_PRESSURED", "BUDGET_SCARCE", "WEEKLY_OVERBURN",
     "BURST", "BUDGET", "NEAR", "MEDIUM", "FAR", "HIGH", "LOW", "NONE", "CRITICAL", "UNKNOWN",
   ]) {
     assert.ok(resource.includes(token), `the resource policy is missing ${token}`);
+  }
+
+  // The unified defensive composition and its hard scope are stated where the
+  // rule lives: one composed rank, not an accreting stack of reorder passes.
+  for (const phrase of [
+    "unified defensive composition",
+    "BUDGET 絕對稀缺 > PACE / BURST 軟性壓力",
+    "只降級，不排除",
+    "只作用於 NEW_WORK",
+    "ROUTER slot 豁免",
+    "window_start = reset_at - 7d",
+    "不代表**能力不足**",
+    "Generation continuity",
+    "絕不算出負 burn",
+  ]) {
+    assert.ok(resource.includes(phrase), `the resource policy must state: ${phrase}`);
   }
 
   // The three things it explicitly refuses to become.

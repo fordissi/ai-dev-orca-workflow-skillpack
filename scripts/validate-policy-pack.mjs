@@ -776,6 +776,34 @@ const STRANDED_RISK_VALUES = ["HIGH", "MEDIUM", "LOW", "UNKNOWN"];
 const CONSERVATION_VALUES = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "NONE", "UNKNOWN"];
 const CONFIDENCE_VALUES = ["HIGH", "MEDIUM", "LOW", "UNKNOWN"];
 
+// BURST depletion: the defensive mirror of stranded capacity. A short window
+// that is nearly spent AND does not refill soon strands *work*, not capacity.
+// It never reaches CRITICAL - a 5h window is not a long-horizon existential
+// risk the way a weekly BUDGET is. Demotion only, NEW_WORK only, ROUTER-exempt.
+const BURST_DEPLETION_VALUES = ["HIGH", "MEDIUM", "LOW", "NONE", "UNKNOWN"];
+
+// Long-horizon PACE / trajectory pressure. Evidence-gated: it is UNKNOWN (and
+// therefore routing-neutral) unless multiple same-generation observations
+// establish a burn velocity. `pace_reason` is a label, not a state.
+const PACE_PRESSURE_VALUES = ["CRITICAL", "HIGH", "ELEVATED", "LOW", "NONE", "UNKNOWN"];
+const PACE_CONFIDENCE_VALUES = ["HIGH", "MEDIUM", "UNKNOWN"];
+const PACE_REASONS = ["WEEKLY_OVERBURN", "PROJECTED_EARLY_EXHAUSTION"];
+
+// The composed defensive rank a candidate falls into once BUDGET conservation,
+// BURST depletion and PACE pressure are folded together. Worse rank = later in
+// the band. BUDGET absolute scarcity always outranks softer pressure.
+const RESOURCE_PRESSURE_RANKS = ["CLEAR", "SOFT_PRESSURED", "BUDGET_SCARCE"];
+
+// PACE evidence contract. Versioned here and operator-overridable via the
+// `paceConfig` option - NOT silent policy truth. RESOURCE_AWARE_ROUTING.md's
+// "Long-horizon pace / trajectory" section is the owner.
+const PACE_EVIDENCE = Object.freeze({
+  min_observations: 3, // fewer than this -> UNKNOWN
+  min_total_span_ms: 30 * 60 * 1000, // the series must cover at least 30 min
+  reset_at_tolerance_ms: 60 * 60 * 1000, // same generation if reset_at agrees within 1h
+  upward_jump_ratio: 0.05, // remaining rising more than 5 points -> generation change
+});
+
 // A reading can never be more confident than the source it came from.
 const SOURCE_TRUST = {
   ORCA_RUNTIME: "HIGH",
@@ -799,12 +827,23 @@ const LEGACY_WINDOW_ROLES = [
 const RESET_NEAR_MS = 6 * 60 * 60 * 1000;
 const RESET_MEDIUM_MS = 48 * 60 * 60 * 1000;
 
+// A short window's sense of "near" is not a weekly window's. Burst depletion
+// reads reset proximity on tighter thresholds: a 5h window refilling in half
+// an hour self-heals before most new work would finish.
+const BURST_RESET_NEAR_MS = 30 * 60 * 1000;
+const BURST_RESET_MEDIUM_MS = 3 * 60 * 60 * 1000;
+
 const REMAINING_HIGH = 0.5;
 const REMAINING_MODERATE = 0.2;
 
 const BUDGET_AMPLE = 0.5;
 const BUDGET_COMFORTABLE = 0.25;
 const BUDGET_LOW = 0.1;
+
+// BURST depletion bands: at or below BURST_SCARCE is acute, below BURST_TIGHT
+// is mild. Mirrors BUDGET_LOW / BUDGET_COMFORTABLE for the short horizon.
+const BURST_SCARCE = 0.1;
+const BURST_TIGHT = 0.25;
 
 // The freshness rule already stated in RESOURCE_AWARE_ROUTING.md. A decayed
 // remaining ratio is worse than no ratio, because it looks authoritative.
@@ -822,6 +861,8 @@ const proximityRank = (value) => rankIn(RESET_PROXIMITY_VALUES, value);
 // UNKNOWN ranks below every stated pressure, so "take the most restrictive"
 // never lets a missing reading outrank one somebody actually took.
 const conservationRank = (value) => rankIn(CONSERVATION_VALUES, value) - 1;
+const burstDepletionRank = (value) => rankIn(BURST_DEPLETION_VALUES, value) - 1;
+const pacePressureRank = (value) => rankIn(PACE_PRESSURE_VALUES, value) - 1;
 
 function toMillis(value) {
   if (typeof value === "number") return Number.isFinite(value) ? value : Number.NaN;
@@ -995,6 +1036,55 @@ export function budgetExpiryOpportunity(remainingRatio, proximity) {
   // Below BUDGET_COMFORTABLE (0.25) there is too little left to strand: LOW
   // whatever the proximity, so scarcity - not expiry - drives the decision.
   return "LOW";
+}
+
+/**
+ * How close a BURST window is to refilling, on thresholds tuned to a short
+ * window rather than a weekly cap: NEAR is "self-heals almost immediately"
+ * (<= 30 min), FAR is "stuck without this capacity for a while" (> 3h).
+ * A reset already in the past is UNKNOWN, exactly like `resetProximity`.
+ */
+export function burstResetProximity(resetAt, now) {
+  const at = toMillis(resetAt);
+  const evaluatedAt = toMillis(now);
+  if (!Number.isFinite(at) || !Number.isFinite(evaluatedAt)) return "UNKNOWN";
+
+  const remainingMs = at - evaluatedAt;
+  if (remainingMs <= 0) return "UNKNOWN";
+  if (remainingMs <= BURST_RESET_NEAR_MS) return "NEAR";
+  if (remainingMs <= BURST_RESET_MEDIUM_MS) return "MEDIUM";
+  return "FAR";
+}
+
+/**
+ * How hard a BURST window argues for conserving this provider for NEW work.
+ *
+ * The defensive mirror of stranded capacity: it needs both halves the other
+ * way round - little left AND a reset that is not imminent. Proximity reduces
+ * it, like BUDGET conservation and unlike stranded capacity: a nearly empty
+ * five-hour window that refills in 20 minutes strands almost nothing, because
+ * it heals inside the horizon of the work being routed. It never reaches
+ * CRITICAL; a short window is not a long-horizon existential risk.
+ * RESOURCE_AWARE_ROUTING.md owns this matrix.
+ */
+export function burstDepletionPressure(remainingRatio, proximity) {
+  if (typeof remainingRatio !== "number" || !Number.isFinite(remainingRatio)) return "UNKNOWN";
+  if (remainingRatio < 0 || remainingRatio > 1) return "UNKNOWN";
+  if (!RESET_PROXIMITY_VALUES.includes(proximity) || proximity === "UNKNOWN") return "UNKNOWN";
+
+  // Ample short-window capacity: nothing to conserve.
+  if (remainingRatio >= REMAINING_HIGH) return "NONE";
+
+  if (remainingRatio >= BURST_TIGHT) {
+    return proximity === "FAR" ? "LOW" : "NONE";
+  }
+  if (remainingRatio >= BURST_SCARCE) {
+    if (proximity === "NEAR") return "NONE";
+    return proximity === "MEDIUM" ? "LOW" : "MEDIUM";
+  }
+  // Below BURST_SCARCE (0.1): acute unless it refills almost immediately.
+  if (proximity === "NEAR") return "LOW";
+  return proximity === "MEDIUM" ? "MEDIUM" : "HIGH";
 }
 
 /**
@@ -1366,6 +1456,191 @@ export function resolveConservationPressure(entry, options = {}) {
   };
 }
 
+/**
+ * Resolves the BURST defensive half of an entry: `burst_depletion_pressure`.
+ *
+ * The scarcity mirror of `resolveStrandedCapacity` - it takes the MOST
+ * pressured short window, because any nearly-empty burst window that will not
+ * refill soon is a reason to send new work elsewhere. Labels only, no ratios,
+ * so it can go straight into routing evidence. UNKNOWN is neutral.
+ */
+export function resolveBurstDepletion(entry, options = {}) {
+  const { now = Date.now() } = options;
+  const readable = readableEntry(entry, now);
+
+  if (readable === null) {
+    return { ...UNKNOWN_BASE, burst_reset_proximity: "UNKNOWN", burst_depletion_pressure: "UNKNOWN" };
+  }
+
+  const base = {
+    state: readable.state,
+    confidence: readable.confidence,
+    stale: readable.stale,
+    burst_reset_proximity: "UNKNOWN",
+    burst_depletion_pressure: "UNKNOWN",
+  };
+  if (!readable.usable) return base;
+
+  let worst = { proximity: "UNKNOWN", pressure: "UNKNOWN" };
+  for (const window of resourceWindows(entry)) {
+    if (window.role !== "BURST") continue;
+
+    const proximity = burstResetProximity(window.reset_at, now);
+    const pressure = burstDepletionPressure(window.remaining_ratio, proximity);
+    if (burstDepletionRank(pressure) > burstDepletionRank(worst.pressure)) {
+      worst = { proximity, pressure };
+    }
+  }
+
+  return { ...base, burst_reset_proximity: worst.proximity, burst_depletion_pressure: worst.pressure };
+}
+
+const INERT_PACE = Object.freeze({ pace_pressure: "UNKNOWN", pace_confidence: "UNKNOWN", pace_reason: null });
+
+/**
+ * Resolves long-horizon PACE / trajectory pressure from a SERIES of quota
+ * observations, never from a single snapshot.
+ *
+ * `input` is either a bare resource entry (the live single-snapshot path -
+ * always UNKNOWN) or `{ observations: [{ checked_at, remaining_ratio, reset_at,
+ * reset_at_source?, remaining_confidence?, generation_id? }, ...] }`.
+ *
+ * It answers one question: at the observed burn rate, would this pool exhaust
+ * its long-horizon capacity materially before its reset? It does NOT assume a
+ * fixed seven-day window and never derives `window_start = reset_at - 7d`.
+ * Any sign of a quota-generation change (upward jump in remaining, reset_at
+ * discontinuity, crossed reset boundary, confidence drop, too few / too
+ * sparse observations) collapses the result to UNKNOWN, which is
+ * routing-neutral. RESOURCE_AWARE_ROUTING.md's "Long-horizon pace /
+ * trajectory" section owns the evidence contract; thresholds live in
+ * `PACE_EVIDENCE` and are overridable via `options.paceConfig`.
+ */
+export function resolvePace(input, options = {}) {
+  const { now = Date.now(), paceConfig = PACE_EVIDENCE } = options;
+  const config = isPlainObject(paceConfig) ? { ...PACE_EVIDENCE, ...paceConfig } : PACE_EVIDENCE;
+  const nowMs = toMillis(now);
+  if (!Number.isFinite(nowMs)) return { ...INERT_PACE };
+
+  const rawObs = isPlainObject(input) && Array.isArray(input.observations) ? input.observations : null;
+  if (rawObs === null) return { ...INERT_PACE };
+
+  const points = rawObs
+    .filter(
+      (o) =>
+        isPlainObject(o) &&
+        typeof o.remaining_ratio === "number" &&
+        Number.isFinite(o.remaining_ratio) &&
+        o.remaining_ratio >= 0 &&
+        o.remaining_ratio <= 1 &&
+        Number.isFinite(toMillis(o.checked_at)),
+    )
+    .map((o) => ({
+      t: toMillis(o.checked_at),
+      remaining: o.remaining_ratio,
+      resetAt: toMillis(o.reset_at),
+      resetSource: isNonEmptyString(o.reset_at_source) ? o.reset_at_source : null,
+      confidence: CONFIDENCE_VALUES.includes(o.remaining_confidence) ? o.remaining_confidence : null,
+      hasGenerationId: isNonEmptyString(o.generation_id),
+    }))
+    .sort((a, b) => a.t - b.t);
+
+  if (points.length < config.min_observations) return { ...INERT_PACE };
+
+  // Any reading below MEDIUM confidence taints the series.
+  if (points.some((p) => p.confidence !== null && confidenceRank(p.confidence) < confidenceRank("MEDIUM"))) {
+    return { ...INERT_PACE };
+  }
+
+  // Generation continuity across every adjacent pair.
+  for (let k = 1; k < points.length; k += 1) {
+    const prev = points[k - 1];
+    const cur = points[k];
+
+    // Remaining rising materially -> a new generation, not negative burn.
+    if (cur.remaining - prev.remaining > config.upward_jump_ratio) return { ...INERT_PACE };
+
+    // A window whose reset has already passed describes the previous generation.
+    if (Number.isFinite(cur.resetAt) && cur.resetAt <= cur.t) return { ...INERT_PACE };
+
+    if (Number.isFinite(prev.resetAt) && Number.isFinite(cur.resetAt)) {
+      const relative =
+        prev.resetSource === "RELATIVE_PROVIDER_DURATION" || cur.resetSource === "RELATIVE_PROVIDER_DURATION";
+      if (relative) {
+        // A relative countdown drifts each probe; the IMPLIED remaining
+        // duration should shrink roughly in step with elapsed time.
+        const impliedPrev = prev.resetAt - prev.t;
+        const impliedCur = cur.resetAt - cur.t;
+        if (Math.abs(impliedCur - impliedPrev) > config.reset_at_tolerance_ms) return { ...INERT_PACE };
+      } else if (Math.abs(cur.resetAt - prev.resetAt) > config.reset_at_tolerance_ms) {
+        return { ...INERT_PACE };
+      }
+    }
+  }
+
+  const first = points[0];
+  const last = points[points.length - 1];
+
+  const spanMs = last.t - first.t;
+  if (spanMs < config.min_total_span_ms) return { ...INERT_PACE };
+
+  const consumed = first.remaining - last.remaining;
+  if (consumed <= 0) return { ...INERT_PACE }; // flat or refilled: nothing to project
+
+  const resetAt = Number.isFinite(last.resetAt) ? last.resetAt : Number.NaN;
+  if (!Number.isFinite(resetAt) || resetAt <= nowMs) return { ...INERT_PACE };
+
+  const velocity = consumed / spanMs; // ratio consumed per ms
+  const projectedRunwayMs = last.remaining / velocity; // ms to zero at this rate
+  const timeToReset = resetAt - nowMs;
+  const ratio = projectedRunwayMs / timeToReset; // < 1 => exhausts before reset
+
+  let pressure;
+  if (ratio >= 1.0) pressure = "NONE";
+  else if (ratio >= 0.75) pressure = "LOW";
+  else if (ratio >= 0.5) pressure = "ELEVATED";
+  else if (ratio >= 0.33) pressure = "HIGH";
+  else pressure = "CRITICAL";
+
+  // MEDIUM from consistent observations; HIGH only with explicit provider
+  // generation metadata on every reading (not reachable from any current CLI).
+  const confidence = points.every((p) => p.hasGenerationId) ? "HIGH" : "MEDIUM";
+  const reason = pressure === "HIGH" || pressure === "CRITICAL" ? "WEEKLY_OVERBURN" : null;
+
+  return { pace_pressure: pressure, pace_confidence: confidence, pace_reason: reason };
+}
+
+// A candidate carrying a `pace_observations` series gets a real trajectory
+// reading; a bare entry (the live path) is always UNKNOWN.
+function resolvePaceForEntry(entry, now) {
+  const input = isPlainObject(entry) && Array.isArray(entry.pace_observations)
+    ? { observations: entry.pace_observations }
+    : entry;
+  return resolvePace(input, { now });
+}
+
+// PACE only participates when it is actually known AND acutely pressured.
+// ELEVATED / LOW / NONE / UNKNOWN are all routing-neutral.
+function paceIsDemoting(pace) {
+  return (
+    isPlainObject(pace) &&
+    pace.pace_confidence !== "UNKNOWN" &&
+    (pace.pace_pressure === "HIGH" || pace.pace_pressure === "CRITICAL")
+  );
+}
+
+// The composed defensive rank. BUDGET absolute scarcity always outranks softer
+// pressure; BURST depletion and confident acute PACE share the middle rank.
+function resourcePressureClass({ conservation, burstDepletion, pace }) {
+  if (CONSERVE_PRESSURES.has(conservation?.conservation_pressure)) return "BUDGET_SCARCE";
+  const soft = burstDepletion?.burst_depletion_pressure === "HIGH" || paceIsDemoting(pace);
+  return soft ? "SOFT_PRESSURED" : "CLEAR";
+}
+
+const resourcePressureRankIndex = (cls) => {
+  const i = RESOURCE_PRESSURE_RANKS.indexOf(cls);
+  return i === -1 ? 0 : i;
+};
+
 // Router capacity reserve bands, most severe first. Unlike conservation
 // pressure, these read remaining_ratio alone - proximity does not modulate
 // them: control-plane capacity is protected by how much of it is left, not by
@@ -1605,12 +1880,19 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
     }
 
     if (failures.length === 0) {
+      // BURST depletion and PACE are NEW_WORK defensive signals: they must not
+      // demote candidates for the ROUTER control-plane slot, which the Router
+      // capacity reserve already protects. For that slot they are held inert.
       qualified.push({
         candidate,
         label,
         resourceState,
         stranded: resolveStrandedCapacity(entry, { now }),
         conservation: resolveConservationPressure(entry, { now }),
+        burstDepletion: isRouterSlot
+          ? { ...UNKNOWN_BASE, burst_reset_proximity: "UNKNOWN", burst_depletion_pressure: "UNKNOWN" }
+          : resolveBurstDepletion(entry, { now }),
+        pace: isRouterSlot ? { ...INERT_PACE } : resolvePaceForEntry(entry, now),
       });
       continue;
     }
@@ -1659,9 +1941,19 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
         budget_reset_proximity: hit.conservation.budget_reset_proximity,
         conservation_pressure: hit.conservation.conservation_pressure,
         budget_expiry_opportunity: hit.conservation.budget_expiry_opportunity,
+        // A human pin does not reorder, so no defensive signal demotes it - but
+        // the labels are still reported for audit.
+        burst_depletion_pressure: hit.burstDepletion.burst_depletion_pressure,
+        burst_reset_proximity: hit.burstDepletion.burst_reset_proximity,
+        pace_pressure: hit.pace.pace_pressure,
+        pace_confidence: hit.pace.pace_confidence,
+        pace_reason: hit.pace.pace_reason,
+        resource_pressure_rank: resourcePressureClass(hit),
         conservation_demotion: null,
         expiry_promotion: null,
         stranded_promotion: null,
+        burst_depletion_demotion: null,
+        pace_demotion: null,
         pinned: true,
         router_reserve_band: hitReserveBand,
         router_reserve_override: reserveOverride,
@@ -1689,15 +1981,21 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
     };
   }
 
-  // Registry order picks the head of the band. The two resource signals may
-  // then reorder inside the head's own resource state, and only there.
+  // Registry order picks the head of the band. The resource signals then
+  // reorder inside the head's own resource state, and only there.
   //
-  // Conservation runs first and only demotes, on HIGH or CRITICAL: a provider
-  // whose long-horizon budget is nearly spent goes behind the ones that are
-  // not, and everything softer is neutral. Burst opportunity runs second and
-  // only promotes, on HIGH stranded risk - and only for a candidate whose own
-  // budget somebody has read and found sustainable. UNKNOWN is in neither set,
-  // so not checking buys neither a promotion nor a penalty.
+  // Defensive composition FIRST, utilization SECOND. All demotions are folded
+  // into one 3-rank partition so the overlay stays one coherent pass rather
+  // than an accreting stack of reorder passes:
+  //
+  //   rank 0 CLEAR         no BUDGET scarcity, no BURST depletion, no acute PACE
+  //   rank 1 SOFT_PRESSURED BURST depletion HIGH, or confident acute PACE
+  //   rank 2 BUDGET_SCARCE  conservation_pressure HIGH / CRITICAL
+  //
+  // BUDGET absolute scarcity always outranks softer pressure. Then the two
+  // existing promotions run, each gated so it can never rescue a materially
+  // pressured candidate. UNKNOWN sits in no set: not checking buys neither a
+  // promotion nor a penalty.
   const pickFromBand = (band) => {
     const head = band[0];
     if (head === undefined) return undefined;
@@ -1705,13 +2003,10 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
 
     const sameState = band.filter(({ resourceState }) => resourceState === head.resourceState);
 
-    const conserve = sameState.filter(({ conservation }) => CONSERVE_PRESSURES.has(conservation.conservation_pressure));
-    const sustainable = sameState.filter(({ conservation }) => !CONSERVE_PRESSURES.has(conservation.conservation_pressure));
-
-    // Model-role preference is the LAST tie-break: it reorders inside the
-    // sustainable and conserve groups separately (so conservation stays
-    // dominant), and burst opportunity still runs after it (so opportunity
-    // stays dominant over preference). No preference list -> registry order.
+    // Model-role preference is the LAST tie-break: it reorders inside each
+    // pressure rank separately (so the ranks stay dominant), and the
+    // promotions still run after it (so opportunity stays dominant over
+    // preference). No preference list -> registry order.
     const byPreference = (list) => {
       if (!Array.isArray(rolePreference) || rolePreference.length === 0) return list;
       const rank = (model) => {
@@ -1724,26 +2019,32 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
         .map(({ entry }) => entry);
     };
 
-    // Conservation expresses a preference, never a refusal: with every
-    // candidate under pressure the band still routes, in registry order.
-    const ordered = [...byPreference(sustainable), ...byPreference(conserve)];
+    const inRank = (cls) => byPreference(sameState.filter((e) => resourcePressureClass(e) === cls));
 
-    // Layer 4: BUDGET expiry opportunity (offensive). Prefer a candidate whose
-    // own long-horizon budget has room left and is about to reset - but only
-    // when that same candidate's BUDGET is not itself under HIGH/CRITICAL
-    // scarcity. Scarcity is defensive and always wins (BUDGET scarcity MUST
-    // override BUDGET expiry opportunity).
+    // Demotion expresses a preference, never a refusal: with every candidate
+    // pressured the band still routes, in registry order within the worst rank.
+    const ordered = [...inRank("CLEAR"), ...inRank("SOFT_PRESSURED"), ...inRank("BUDGET_SCARCE")];
+
+    // BUDGET expiry opportunity (offensive). Prefer a candidate whose own
+    // long-horizon budget has room left and is about to reset - but never one
+    // whose own BUDGET is under HIGH/CRITICAL scarcity, or whose own PACE is
+    // confidently acute. Scarcity and sustainability are defensive and win.
     const expiryPromoted = ordered.find(
-      ({ conservation }) =>
+      ({ conservation, pace }) =>
         conservation.budget_expiry_opportunity === "HIGH" &&
-        !CONSERVE_PRESSURES.has(conservation.conservation_pressure),
+        !CONSERVE_PRESSURES.has(conservation.conservation_pressure) &&
+        !paceIsDemoting(pace),
     );
 
-    // Layer 5: BURST stranded-capacity opportunity - shorter-horizon secondary
-    // optimisation, applied only if expiry did not already move the pick.
+    // BURST stranded-capacity opportunity - shorter-horizon secondary
+    // optimisation, applied only if expiry did not already move the pick, and
+    // never for a candidate whose own BURST is depleted or PACE is acute.
     const burstPromoted = ordered.find(
-      ({ stranded, conservation }) =>
-        stranded.stranded_capacity_risk === "HIGH" && SUSTAINABLE_PRESSURES.has(conservation.conservation_pressure),
+      ({ stranded, conservation, burstDepletion, pace }) =>
+        stranded.stranded_capacity_risk === "HIGH" &&
+        SUSTAINABLE_PRESSURES.has(conservation.conservation_pressure) &&
+        burstDepletion.burst_depletion_pressure !== "HIGH" &&
+        !paceIsDemoting(pace),
     );
 
     if (expiryPromoted !== undefined) return { pick: expiryPromoted, head, movedBy: "expiry" };
@@ -1761,7 +2062,12 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
     // Non-null only when a resource signal actually moved the choice.
     // Recording it is what keeps these layers auditable rather than invisible.
     const moved = pick !== head;
-    const demoted = moved && CONSERVE_PRESSURES.has(head.conservation.conservation_pressure);
+    const headClass = resourcePressureClass(head);
+    const pickClass = resourcePressureClass(pick);
+    // A demotion is any move where the head sat in a worse defensive rank than
+    // the pick. Each contributing signal is reported separately for audit.
+    const demoted = moved && resourcePressureRankIndex(headClass) > resourcePressureRankIndex(pickClass);
+    const headBudgetScarce = CONSERVE_PRESSURES.has(head.conservation.conservation_pressure);
 
     return {
       status: "SELECTED",
@@ -1772,13 +2078,37 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
       budget_reset_proximity: pick.conservation.budget_reset_proximity,
       conservation_pressure: pick.conservation.conservation_pressure,
       budget_expiry_opportunity: pick.conservation.budget_expiry_opportunity,
-      conservation_demotion: demoted
-        ? {
-            over: head.label,
-            budget_reset_proximity: head.conservation.budget_reset_proximity,
-            conservation_pressure: head.conservation.conservation_pressure,
-          }
-        : null,
+      burst_depletion_pressure: pick.burstDepletion.burst_depletion_pressure,
+      burst_reset_proximity: pick.burstDepletion.burst_reset_proximity,
+      pace_pressure: pick.pace.pace_pressure,
+      pace_confidence: pick.pace.pace_confidence,
+      pace_reason: pick.pace.pace_reason,
+      resource_pressure_rank: pickClass,
+      conservation_demotion:
+        demoted && headBudgetScarce
+          ? {
+              over: head.label,
+              budget_reset_proximity: head.conservation.budget_reset_proximity,
+              conservation_pressure: head.conservation.conservation_pressure,
+            }
+          : null,
+      burst_depletion_demotion:
+        demoted && !headBudgetScarce && head.burstDepletion.burst_depletion_pressure === "HIGH"
+          ? {
+              over: head.label,
+              burst_reset_proximity: head.burstDepletion.burst_reset_proximity,
+              burst_depletion_pressure: head.burstDepletion.burst_depletion_pressure,
+            }
+          : null,
+      pace_demotion:
+        demoted && !headBudgetScarce && paceIsDemoting(head.pace)
+          ? {
+              over: head.label,
+              pace_pressure: head.pace.pace_pressure,
+              pace_confidence: head.pace.pace_confidence,
+              pace_reason: head.pace.pace_reason,
+            }
+          : null,
       expiry_promotion:
         moved && !demoted && movedBy === "expiry"
           ? {
@@ -2117,6 +2447,24 @@ export function validateRoutingCases(document, registry) {
         findings.push(
           `${named}: expected budget_expiry_opportunity ${testCase.expect.budget_expiry_opportunity}, got ${result.budget_expiry_opportunity}`,
         );
+      }
+
+      for (const scalar of ["burst_depletion_pressure", "pace_pressure", "pace_confidence", "pace_reason", "resource_pressure_rank"]) {
+        if (scalar in testCase.expect && result[scalar] !== testCase.expect[scalar]) {
+          findings.push(`${named}: expected ${scalar} ${testCase.expect[scalar]}, got ${result[scalar]}`);
+        }
+      }
+
+      for (const label of ["burst_depletion_demotion", "pace_demotion"]) {
+        if (label in testCase.expect) {
+          const fired = result[label] !== null;
+          if (fired !== testCase.expect[label]) {
+            findings.push(`${named}: expected ${label} ${testCase.expect[label]}, got ${fired}`);
+          }
+          if (fired && !isNonEmptyString(result[label].over)) {
+            findings.push(`${named}: a ${label} must record the candidate it moved ahead of`);
+          }
+        }
       }
 
       if ("expiry_promotion" in testCase.expect) {

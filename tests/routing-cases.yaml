@@ -3068,3 +3068,360 @@ cases:
       provider: claude
       model: sonnet
       disjoint_from: { provider: codex, model_family: gpt-5.6 }
+
+  # =================================================================== #
+  # BURST DEPLETION + UNIFIED DEFENSIVE COMPOSITION + PACE (0.8)
+  #
+  # A short window that is nearly spent AND not refilling soon demotes
+  # NEW work (burst_depletion_pressure). Long-horizon trajectory
+  # (pace_pressure) is evidence-gated: UNKNOWN and inert from a single
+  # snapshot, and only ever demotes when a same-generation observation
+  # series projects exhaustion before reset. Both are demotion-only,
+  # subordinate to BUDGET absolute scarcity, and inert for the ROUTER
+  # slot. The three defensive signals compose into one resource_pressure_rank.
+  # =================================================================== #
+
+  - name: burst_and_weekly_both_healthy_is_unchanged_behaviour
+    kind: selection
+    why: >-
+      Compatibility anchor. Weekly comfortable, 5h comfortable: the pick is
+      registry order and every defensive signal is neutral, exactly as before
+      this refinement existed.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-09T11:57:00Z"
+        short_window: { remaining_ratio: 0.80, reset_at: "2026-09-09T14:30:00Z" }
+        weekly_window: { remaining_ratio: 0.70, reset_at: "2026-09-15T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-09T11:57:00Z"
+        weekly_window: { remaining_ratio: 0.70, reset_at: "2026-09-15T12:00:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-09T12:00:00Z" }
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-terra
+      resource_pressure_rank: CLEAR
+      burst_depletion_pressure: NONE
+      pace_pressure: UNKNOWN
+      burst_depletion_demotion: false
+      pace_demotion: false
+
+  - name: burst_nearly_empty_and_reset_distant_demotes_new_work
+    kind: selection
+    why: >-
+      Codex 5h window at 3 percent with the reset five hours away (FAR on burst
+      thresholds) and its weekly budget healthy. burst_depletion_pressure is
+      HIGH so Codex drops to SOFT_PRESSURED and the eligible same-band peer
+      (Claude, Stage 2) is selected for this new work. Not an exclusion.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: PROVIDER_NATIVE_PROBE
+        checked_at: "2026-09-09T11:57:00Z"
+        short_window: { remaining_ratio: 0.03, reset_at: "2026-09-09T17:00:00Z" }
+        weekly_window: { remaining_ratio: 0.72, reset_at: "2026-09-15T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-09T11:57:00Z"
+        weekly_window: { remaining_ratio: 0.60, reset_at: "2026-09-15T12:00:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-09T12:00:00Z" }
+    expect:
+      status: SELECTED
+      provider: claude
+      model: sonnet
+      burst_depletion_demotion: true
+      resource_pressure_rank: CLEAR
+
+  - name: burst_nearly_empty_but_reset_imminent_does_not_overreact
+    kind: selection
+    why: >-
+      Same near-empty 5h window, but the reset is 20 minutes away (NEAR on
+      burst thresholds): it self-heals inside the horizon of the work.
+      burst_depletion_pressure is LOW, not HIGH, so Codex stays CLEAR and keeps
+      the head of the band.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: PROVIDER_NATIVE_PROBE
+        checked_at: "2026-09-09T11:57:00Z"
+        short_window: { remaining_ratio: 0.03, reset_at: "2026-09-09T12:20:00Z" }
+        weekly_window: { remaining_ratio: 0.72, reset_at: "2026-09-15T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-09T11:57:00Z"
+        weekly_window: { remaining_ratio: 0.60, reset_at: "2026-09-15T12:00:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-09T12:00:00Z" }
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-terra
+      burst_depletion_pressure: LOW
+      burst_depletion_demotion: false
+      resource_pressure_rank: CLEAR
+
+  - name: burst_depletion_with_no_eligible_peer_still_selects_the_pressured_candidate
+    kind: selection
+    why: >-
+      Stage-1 implementation with Gemini disabled, so Codex is the only
+      candidate. Its 5h window is spent and the reset is far, but soft
+      pressure is a demotion, never an exclusion: Codex is still selected.
+    slot: DEFAULT_IMPLEMENTER
+    disable_models: [AUTO_GEMINI]
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: PROVIDER_NATIVE_PROBE
+        checked_at: "2026-09-09T11:57:00Z"
+        short_window: { remaining_ratio: 0.02, reset_at: "2026-09-09T17:00:00Z" }
+        weekly_window: { remaining_ratio: 0.72, reset_at: "2026-09-15T12:00:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-09T12:00:00Z" }
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-luna
+      resource_pressure_rank: SOFT_PRESSURED
+
+  - name: burst_depletion_is_inert_for_the_router_slot
+    kind: selection
+    why: >-
+      The ROUTER control-plane slot's own pool has a spent 5h window with a
+      distant reset. burst_depletion_pressure does not apply to the ROUTER
+      slot - the control plane is protected by Router capacity reserve, not by
+      this signal - so the Router stays dispatchable.
+    slot: ROUTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: PROVIDER_NATIVE_PROBE
+        checked_at: "2026-09-09T11:57:00Z"
+        short_window: { remaining_ratio: 0.02, reset_at: "2026-09-09T17:00:00Z" }
+        weekly_window: { remaining_ratio: 0.80, reset_at: "2026-09-15T12:00:00Z" }
+    options:
+      allowExperimental: false
+      taskRisk: medium
+      now: "2026-09-09T12:00:00Z"
+      isRouterSlot: true
+      activeRouterResourceKey: codex
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-luna
+      burst_depletion_pressure: UNKNOWN
+      pace_pressure: UNKNOWN
+      resource_pressure_rank: CLEAR
+
+  - name: budget_scarcity_still_dominates_burst_depletion
+    kind: selection
+    why: >-
+      Case C of the composition matrix. Codex weekly is critically scarce
+      (BUDGET_SCARCE) while its 5h window is abundant and near reset. The
+      abundant burst window earns no promotion behind a nearly-spent weekly
+      budget, and BUDGET scarcity outranks any softer pressure.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-09T11:57:00Z"
+        short_window: { remaining_ratio: 0.90, reset_at: "2026-09-09T14:00:00Z" }
+        weekly_window: { remaining_ratio: 0.06, reset_at: "2026-09-15T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-09T11:57:00Z"
+        weekly_window: { remaining_ratio: 0.60, reset_at: "2026-09-15T12:00:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-09T12:00:00Z" }
+    expect:
+      status: SELECTED
+      provider: claude
+      model: sonnet
+      conservation_demotion: true
+      stranded_promotion: false
+      resource_pressure_rank: CLEAR
+
+  - name: pace_fixture_a_single_snapshot_weekly_overburn_suspicion_is_inert
+    kind: selection
+    why: >-
+      Production snapshot, one observation only. Codex weekly around 52 percent
+      remaining six days out, 5h around 96 percent. A single snapshot cannot
+      establish a burn trajectory, so pace_pressure is UNKNOWN and has no
+      routing effect: Codex is not penalised on a 3.4x guess it cannot justify.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: PROVIDER_NATIVE_PROBE
+        checked_at: "2026-09-09T11:57:00Z"
+        short_window: { remaining_ratio: 0.96, reset_at: "2026-09-09T12:33:00Z" }
+        weekly_window: { remaining_ratio: 0.52, reset_at: "2026-09-15T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: PROVIDER_NATIVE_PROBE
+        checked_at: "2026-09-09T11:57:00Z"
+        weekly_window: { remaining_ratio: 0.45, reset_at: "2026-09-10T04:00:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-09T12:00:00Z" }
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-terra
+      pace_pressure: UNKNOWN
+      pace_confidence: UNKNOWN
+      pace_demotion: false
+      resource_pressure_rank: CLEAR
+
+  - name: pace_fixture_b_multi_observation_trajectory_demotes_new_work
+    kind: selection
+    why: >-
+      Same pool, but the Codex entry carries a same-generation observation
+      series (0.78 to 0.66 to 0.52 over about 4h, reset about 20h out) that
+      projects exhaustion well before reset. pace_pressure is acute at MEDIUM
+      confidence, pace_reason WEEKLY_OVERBURN, so Codex drops to
+      SOFT_PRESSURED and the eligible healthy peer is selected for new work.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: PROVIDER_NATIVE_PROBE
+        checked_at: "2026-09-09T11:57:00Z"
+        short_window: { remaining_ratio: 0.96, reset_at: "2026-09-10T06:00:00Z" }
+        weekly_window: { remaining_ratio: 0.52, reset_at: "2026-09-10T08:00:00Z" }
+        pace_observations:
+          - { checked_at: "2026-09-09T08:00:00Z", remaining_ratio: 0.78, reset_at: "2026-09-10T08:00:00Z" }
+          - { checked_at: "2026-09-09T10:00:00Z", remaining_ratio: 0.66, reset_at: "2026-09-10T08:00:00Z" }
+          - { checked_at: "2026-09-09T11:57:00Z", remaining_ratio: 0.52, reset_at: "2026-09-10T08:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: PROVIDER_NATIVE_PROBE
+        checked_at: "2026-09-09T11:57:00Z"
+        weekly_window: { remaining_ratio: 0.45, reset_at: "2026-09-11T04:00:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-09T12:00:00Z" }
+    expect:
+      status: SELECTED
+      provider: claude
+      model: sonnet
+      pace_demotion: true
+      resource_pressure_rank: CLEAR
+
+  - name: pace_provider_early_reset_discards_trajectory
+    kind: selection
+    why: >-
+      The Codex observation series ends with remaining jumping UP (0.20 to
+      0.12 to 0.97) with a new reset_at: a quota-generation change, not
+      negative burn. pace_pressure collapses to UNKNOWN and Codex keeps the
+      head of the band.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: PROVIDER_NATIVE_PROBE
+        checked_at: "2026-09-09T11:57:00Z"
+        weekly_window: { remaining_ratio: 0.97, reset_at: "2026-09-16T18:00:00Z" }
+        pace_observations:
+          - { checked_at: "2026-09-09T08:00:00Z", remaining_ratio: 0.20, reset_at: "2026-09-15T12:00:00Z" }
+          - { checked_at: "2026-09-09T10:00:00Z", remaining_ratio: 0.12, reset_at: "2026-09-15T12:00:00Z" }
+          - { checked_at: "2026-09-09T11:57:00Z", remaining_ratio: 0.97, reset_at: "2026-09-16T18:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-09T11:57:00Z"
+        weekly_window: { remaining_ratio: 0.55, reset_at: "2026-09-15T12:00:00Z" }
+    options: { allowExperimental: false, taskRisk: medium, now: "2026-09-09T12:00:00Z" }
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-terra
+      pace_pressure: UNKNOWN
+      pace_demotion: false
+
+  - name: pace_high_but_exact_model_pinned_wins
+    kind: selection
+    why: >-
+      Codex trajectory is acutely pressured, but the human pinned
+      codex/gpt-5.6-terra in the current instruction. Exact dispatch wins:
+      Codex is selected, pace is reported as a label, and pace_demotion is
+      false because a pin does not reorder.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: PROVIDER_NATIVE_PROBE
+        checked_at: "2026-09-09T11:57:00Z"
+        weekly_window: { remaining_ratio: 0.52, reset_at: "2026-09-10T08:00:00Z" }
+        pace_observations:
+          - { checked_at: "2026-09-09T08:00:00Z", remaining_ratio: 0.78, reset_at: "2026-09-10T08:00:00Z" }
+          - { checked_at: "2026-09-09T10:00:00Z", remaining_ratio: 0.66, reset_at: "2026-09-10T08:00:00Z" }
+          - { checked_at: "2026-09-09T11:57:00Z", remaining_ratio: 0.52, reset_at: "2026-09-10T08:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-09T11:57:00Z"
+        weekly_window: { remaining_ratio: 0.55, reset_at: "2026-09-15T12:00:00Z" }
+    options:
+      allowExperimental: false
+      taskRisk: medium
+      now: "2026-09-09T12:00:00Z"
+      pinnedCandidate: { provider: codex, model: gpt-5.6-terra }
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-terra
+      pace_demotion: false
+
+  - name: pace_inert_for_the_router_slot
+    kind: selection
+    why: >-
+      An acutely pressured trajectory on the pool that hosts the active
+      Router. PACE does not apply to the ROUTER slot, so the Router stays
+      dispatchable.
+    slot: ROUTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: PROVIDER_NATIVE_PROBE
+        checked_at: "2026-09-09T11:57:00Z"
+        weekly_window: { remaining_ratio: 0.52, reset_at: "2026-09-10T08:00:00Z" }
+        pace_observations:
+          - { checked_at: "2026-09-09T08:00:00Z", remaining_ratio: 0.78, reset_at: "2026-09-10T08:00:00Z" }
+          - { checked_at: "2026-09-09T10:00:00Z", remaining_ratio: 0.66, reset_at: "2026-09-10T08:00:00Z" }
+          - { checked_at: "2026-09-09T11:57:00Z", remaining_ratio: 0.52, reset_at: "2026-09-10T08:00:00Z" }
+    options:
+      allowExperimental: false
+      taskRisk: medium
+      now: "2026-09-09T12:00:00Z"
+      isRouterSlot: true
+      activeRouterResourceKey: codex
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-5.6-luna
+      pace_pressure: UNKNOWN
+      pace_demotion: false
+      resource_pressure_rank: CLEAR
