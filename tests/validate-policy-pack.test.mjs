@@ -2539,6 +2539,41 @@ test("the hierarchy is owned in one place and applied in the other", async () =>
   assert.match(workflow, /都不是\*\*中斷理由/);
 });
 
+test("optional routing telemetry is local, advisory, privacy-safe and never a feedback loop", async () => {
+  const telemetry = await readFile("references/ROUTING_TELEMETRY.md", "utf8");
+  const workflow = await readFile("policies/WORKFLOW_POLICY.md", "utf8");
+  const resource = await readFile("policies/RESOURCE_AWARE_ROUTING.md", "utf8");
+  const gitignore = await readFile(".gitignore", "utf8");
+  const root = process.cwd();
+
+  // Opt-in by directory presence, gitignored, append-only.
+  assert.match(gitignore, /^runtime\/telemetry\/$/m);
+  assert.match(telemetry, /Opt-in by directory presence/);
+  assert.match(telemetry, /off.*unless the directory `runtime\/telemetry\/` exists/);
+
+  // Two goals, kept apart: labels-only audit vs decile-bucketed calibration.
+  assert.match(telemetry, /Goal A - routing audit/);
+  assert.match(telemetry, /Goal B - PACE calibration/);
+  assert.match(telemetry, /decile bucket/);
+  assert.ok(telemetry.includes("never the exact") || telemetry.includes("not exact percentages"));
+
+  // The never-store list and the no-self-tuning invariant.
+  assert.match(telemetry, /##\s*Never store/i);
+  for (const forbidden of [/prompts/i, /credentials/i, /auth headers/i, /exact `remaining_ratio`/i]) {
+    assert.match(telemetry, forbidden, `the telemetry doc must forbid storing ${forbidden}`);
+  }
+  assert.match(telemetry, /Routing \*\*never\*\* reads telemetry synchronously/);
+  assert.match(telemetry, /no self-tuning|no-self-tuning/i);
+  assert.match(telemetry, /not\s+authoritative\s+provider\s+metadata/i);
+
+  // Placed in the concerns-separation map, and reachable from both policies.
+  assert.match(workflow, /runtime\/telemetry\/`（選用）/);
+  assert.ok(workflow.includes("不是 source of truth，不自我調參"));
+  assert.deepEqual(validateMarkdownLinks(workflow, { path: "policies/WORKFLOW_POLICY.md", root }), []);
+  assert.deepEqual(validateMarkdownLinks(resource, { path: "policies/RESOURCE_AWARE_ROUTING.md", root }), []);
+  assert.deepEqual(validateMarkdownLinks(telemetry, { path: "references/ROUTING_TELEMETRY.md", root }), []);
+});
+
 /* ------------------------------------------------------------------------ *
  * Continuation freshness + session lifecycle hygiene
  *

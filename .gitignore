@@ -1,5 +1,6 @@
 node_modules/
 runtime/RESOURCE_STATE.json
+runtime/telemetry/
 *.log
 .env
 .env.*
@@ -8,3 +9,8 @@ runtime/RESOURCE_STATE.json
 # Local agent harness settings. Hidden on this machine only by a user-global
 # git ignore, so the repository must protect it for every other checkout.
 .claude/
+
+# Generated Archify visualization artifacts
+docs/*.html
+docs/*.visual-check.*
+docs/orca-*.json

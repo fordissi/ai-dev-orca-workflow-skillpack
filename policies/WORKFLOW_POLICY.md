@@ -27,8 +27,16 @@ SKILL → WORKFLOW_POLICY → CONCURRENCY_POLICY → MODEL_ROUTING_POLICY
 | `OFFICIAL_COMMANDS.md` | 經官方文件與本機 `--help` 驗證的命令 | 永久固定的 display name |
 | `scripts/` 與 `tests/` | 檢查上述文件的一致性 | 定義或覆寫 policy |
 | Current Project Handoff | 單一專案的 state、contract、blocker、next gate | 跨專案通用政策 |
+| `runtime/telemetry/`（選用）| 歷史 operational evidence（audit + PACE 校準），advisory | routing 決策、threshold、policy——**不是 source of truth，不自我調參** |
 
 **Markdown policy 是 normative；`scripts/` 下的驗證程式只是 conformance checker。** 當程式行為與政策文字不一致時，修正程式與測試以符合政策；不得反向用程式行為改寫規範。
+
+關注點分離（不得互相取代、不得新增平行 state 系統）：
+**Skillpack policy** ＝ 規範；**Current Project Handoff** ＝ 專案語意 state；
+**Orca runtime** ＝ live 執行/控制面；**`RESOURCE_STATE`** ＝ 當下資源快照/cache
+（不是歷史）；**telemetry**（選用、local、gitignored）＝ 歷史 operational
+evidence，只供離線/人工檢視，routing 永不同步讀取或據以自動改門檻。語意見
+[`../references/ROUTING_TELEMETRY.md`](../references/ROUTING_TELEMETRY.md)。
 
 ## Roles
 

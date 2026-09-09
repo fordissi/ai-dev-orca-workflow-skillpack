@@ -883,7 +883,9 @@ v0.3 的具名 window 寫法仍然合法，不需要遷移：
 **只記錄標籤，不記錄數值。** `remaining_ratio`、`reset_at`、burn velocity、
 `pace_ratio` 與任何原始 quota 讀數都不得寫入 execution artifact——這是本文件
 「不保存原始 quota payload」規則的延伸。粗粒度 bucket 的量化持久化只允許在
-選用的、gitignored 的 operational telemetry 層，不進 routing evidence。
+選用的、gitignored 的 operational telemetry 層（見
+[`../references/ROUTING_TELEMETRY.md`](../references/ROUTING_TELEMETRY.md)），
+不進 routing evidence，且 routing **不同步讀取 telemetry、不自我調參**。
 
 ### 人工輸入的 resource facts
 
