@@ -341,3 +341,205 @@ cases:
       router_execution_source: POLICY_DEFAULT
     expect:
       valid: false
+
+  # --- Authorized dispatch is mandatory / confirmation-loop prevention -------
+  # Conformance for WORKFLOW_POLICY.md's "Authorized dispatch is mandatory"
+  # subsection. The observed failure: after a Strategic Router GO, the
+  # Operational Router replied "GO confirmed / ready to proceed" and never
+  # dispatched, creating a GO -> "GO received" -> GO confirmation loop.
+
+  - name: authorized_operational_router_with_concrete_scope_must_dispatch
+    kind: authorized_dispatch
+    why: >-
+      CASE 1. Operational Router, a GO with a concrete authorized_scope, no
+      blocker and no gate: dispatch is mandatory and an actual dispatch this
+      turn is the valid outcome.
+    observation:
+      role: OPERATIONAL_ROUTER
+      authorization: { decision: GO, authorized_scope: ["step-1", "step-2", "step-3"] }
+      next_step_in_scope: true
+      response_kind: DISPATCH
+    expect:
+      operational_state: AUTHORIZED
+      required_action: DISPATCH
+      ack_only_valid: false
+      verdict: VALID
+
+  - name: authorized_router_status_only_ack_is_an_invalid_completion
+    kind: authorized_dispatch
+    why: >-
+      CASE 2. The confirmation loop itself: a valid authorization, enough
+      information to dispatch, and the router replies only "GO confirmed;
+      ready to proceed" with no dispatch attempt. That is not a valid turn.
+    observation:
+      role: OPERATIONAL_ROUTER
+      authorization: { decision: GO, authorized_scope: ["step-1", "step-2"] }
+      next_step_in_scope: true
+      dispatch_attempted: false
+      response_kind: STATUS_ONLY_ACK
+    expect:
+      operational_state: AUTHORIZED
+      required_action: DISPATCH
+      ack_only_valid: false
+      verdict: INVALID
+
+  - name: new_state_contradiction_after_authorization_is_a_valid_gate
+    kind: authorized_dispatch
+    why: >-
+      CASE 3. GO exists, but the runtime state materially contradicts the task
+      contract (expected RECORDED_UNCLAIMED, actual CLAIMED_BY_OTHER_SESSION).
+      Stopping and naming that concrete gate is correct.
+    observation:
+      role: OPERATIONAL_ROUTER
+      authorization: { decision: GO, authorized_scope: ["claim-record", "preflight"] }
+      new_material_condition: CLAIMED_BY_OTHER_SESSION
+      response_kind: HUMAN_GATE
+    expect:
+      operational_state: HUMAN_GATE
+      required_action: STOP_AT_GATE
+      verdict: VALID
+
+  - name: dispatching_past_a_new_gate_is_invalid
+    kind: authorized_dispatch
+    why: >-
+      CASE 3 (negative). The same new material contradiction, but the router
+      dispatches anyway instead of stopping. Existing authorization is not
+      unlimited execution.
+    observation:
+      role: OPERATIONAL_ROUTER
+      authorization: { decision: GO, authorized_scope: ["claim-record"] }
+      new_material_condition: CLAIMED_BY_OTHER_SESSION
+      response_kind: DISPATCH
+    expect:
+      operational_state: HUMAN_GATE
+      required_action: STOP_AT_GATE
+      verdict: INVALID
+
+  - name: step_outside_authorized_scope_must_stop_at_the_boundary
+    kind: authorized_dispatch
+    why: >-
+      CASE 4. Authorized for Steps 1-7; Step 8 is production execution, a
+      forbidden action. Steps 1-7 may proceed; the router must STOP before
+      Step 8 and hand off, not dispatch it.
+    observation:
+      role: OPERATIONAL_ROUTER
+      authorization:
+        decision: GO
+        authorized_scope: ["step-1", "step-2", "step-3", "step-4", "step-5", "step-6", "step-7"]
+        forbidden_actions: ["production execution"]
+        stop_conditions: ["final EXTERNAL_HANDOFF"]
+      next_step_forbidden: true
+      response_kind: DISPATCH
+    expect:
+      operational_state: AUTHORIZED
+      required_action: STOP_AT_SCOPE_BOUNDARY
+      verdict: INVALID
+
+  - name: handing_off_at_the_scope_boundary_is_valid
+    kind: authorized_dispatch
+    why: >-
+      CASE 4 (positive). At the same boundary, returning EXTERNAL_HANDOFF
+      instead of dispatching the forbidden step is the correct completion.
+    observation:
+      role: OPERATIONAL_ROUTER
+      authorization:
+        decision: GO
+        authorized_scope: ["step-1", "step-2", "step-3", "step-4", "step-5", "step-6", "step-7"]
+        forbidden_actions: ["production execution"]
+      next_step_forbidden: true
+      response_kind: HANDOFF
+    expect:
+      required_action: STOP_AT_SCOPE_BOUNDARY
+      verdict: VALID
+
+  - name: no_authorization_means_plan_only_never_dispatch
+    kind: authorized_dispatch
+    why: >-
+      CASE 5. The Operational Router has an executable task but no GO / no
+      execution authorization. It may produce a routing plan; it must not
+      dispatch.
+    observation:
+      role: OPERATIONAL_ROUTER
+      authorization: { decision: NO_GO, authorized_scope: [] }
+      response_kind: DISPATCH
+    expect:
+      operational_state: PLANNING_ONLY
+      required_action: PRODUCE_PLAN_ONLY
+      ack_only_valid: true
+      verdict: INVALID
+
+  - name: planning_only_may_return_a_routing_plan
+    kind: authorized_dispatch
+    why: >-
+      CASE 5 (positive). With no authorization, returning the routing plan /
+      decision is the valid outcome.
+    observation:
+      role: OPERATIONAL_ROUTER
+      authorized: false
+      response_kind: PLAN
+    expect:
+      operational_state: PLANNING_ONLY
+      required_action: PRODUCE_PLAN_ONLY
+      verdict: VALID
+
+  - name: strategic_router_on_go_hands_off_and_must_not_dispatch
+    kind: authorized_dispatch
+    why: >-
+      CASE 6. Strategic Router with a GO decision: handoff only. It must not
+      perform Orca / local operational dispatch merely because decision == GO.
+    observation:
+      role: STRATEGIC_ROUTER
+      authorization: { decision: GO, authorized_scope: ["step-1"] }
+      response_kind: HANDOFF
+    expect:
+      required_action: HANDOFF_ONLY
+      verdict: VALID
+
+  - name: strategic_router_performing_dispatch_is_invalid
+    kind: authorized_dispatch
+    why: >-
+      CASE 6 (negative). The role boundary: a Strategic Router that dispatches
+      operational work has crossed into execution.
+    observation:
+      role: STRATEGIC_ROUTER
+      authorization: { decision: GO, authorized_scope: ["step-1"] }
+      response_kind: DISPATCH
+    expect:
+      required_action: HANDOFF_ONLY
+      verdict: INVALID
+
+  - name: authorized_continuation_needs_no_new_go_between_phases
+    kind: authorized_dispatch
+    why: >-
+      CASE 7. authorized_scope is implementation -> test -> review.
+      Implementation completed successfully and no new material condition
+      exists, so the router continues to the test phase without another human
+      GO.
+    observation:
+      role: OPERATIONAL_ROUTER
+      authorization: { decision: GO, authorized_scope: ["implementation", "test", "review"] }
+      next_step_in_scope: true
+      response_kind: DISPATCH
+    expect:
+      operational_state: AUTHORIZED
+      required_action: DISPATCH
+      verdict: VALID
+
+  - name: attempted_dispatch_that_the_runtime_fails_is_a_valid_blocked
+    kind: authorized_dispatch
+    why: >-
+      CASE 8. "Dispatch is mandatory" means the attempt is mandatory, not that
+      it must succeed. The router is authorized, attempts the existing dispatch
+      path, the runtime returns a concrete failure, and it reports BLOCKED with
+      evidence. Valid, because dispatch was attempted.
+    observation:
+      role: OPERATIONAL_ROUTER
+      authorization: { decision: GO, authorized_scope: ["step-1"] }
+      next_step_in_scope: true
+      dispatch_attempted: true
+      dispatch_outcome: RUNTIME_FAILURE
+      response_kind: BLOCKED
+    expect:
+      operational_state: AUTHORIZED
+      required_action: DISPATCH
+      verdict: VALID

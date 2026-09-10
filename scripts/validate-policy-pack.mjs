@@ -2320,6 +2320,167 @@ export function classifyRouterExecution(observation, options = {}) {
   };
 }
 
+// The three operational execution states of WORKFLOW_POLICY.md's "Authorized
+// dispatch is mandatory" subsection - the smallest representation, expressed
+// with existing policy structures rather than a workflow engine.
+const OPERATIONAL_EXECUTION_STATES = ["PLANNING_ONLY", "AUTHORIZED", "HUMAN_GATE"];
+
+// What an AUTHORIZED-or-not Operational Router is required to do next.
+const AUTHORIZED_DISPATCH_ACTIONS = [
+  "DISPATCH", // authorized, in scope, no blocker/gate -> dispatch is mandatory
+  "STOP_AT_GATE", // a new material condition / reserved gate -> stop and explain it
+  "STOP_AT_SCOPE_BOUNDARY", // next step is forbidden / outside authorized_scope
+  "PRODUCE_PLAN_ONLY", // no executable authorization yet -> may plan, must not dispatch
+  "HANDOFF_ONLY", // Strategic Router -> authorize / classify / hand off, never dispatch
+];
+
+// The shape of the router's actual turn outcome, used only to grade it.
+const AUTHORIZED_DISPATCH_RESPONSE_KINDS = [
+  "DISPATCH", // an actual dispatch (or a concrete attempt) was made this turn
+  "STATUS_ONLY_ACK", // "GO confirmed" / "ready to proceed" and nothing else
+  "PLAN", // a routing plan / decision with no dispatch (valid only in PLANNING_ONLY)
+  "HANDOFF", // an EXTERNAL_HANDOFF / return to the strategic layer
+  "HUMAN_GATE", // stops and names a concrete gate
+  "BLOCKED", // stops and names a concrete blocker (with evidence)
+];
+
+/**
+ * Grades one Operational Router turn against WORKFLOW_POLICY.md's "Authorized
+ * dispatch is mandatory (confirmation-loop prevention)" invariant:
+ *
+ *   role == OPERATIONAL_ROUTER AND authorization permits execution AND
+ *   authorized_scope is concrete AND no unresolved blocker AND no
+ *   currently-required HUMAN_GATE  ->  dispatch is MANDATORY, and a
+ *   status-only acknowledgement is not a valid completion.
+ *
+ * This is a DISPATCH-DIRECTION classifier and sits beside
+ * classifyRouterExecution (which decides direct-vs-dispatch for a step). It
+ * changes no resource-routing, governance, or dispatch mechanism - it only
+ * says when a status-only reply is an invalid turn outcome.
+ *
+ * observation fields (all optional; sensible fail-safe defaults):
+ *   role: "OPERATIONAL_ROUTER" (default) | "STRATEGIC_ROUTER"
+ *   authorization: { decision: "GO"|..., authorized_scope: [...],
+ *                    forbidden_actions: [...], stop_conditions: [...] }
+ *     (or the flat form `authorized: true|false`)
+ *   scope_concrete:        boolean (default true when authorized)
+ *   next_step_in_scope:    boolean (default true)
+ *   next_step_forbidden:   boolean (default false)
+ *   blocker:               anything truthy | null
+ *   new_material_condition: string | null   (a NEW state contradiction / ambiguity)
+ *   human_gate_required:   boolean (default false)
+ *   dispatch_attempted:    boolean (default false)
+ *   dispatch_outcome:      "DISPATCHED" | "RUNTIME_FAILURE" | null
+ *   response_kind:         one of AUTHORIZED_DISPATCH_RESPONSE_KINDS
+ *
+ * result:
+ *   operational_state, required_action, ack_only_valid,
+ *   verdict: "VALID" | "INVALID" | null   (null when response_kind is absent),
+ *   reason
+ */
+export function classifyAuthorizedDispatch(observation) {
+  const o = isPlainObject(observation) ? observation : {};
+  const role = o.role === "STRATEGIC_ROUTER" ? "STRATEGIC_ROUTER" : "OPERATIONAL_ROUTER";
+  const responseKind = AUTHORIZED_DISPATCH_RESPONSE_KINDS.includes(o.response_kind) ? o.response_kind : null;
+  const dispatchAttempted = o.dispatch_attempted === true;
+  const concreteProgress = dispatchAttempted || responseKind === "DISPATCH";
+
+  const grade = (verdict, reason) => (responseKind === null && !dispatchAttempted ? null : verdict ? "VALID" : "INVALID");
+
+  // Strategic Router counter-invariant: it authorizes / classifies / hands off
+  // and MUST NOT perform operational dispatch, even on GO.
+  if (role === "STRATEGIC_ROUTER") {
+    const ok = !concreteProgress;
+    return {
+      operational_state: null,
+      required_action: "HANDOFF_ONLY",
+      ack_only_valid: true,
+      verdict: grade(ok, ""),
+      reason: ok
+        ? "Strategic Router: authorize / classify / hand off - no operational dispatch"
+        : "Strategic Router must not perform operational dispatch merely because decision == GO",
+    };
+  }
+
+  const auth = isPlainObject(o.authorization) ? o.authorization : null;
+  const authorized =
+    auth !== null
+      ? auth.decision === "GO" && Array.isArray(auth.authorized_scope) && auth.authorized_scope.length > 0
+      : o.authorized === true;
+  const scopeConcrete = o.scope_concrete !== false;
+
+  // PLANNING_ONLY: no executable authorization / concrete scope yet.
+  if (!authorized || !scopeConcrete) {
+    const ok = !concreteProgress;
+    return {
+      operational_state: "PLANNING_ONLY",
+      required_action: "PRODUCE_PLAN_ONLY",
+      ack_only_valid: true,
+      verdict: grade(ok, ""),
+      reason: ok
+        ? "no executable authorization / concrete scope yet - may plan, must not dispatch"
+        : "PLANNING_ONLY: the Operational Router must not dispatch without executable authorization and a concrete scope",
+    };
+  }
+
+  const blockerPresent = o.blocker !== undefined && o.blocker !== null && o.blocker !== false;
+  const gatePresent = o.human_gate_required === true || isNonEmptyString(o.new_material_condition);
+
+  // HUMAN_GATE: a NEW material condition or a reserved gate - stop and explain it.
+  if (blockerPresent || gatePresent) {
+    const stopsAndExplains = responseKind === "HUMAN_GATE" || responseKind === "BLOCKED";
+    return {
+      operational_state: "HUMAN_GATE",
+      required_action: "STOP_AT_GATE",
+      ack_only_valid: false,
+      verdict: grade(stopsAndExplains, ""),
+      reason: stopsAndExplains
+        ? "a new material condition / reserved gate is present - stopping and naming it is correct"
+        : "authorized, but a new material condition / reserved gate is present - STOP and explain the concrete gate; do not dispatch past it and do not reply status-only",
+    };
+  }
+
+  // AUTHORIZED but the next step is forbidden / outside authorized_scope.
+  if (o.next_step_forbidden === true || o.next_step_in_scope === false) {
+    const stopsAtBoundary =
+      responseKind === "HANDOFF" || responseKind === "HUMAN_GATE" || responseKind === "BLOCKED";
+    return {
+      operational_state: "AUTHORIZED",
+      required_action: "STOP_AT_SCOPE_BOUNDARY",
+      ack_only_valid: false,
+      verdict: grade(stopsAtBoundary, ""),
+      reason: stopsAtBoundary
+        ? "the next step is outside authorized_scope / forbidden - stopping at the boundary and handing off is correct"
+        : "the next step is outside authorized_scope / forbidden - STOP at the boundary and hand off; neither dispatch it nor reply status-only",
+    };
+  }
+
+  // AUTHORIZED, in scope, no blocker, no gate -> DISPATCH IS MANDATORY.
+  if (concreteProgress) {
+    const attemptedButFailed =
+      dispatchAttempted &&
+      o.dispatch_outcome === "RUNTIME_FAILURE" &&
+      (responseKind === "BLOCKED" || responseKind === "HUMAN_GATE");
+    return {
+      operational_state: "AUTHORIZED",
+      required_action: "DISPATCH",
+      ack_only_valid: false,
+      verdict: "VALID",
+      reason: attemptedButFailed
+        ? "dispatch was attempted; runtime returned a concrete failure - reporting BLOCKED / HUMAN_GATE with evidence is valid"
+        : "dispatch attempted - concrete operational progress made this turn",
+    };
+  }
+  return {
+    operational_state: "AUTHORIZED",
+    required_action: "DISPATCH",
+    ack_only_valid: false,
+    verdict: grade(false, ""),
+    reason:
+      "AUTHORIZED with a concrete in-scope step and no blocker/gate: dispatch is mandatory - a status-only acknowledgement (\"GO confirmed\" / \"ready to proceed\") is not a valid completion",
+  };
+}
+
 /**
  * Contract self-consistency check: a router_execution record that claims
  * worker-shaped class with a DIRECT_ALLOWED decision and no current human
@@ -2388,7 +2549,7 @@ export function validateRouterExecutionRecord(record) {
  * stays normative.
  * ------------------------------------------------------------------------ */
 
-const ROUTER_EXECUTION_CASE_KINDS = ["router_execution", "contract_consistency"];
+const ROUTER_EXECUTION_CASE_KINDS = ["router_execution", "contract_consistency", "authorized_dispatch"];
 
 export function validateRouterExecutionCases(document) {
   const findings = [];
@@ -2430,6 +2591,22 @@ export function validateRouterExecutionCases(document) {
       const isValid = recordFindings.length === 0;
       if (isValid !== testCase.expect.valid) {
         findings.push(`${named}: expected valid ${JSON.stringify(testCase.expect.valid)}, got ${JSON.stringify(isValid)} (${recordFindings.join("; ")})`);
+      }
+      continue;
+    }
+
+    if (testCase.kind === "authorized_dispatch") {
+      const result = classifyAuthorizedDispatch(testCase.observation);
+      if (result.operational_state !== null && !OPERATIONAL_EXECUTION_STATES.includes(result.operational_state)) {
+        findings.push(`${named}: produced unknown operational_state ${JSON.stringify(result.operational_state)}`);
+      }
+      if (!AUTHORIZED_DISPATCH_ACTIONS.includes(result.required_action)) {
+        findings.push(`${named}: produced unknown required_action ${JSON.stringify(result.required_action)}`);
+      }
+      for (const key of ["operational_state", "required_action", "ack_only_valid", "verdict"]) {
+        if (key in testCase.expect && result[key] !== testCase.expect[key]) {
+          findings.push(`${named}: expected ${key} ${JSON.stringify(testCase.expect[key])}, got ${JSON.stringify(result[key])}`);
+        }
       }
       continue;
     }

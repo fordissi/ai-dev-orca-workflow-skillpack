@@ -1,6 +1,6 @@
 # Workflow Policy
 
-Version: `0.3`
+Version: `0.4`
 Status: normative
 
 這份文件是 stable workflow 的 normative owner：角色、權威順序、生命週期、permission ceiling、bounded repair、human gate 與 cross-repo 規則。它**不含任何模型名稱**；模型與 provider mapping 屬於 [`MODEL_REGISTRY.yaml`](MODEL_REGISTRY.yaml)。
@@ -238,6 +238,133 @@ Router capacity reserve（[`RESOURCE_AWARE_ROUTING.md`](RESOURCE_AWARE_ROUTING.m
 resource acquisition、套用既有 Router capacity reserve、保留 provider + model +
 reasoning、要求 dispatch identity attestation、維持既有的 reviewer disjointness。
 **不建立第二條、不受治理的 helper path。**
+
+### Authorized dispatch is mandatory（confirmation-loop 防治）
+
+上面幾節管「Router 何時該停止直接做、改為派工」。這一節管**相反方向的失效**：
+Router 已經拿到**具體可執行的授權**、當下**沒有 blocker / gate**，卻只回一句
+「GO 收到」「授權確認」「可以執行 Steps 1–7」而**沒有真的派工**。這會造成
+confirmation loop：Strategic → GO；Operational →「GO received」；Human → GO；
+Operational →「GO confirmed」……。Operational Router 是**執行/控制面 router**，
+一旦握有具體授權且無阻礙，它的工作是**派工**，不是描述派工是被允許的。
+
+**核心不變式：**
+
+```text
+IF role == OPERATIONAL_ROUTER
+   AND authorization permits execution
+   AND authorized_scope is concrete enough to dispatch
+   AND there is no current unresolved blocker
+   AND there is no currently-required HUMAN_GATE
+THEN dispatch is MANDATORY.
+A status-only acknowledgement is NOT a valid completion.
+```
+
+#### 授權是**有界的**（GO ≠ 無限執行）
+
+授權永遠受下列邊界約束，`GO` 不等於 unrestricted execution：
+
+```yaml
+authorization:
+  decision: GO | MODIFY | NO_GO
+  authorized_scope: [...]        # 明確列出被授權的步驟 / 動作
+  forbidden_actions: [...]       # 明確禁止（例：production execution、auth mutation）
+  stop_conditions: [...]         # 明確保留的停止點（例：final EXTERNAL_HANDOFF）
+```
+
+`GO` 只在 `authorized_scope` 內生效；碰到 `forbidden_actions` / `stop_conditions` /
+human gate / destructive・production 邊界 / task contract 邊界時仍必須停。
+例：授權 Steps 1–7、禁止 production execution、停在 final EXTERNAL_HANDOFF ——
+正確行為是**派工 Steps 1–7 → 在 Step 8（production）前停 → 回 EXTERNAL_HANDOFF**，
+而不是每個已授權步驟前再問一次 GO。
+
+#### Operational execution states（最小表示，不建 workflow engine）
+
+| state | 意義 | 派工姿態 |
+|---|---|---|
+| `PLANNING_ONLY` | 尚未取得可執行授權 | 可產出 routing plan / decision；**MUST NOT dispatch** 未授權工作 |
+| `AUTHORIZED` | 具體 task contract / GO 存在、scope 具體、當下無 gate/blocker | **MUST 進入 operational dispatch**（見核心不變式） |
+| `HUMAN_GATE` | 出現**新的**實質條件需 human 決定，或抵達明確保留的 gate | **STOP**、說明具體 gate、不得越過它派工 |
+
+這三個概念用既有 policy 結構表達即可（`authorized_scope` / `stop_conditions` /
+Human gates / Execution lifecycle states），**不新增 daemon、workflow service、
+database 或持久化 execution state machine**。
+
+#### 不得重複索取確認（redundant confirmation）
+
+**`The Operational Router MUST NOT request human reconfirmation for work that is
+already inside the current authorized_scope.`**
+
+以下皆為**無效行為**：
+
+- 已 GO Steps 1–7 → 「要我執行 Step 1 嗎？」
+- worker 完成 Step 2 → 「要繼續 Step 3 嗎？」
+- 已授權 package derivation + review → 「Authorization confirmed；ready to proceed.」
+
+`authorized_scope` 內、且無新 gate 時：**proceed**。
+
+#### 新 gate 仍然有效（authorization ≠ unlimited execution）
+
+出現**新的實質條件**時，既有的 stop / human gate 依然成立，例如：
+
+- 預期 `RECORDED_UNCLAIMED`，實際 `CLAIMED_BY_OTHER_SESSION` → 新的 state 矛盾 → gate；
+- 預期 read-only preflight，required next action 變成 production mutation → 超出
+  `authorized_scope` → STOP；
+- 預期單一 canonical root binding，實際多個互不相容的 root → 實質 ambiguity → STOP。
+
+所以：**既有授權 = 對同一 authorized scope 不再重複索取確認；≠ 無限執行。**
+
+#### Status-only 回應規則
+
+對一個 `AUTHORIZED`、且資訊足以派工的 Operational Router，下列**單獨**作為
+terminal 回應**無效**：
+
+```text
+"GO confirmed"      "authorization received"     "ready" / "ready to proceed"
+"can execute"       "Operational Router may proceed"
+routing-decision-only output with no dispatch attempt
+```
+
+Router 必須在**同一個 turn 內**做出具體 operational progress——通常是走既有的
+Orca dispatch 契約（本 repo 抽象的 `orca terminal create ...` / `orca terminal
+send ...` 等價路徑），**不新增第二條 dispatch 機制**。
+
+#### Dispatch attempt ≠ dispatch success
+
+「dispatch is mandatory」**不等於**「dispatch 一定成功」。
+
+- `AUTHORIZED` → 嘗試 dispatch → runtime/Orca 回具體失敗 → 回 `BLOCKED` /
+  `HUMAN_GATE`（附 evidence）——**有效**，因為 dispatch 已被嘗試。
+- `AUTHORIZED` → 從未嘗試 dispatch，只宣稱 dispatch 可以發生——**無效**。
+
+政策要求的是：**具體進展，或具體 blocker**。
+
+#### Continuation：已授權階段之間不設確認邊界
+
+`authorized_scope` 為 `implementation → tests → review` 時：implementation
+成功、無新實質條件 → 直接續 tests；tests 之後 → 直接派 review。**不在正常
+已授權階段之間插入新的 human GO**（既有 continuation freshness 與既有正當
+stop condition 不變，見 *Continuation freshness*）。
+
+#### Strategic Router 反向不變式（維持角色邊界）
+
+本修正**只**作用於 Operational Router。Strategic Router 不得因為 `decision == GO`
+就自己做 Orca/local operational dispatch：
+
+```text
+role == STRATEGIC_ROUTER
+  -> may authorize / classify / hand off
+  -> MUST NOT perform Orca or local operational dispatch merely because decision == GO
+```
+
+#### 不繞過治理
+
+「授權時必須派工」**永不**等於繞過治理：human pin、exact model/provider dispatch、
+capability / stage / minimum tier、reviewer disjointness、permission・governance
+gate、G1/G2/G3、production・destructive 邊界、Router capacity reserve、hard
+availability、UNKNOWN neutrality **全部不變**。這一節只補上「授權且無阻礙時，
+status-only ack 不是有效完成」，不改動 resource routing、ResourceEvidence、
+quota probe 或任何既有 dispatch 契約。
 
 ## Lifecycle
 
