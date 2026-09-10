@@ -1,9 +1,9 @@
 # Resource-Aware Routing Policy
 
-Version: `0.8`
+Version: `0.9`
 Status: normative
 
-這份文件是 **resource state、freshness、quota window role（BURST / BUDGET）、conservation pressure、reset proximity / stranded capacity、候選重排，以及 Router capacity reserve** 的 normative owner。
+這份文件是 **resource state、freshness、quota window role（BURST / BUDGET）、conservation pressure、reset proximity / stranded capacity、Weekly Balance、候選重排，以及 Router capacity reserve** 的 normative owner。
 
 **Quota 是 routing signal，不是 architecture authority。** 它只能在已達到相同 `minimum_tier` **且相同 capability `stage`** 的候選之間重排順序，永遠不能降低能力門檻、把候選拉到 slot 要求的 stage 之下、把 Stage 3 模型拉進 Stage 1/2 的 slot、改變架構決策，或繞過 human gate。Capability stage、stage admission、slot 與 candidate 演算法屬於 [`MODEL_ROUTING_POLICY.md`](MODEL_ROUTING_POLICY.md)；本文件的 overlay 一律在 stage eligibility **之後**才作用。特別是：「快要 reset 的閒置 BURST 額度」**不得**把 flagship（Stage 3）候選帶進 Stage 1/2 的工作。
 
@@ -599,7 +599,10 @@ budget_expiry_opportunity:    # HIGH | MEDIUM | LOW | UNKNOWN      ← BUDGET (o
 pace_pressure:                # NONE | LOW | ELEVATED | HIGH | CRITICAL | UNKNOWN  ← BUDGET trajectory (defensive, evidence-gated)
 pace_confidence:              # HIGH | MEDIUM | UNKNOWN
 pace_reason:                  # WEEKLY_OVERBURN | PROJECTED_EARLY_EXHAUSTION | <null>
-resource_pressure_rank:       # CLEAR | SOFT_PRESSURED | BUDGET_SCARCE  ← 三個防守訊號複合後的 rank
+weekly_balance:               # { state, budget_surplus, time_remaining_ratio, actual_remaining_ratio, reset_proximity, reason }
+                              #   state: BOOST | PREFER | NORMAL | CONSERVE | STRONG_CONSERVE | RESERVE | CRITICAL_RESERVE | UNKNOWN
+                              #   ← BUDGET even-consumption balancing (PRIMARY long-horizon signal, snapshot-sufficient)
+resource_pressure_rank:       # CLEAR | SOFT_PRESSURED | BUDGET_SCARCE  ← 防守訊號複合後的 rank
 ```
 
 `reset_proximity` 對 `stranded_capacity_risk` 與 `conservation_pressure` 用同一組門檻：
@@ -755,6 +758,79 @@ NEW_WORK；ROUTER slot 豁免；從屬於 BUDGET 絕對稀缺；`pace_confidence
 `HIGH` / `CRITICAL` 時附帶的原因標籤；不另設 `DAILY_OVERBURN` / `MONTHLY_OVERBURN`
 ——window role 已分辨 horizon。
 
+### Weekly Balance（BUDGET 均衡消耗，snapshot-sufficient）
+
+`weekly_balance` 是**長週期 subscription 額度均衡消耗的 PRIMARY 訊號**：在**已具
+能力與資格**的候選之間，把 weekly（BUDGET）額度**隨時間平均用掉**。它同時看
+**剩多少**與**離 reset 還有多久**，因此**單一可信 snapshot 就足夠**——不需要
+PACE 的觀察序列。
+
+一個帶可信 `remaining_ratio`、`reset_at` 與 `window_minutes` 的 BUDGET window：
+
+```text
+time_remaining_ratio = clamp((reset_at - now) / (window_minutes * 60000), 0, 1)
+budget_surplus       = remaining_ratio - time_remaining_ratio
+```
+
+```text
+budget_surplus > 0  → 消耗比時間慢 → 未用滿的機會 → 積極優先此 provider
+budget_surplus < 0  → 消耗比時間快 → 保守 → 新工作改派他處
+```
+
+`window_minutes` **只是均衡用的名目 horizon**。**不得**推導
+`generation_start = reset_at - window`，**不得**宣稱 weekly 是固定週期，
+**不產生** generation metadata——generation continuity 仍由 PACE 規則管。
+
+**Balance 分帶（versioned，operator 可配置）：**
+
+| `budget_surplus` | `weekly_balance.state` |
+|---|---|
+| ≥ +0.20 | `BOOST` |
+| +0.05 .. +0.20 | `PREFER` |
+| −0.05 .. +0.05 | `NORMAL` |
+| −0.20 .. −0.05 | `CONSERVE` |
+| ≤ −0.20 | `STRONG_CONSERVE` |
+
+**Reserve floor（絕對剩餘仍重要）：** `remaining_ratio < 0.15` → `RESERVE`；
+`< 0.05` → `CRITICAL_RESERVE`。兩者**覆蓋** `BOOST` / `PREFER`——即使 reset 很近，
+也不把最後一點額度燒在任意工作上。這與既有的 **Router capacity reserve**
+（控制面保護）是**不同機制**，不改寫後者。
+
+**Expiry 對齊：** `reset ≤ 24h 且 surplus ≥ +0.10` → 至少 `PREFER`；
+`reset ≤ 12h 且 remaining_ratio ≥ 0.20 且非 reserve` → `BOOST`。近 reset 的
+未用額度不用就沒價值。
+
+**Hysteresis：** 兩候選的 `budget_surplus` 差 `< 0.10` → 不因 balance 重排
+（維持 registry / 現行順序）；`≥ 0.10` 才可重排已合格候選。避免因微小差異而
+provider 抖動。
+
+**多個 BUDGET window：** 取**最保守**（`budget_surplus` 最低）者；reserve floor
+取**最低** `remaining_ratio`——任一 cap 都可能先見底。
+
+**Scope（與 `burst_depletion_pressure` / `pace_pressure` 相同）：**
+只重排、只降級、**不排除**；只作用於 NEW_WORK；**ROUTER slot 豁免**（其 pool
+由 Router capacity reserve 保護）；`STRONG_CONSERVE` / `RESERVE` /
+`CRITICAL_RESERVE` 複合進 `SOFT_PRESSURED`，**永不到 `BUDGET_SCARCE`**——絕對
+稀缺仍由 `conservation_pressure` 擁有，且**壓過** weekly balance。不降
+`minimum_tier` / `stage`、不繞 human gate、不破壞 reviewer disjointness、
+不動 registry。
+
+**與 BURST / PACE 的關係：** weekly 問「工作**大致**該去哪」；BURST 問「**現在**
+能不能用這個 provider」。weekly `BOOST` **不得**推翻同 provider 的 acute
+`burst_depletion_pressure = HIGH`（5h 窗 reset 後會自動回到可用）。PACE 仍是
+additive 早期預警：weekly `NORMAL` 但觀察到嚴重 overburn 時 PACE 可降級。
+weekly balance **不需要** PACE。
+
+**UNKNOWN 中性：** `remaining_ratio` / `reset_at` / `window_minutes` 任一
+缺失或不可信、或 snapshot stale → `weekly_balance = UNKNOWN`，**不估算**，
+退回既有 BUDGET 行為與 registry 順序。
+
+**門檻**定義於 conformance checker 的 `WEEKLY_BALANCE` 常數，operator 可透過
+`weeklyBalanceConfig` 覆寫；**不自我調參**（見
+[`../references/ROUTING_TELEMETRY.md`](../references/ROUTING_TELEMETRY.md)）。
+`weekly_balance.state` 是寫進 routing evidence 的 label；`budget_surplus` 等
+數值不進 execution artifact。
+
 ### Generation continuity
 
 軌跡證據在下列任一情況**必須失效並回到 `pace_pressure = UNKNOWN`**（不跨界沿用
@@ -795,27 +871,35 @@ promotion**：
 
 | rank | 條件 |
 |---|---|
-| `CLEAR` | `conservation_pressure` 非 `HIGH`/`CRITICAL`、`burst_depletion_pressure` 非 `HIGH`、且非「confident acute PACE」 |
-| `SOFT_PRESSURED` | 非 `BUDGET_SCARCE`，且（`burst_depletion_pressure` 為 `HIGH` **或** `pace_pressure` 為 `HIGH`/`CRITICAL` 且 `pace_confidence ≥ MEDIUM`） |
+| `CLEAR` | `conservation_pressure` 非 `HIGH`/`CRITICAL`、`burst_depletion_pressure` 非 `HIGH`、非「confident acute PACE」、且 `weekly_balance.state` 非 `STRONG_CONSERVE`/`RESERVE`/`CRITICAL_RESERVE` |
+| `SOFT_PRESSURED` | 非 `BUDGET_SCARCE`，且（`burst_depletion_pressure` 為 `HIGH` **或** confident acute PACE **或** `weekly_balance.state` ∈ {`STRONG_CONSERVE`, `RESERVE`, `CRITICAL_RESERVE`}） |
 | `BUDGET_SCARCE` | `conservation_pressure` 為 `HIGH` 或 `CRITICAL` |
 
 候選依 `CLEAR → SOFT_PRESSURED → BUDGET_SCARCE` 排序；同 rank 內維持 registry
 順序（model-role preference 是同 rank 內的最後 tie-break）。**`BUDGET 絕對稀缺 >
-PACE / BURST 軟性壓力`**：一個 pace 或 burst 軟性壓力的候選不會被排到一個 BUDGET
+PACE / BURST / weekly-balance 軟性壓力`**：軟性壓力的候選不會被排到一個 BUDGET
 稀缺的候選之後。降級是偏好不是拒絕：群組內全部候選都在壓力下時，該 band 仍依
 registry 順序在最嚴重 rank 內選出候選，**不會 `BLOCKED`**。
 
-**Step 2 — BUDGET expiry opportunity（進攻，只升級）。**
+**Step 2 — Weekly Balance（PRIMARY 長週期均衡，只重排已合格候選）。**
+在同 rank 群組內：若某候選的 `weekly_balance.state` 比 registry-order head 更好
+（rank 更高）**且** `budget_surplus` 差 `≥ hysteresis`（預設 0.10）、且該候選自身
+非 `BUDGET_SCARCE` / `burst_depletion_pressure = HIGH` / confident acute PACE /
+自身 `RESERVE`/`CRITICAL_RESERVE`，則提前。head 或該候選缺 `budget_surplus`
+（`UNKNOWN`）時不比較——中性。這一步在下面兩個 opportunity promotion **之前**。
+
+**Step 3 — BUDGET expiry opportunity（進攻，只升級）。**
 `budget_expiry_opportunity` 為 `HIGH`、**且該候選自身 `conservation_pressure` 不是
 `HIGH`/`CRITICAL`、且自身不是 confident acute PACE** 的候選可以提前。這一步在
 burst opportunity 之前。
 
-**Step 3 — BURST stranded opportunity（進攻，只升級）。**
-僅在 expiry 沒有移動選擇時：`stranded_capacity_risk` 為 `HIGH`、**且該候選自身
-`conservation_pressure` 為 `NONE`/`LOW`、`burst_depletion_pressure` 不是 `HIGH`、
-且自身不是 confident acute PACE** 的候選可以提前。
+**Step 4 — BURST stranded opportunity（進攻，只升級）。**
+僅在 weekly balance 與 expiry 都沒有移動選擇時：`stranded_capacity_risk` 為
+`HIGH`、**且該候選自身 `conservation_pressure` 為 `NONE`/`LOW`、
+`burst_depletion_pressure` 不是 `HIGH`、且自身不是 confident acute PACE** 的
+候選可以提前。
 
-**Step 4 —** 都沒有時維持 registry 順序。
+**Step 5 —** 都沒有時維持 registry 順序。
 
 `BUDGET scarcity MUST override BUDGET expiry opportunity`：週預算只剩 8%、reset
 為 `FAR` 時，即使其他訊號有 opportunity，仍應 conserve。同理 promotion 不得救回一個
@@ -873,10 +957,13 @@ v0.3 的具名 window 寫法仍然合法，不需要遷移：
 
 - defensive 造成的降級：`conservation_demotion`（head 為 `BUDGET_SCARCE`）、
   `burst_depletion_demotion`（head 為 `burst_depletion_pressure = HIGH`）、
-  `pace_demotion`（head 為 confident acute PACE）——可同時出現多個，每個都要記
+  `pace_demotion`（head 為 confident acute PACE）、`weekly_balance_demotion`
+  （head 為 `weekly_balance.state` ∈ {`STRONG_CONSERVE`, `RESERVE`,
+  `CRITICAL_RESERVE`} 且非上述三者）——可同時出現多個，每個都要記
   `over: <被排到後面的候選>`；另記 pick 的 `resource_pressure_rank`。
-- 進攻造成的提前：`expiry_promotion` 或 `stranded_promotion`，兩者互斥
-  （expiry 優先）。
+- 均衡 / 進攻造成的提前：`weekly_balance_promotion`（同 rank 內較佳 balance 的
+  候選提前）、`expiry_promotion` 或 `stranded_promotion`；weekly balance 先，
+  expiry 與 stranded 互斥（expiry 優先）。
 
 未記錄的重排等同不可稽核的重排。
 

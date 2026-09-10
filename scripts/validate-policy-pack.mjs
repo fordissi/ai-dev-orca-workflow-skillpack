@@ -52,6 +52,8 @@ import {
   resolveBurstDepletion,
   resolvePace,
   resolveRouterReserve,
+  resolveWeeklyBalance,
+  WEEKLY_BALANCE,
   selectCandidate,
   resolveActiveRouterResourcePool,
 } from "./lib/resource-routing.mjs";
@@ -79,6 +81,8 @@ export {
   resolveBurstDepletion,
   resolvePace,
   resolveRouterReserve,
+  resolveWeeklyBalance,
+  WEEKLY_BALANCE,
   selectCandidate,
   resolveActiveRouterResourcePool,
 };

@@ -283,6 +283,14 @@ export function resourceWindows(entry) {
       role,
       remaining_ratio: window.remaining_ratio,
       reset_at: window.reset_at,
+      // Optional nominal horizon of the window, in minutes. Present on
+      // evidence-sourced entries; absent on legacy / hand-written snapshots.
+      // Used only by the Weekly Balance signal as the balancing horizon - it
+      // is NOT a claim that generations are fixed periods.
+      window_minutes:
+        typeof window.window_minutes === "number" && Number.isFinite(window.window_minutes)
+          ? window.window_minutes
+          : null,
     });
   };
 
@@ -852,6 +860,174 @@ export function resolveBurstDepletion(entry, options = {}) {
   return { ...base, burst_reset_proximity: worst.proximity, burst_depletion_pressure: worst.pressure };
 }
 
+/* ------------------------------------------------------------------------ *
+ * Weekly Balance
+ *
+ * The PRIMARY long-horizon subscription-balancing signal: consume a weekly
+ * (BUDGET) allowance evenly over the cycle by comparing how much is LEFT with
+ * how much TIME is left before it resets.
+ *
+ *   time_remaining_ratio = clamp((reset_at - now) / (window_minutes * 60000), 0, 1)
+ *   budget_surplus       = remaining_ratio - time_remaining_ratio
+ *
+ *   surplus > 0  -> consuming slower than time passes -> unused-capacity opportunity
+ *   surplus < 0  -> consuming faster than time passes -> conservation pressure
+ *
+ * `window_minutes` is used ONLY as the nominal balancing horizon. This does NOT
+ * infer `generation_start = reset_at - window`, does NOT assert weekly cycles
+ * are fixed periods, and creates NO generation metadata - PACE still owns
+ * generation continuity. A single trustworthy current snapshot is enough.
+ *
+ * RESOURCE_AWARE_ROUTING.md's "Weekly Balance" section owns the semantics;
+ * thresholds live in `WEEKLY_BALANCE` and are operator-overridable via
+ * `options.weeklyBalanceConfig`. Not self-tuned.
+ * ------------------------------------------------------------------------ */
+
+// worst -> best; UNKNOWN is deliberately absent (it ranks as NORMAL for
+// comparison and never carries a numeric surplus, so it neither promotes nor
+// is promoted over).
+const WEEKLY_BALANCE_STATES = [
+  "CRITICAL_RESERVE",
+  "RESERVE",
+  "STRONG_CONSERVE",
+  "CONSERVE",
+  "NORMAL",
+  "PREFER",
+  "BOOST",
+];
+
+export const WEEKLY_BALANCE = Object.freeze({
+  boost_surplus: 0.2,
+  prefer_surplus: 0.05,
+  conserve_surplus: -0.05,
+  strong_conserve_surplus: -0.2,
+  reserve_remaining: 0.15,
+  critical_reserve_remaining: 0.05,
+  hysteresis: 0.1,
+  expiry_prefer_hours: 24,
+  expiry_prefer_surplus: 0.1,
+  expiry_boost_hours: 12,
+  expiry_boost_remaining: 0.2,
+});
+
+const INERT_WEEKLY_BALANCE = Object.freeze({
+  state: "UNKNOWN",
+  reason: null,
+  reset_proximity: "UNKNOWN",
+  actual_remaining_ratio: null,
+  time_remaining_ratio: null,
+  budget_surplus: null,
+});
+
+function weeklyBalanceRank(state) {
+  const i = WEEKLY_BALANCE_STATES.indexOf(state);
+  return i === -1 ? WEEKLY_BALANCE_STATES.indexOf("NORMAL") : i;
+}
+
+function clamp(value, lo, hi) {
+  return Math.max(lo, Math.min(hi, value));
+}
+
+function weeklySurplusBand(surplus, config) {
+  if (surplus >= config.boost_surplus) return "BOOST";
+  if (surplus >= config.prefer_surplus) return "PREFER";
+  if (surplus > config.conserve_surplus) return "NORMAL";
+  if (surplus > config.strong_conserve_surplus) return "CONSERVE";
+  return "STRONG_CONSERVE";
+}
+
+// Absolute remaining quota still matters: never aggressively consume a provider
+// just because reset is close if what is left is already critically low.
+function weeklyReserveFloor(remaining, config) {
+  if (typeof remaining !== "number" || !Number.isFinite(remaining)) return null;
+  if (remaining < config.critical_reserve_remaining) return "CRITICAL_RESERVE";
+  if (remaining < config.reserve_remaining) return "RESERVE";
+  return null;
+}
+
+/**
+ * Resolves the Weekly Balance of a resource entry from its BUDGET window(s).
+ * With several BUDGET caps the most conservative (lowest surplus) wins, and the
+ * reserve floor reads the lowest remaining_ratio - any one cap can be the one
+ * that runs out first. Returns labels plus the derived ratios; only the `state`
+ * label is written into routing evidence (numbers stay out of artifacts, as
+ * elsewhere in this module). Missing / untrustworthy evidence -> UNKNOWN
+ * (neutral), never estimated.
+ */
+export function resolveWeeklyBalance(entry, options = {}) {
+  const { now = Date.now(), weeklyBalanceConfig = WEEKLY_BALANCE } = options;
+  const config = isPlainObject(weeklyBalanceConfig) ? { ...WEEKLY_BALANCE, ...weeklyBalanceConfig } : WEEKLY_BALANCE;
+
+  const readable = readableEntry(entry, now);
+  if (readable === null || !readable.usable) return { ...INERT_WEEKLY_BALANCE };
+
+  const nowMs = toMillis(now);
+  if (!Number.isFinite(nowMs)) return { ...INERT_WEEKLY_BALANCE };
+
+  let worst = null; // { surplus, timeRatio, remaining, resetMs }
+  let minRemaining = null;
+
+  for (const window of resourceWindows(entry)) {
+    if (window.role !== "BUDGET") continue;
+    const remaining = window.remaining_ratio;
+    if (typeof remaining !== "number" || !Number.isFinite(remaining) || remaining < 0 || remaining > 1) continue;
+    minRemaining = minRemaining === null ? remaining : Math.min(minRemaining, remaining);
+
+    const resetMs = toMillis(window.reset_at);
+    const wm = window.window_minutes;
+    if (!Number.isFinite(resetMs) || typeof wm !== "number" || !Number.isFinite(wm) || wm <= 0) continue;
+
+    const timeRatio = clamp((resetMs - nowMs) / (wm * 60 * 1000), 0, 1);
+    const surplus = remaining - timeRatio;
+    if (worst === null || surplus < worst.surplus) worst = { surplus, timeRatio, remaining, resetMs };
+  }
+
+  // No BUDGET window carried the full evidence (remaining_ratio + reset_at +
+  // window_minutes). Weekly Balance needs all three, so it is UNKNOWN and
+  // neutral - the existing conservation_pressure behaviour is untouched.
+  // `minRemaining` (lowest ratio across every BUDGET window) still feeds the
+  // reserve floor and the expiry-boost gate on the full path below.
+  if (worst === null) return { ...INERT_WEEKLY_BALANCE };
+
+  let state = weeklySurplusBand(worst.surplus, config);
+  let reason = "SURPLUS";
+
+  // Expiry corrections: near reset, unused quota is worth spending.
+  const hoursToReset = (worst.resetMs - nowMs) / 3_600_000;
+  if (
+    hoursToReset <= config.expiry_prefer_hours &&
+    worst.surplus >= config.expiry_prefer_surplus &&
+    weeklyBalanceRank(state) < weeklyBalanceRank("PREFER")
+  ) {
+    state = "PREFER";
+    reason = "EXPIRY_PREFER";
+  }
+  if (
+    hoursToReset <= config.expiry_boost_hours &&
+    minRemaining >= config.expiry_boost_remaining &&
+    weeklyBalanceRank(state) < weeklyBalanceRank("BOOST")
+  ) {
+    state = "BOOST";
+    reason = "EXPIRY_BOOST";
+  }
+
+  // Reserve floor overrides the positive/boost side.
+  const floor = weeklyReserveFloor(minRemaining, config);
+  if (floor !== null && weeklyBalanceRank(floor) < weeklyBalanceRank(state)) {
+    state = floor;
+    reason = "RESERVE_FLOOR";
+  }
+
+  return {
+    state,
+    reason,
+    reset_proximity: resetProximity(worst.resetMs, nowMs),
+    actual_remaining_ratio: worst.remaining,
+    time_remaining_ratio: worst.timeRatio,
+    budget_surplus: worst.surplus,
+  };
+}
+
 const INERT_PACE = Object.freeze({ pace_pressure: "UNKNOWN", pace_confidence: "UNKNOWN", pace_reason: null });
 
 /**
@@ -986,10 +1162,17 @@ function paceIsDemoting(pace) {
 }
 
 // The composed defensive rank. BUDGET absolute scarcity always outranks softer
-// pressure; BURST depletion and confident acute PACE share the middle rank.
-function resourcePressureClass({ conservation, burstDepletion, pace }) {
+// pressure; BURST depletion, confident acute PACE and an acute Weekly Balance
+// deficit (STRONG_CONSERVE or a reserve floor) share the middle rank. Weekly
+// Balance is the primary long-horizon signal but it never reaches
+// BUDGET_SCARCE - absolute scarcity stays conservation-owned.
+function resourcePressureClass({ conservation, burstDepletion, pace, weeklyBalance }) {
   if (CONSERVE_PRESSURES.has(conservation?.conservation_pressure)) return "BUDGET_SCARCE";
-  const soft = burstDepletion?.burst_depletion_pressure === "HIGH" || paceIsDemoting(pace);
+  const weeklySoft =
+    weeklyBalance?.state === "STRONG_CONSERVE" ||
+    weeklyBalance?.state === "RESERVE" ||
+    weeklyBalance?.state === "CRITICAL_RESERVE";
+  const soft = burstDepletion?.burst_depletion_pressure === "HIGH" || paceIsDemoting(pace) || weeklySoft;
   return soft ? "SOFT_PRESSURED" : "CLEAR";
 }
 
@@ -1097,7 +1280,12 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
     pinnedCandidate = null,
     activeRouterResourceKey = null,
     isRouterSlot = false,
+    weeklyBalanceConfig = WEEKLY_BALANCE,
   } = options;
+
+  const wbConfig = isPlainObject(weeklyBalanceConfig)
+    ? { ...WEEKLY_BALANCE, ...weeklyBalanceConfig }
+    : WEEKLY_BALANCE;
 
   // Shared with the pinned-candidate short-circuit below: a human's explicit
   // model pin is the one thing that may still use the Router's own reserved
@@ -1250,6 +1438,12 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
           ? { ...UNKNOWN_BASE, burst_reset_proximity: "UNKNOWN", burst_depletion_pressure: "UNKNOWN" }
           : resolveBurstDepletion(entry, { now }),
         pace: isRouterSlot ? { ...INERT_PACE } : resolvePaceForEntry(entry, now),
+        // Weekly Balance is a NEW_WORK balancing signal: like BURST/PACE it is
+        // held inert for the ROUTER slot, whose pool is protected by Router
+        // capacity reserve, not by this signal.
+        weeklyBalance: isRouterSlot
+          ? { ...INERT_WEEKLY_BALANCE }
+          : resolveWeeklyBalance(entry, { now, weeklyBalanceConfig: wbConfig }),
       });
       continue;
     }
@@ -1305,12 +1499,15 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
         pace_pressure: hit.pace.pace_pressure,
         pace_confidence: hit.pace.pace_confidence,
         pace_reason: hit.pace.pace_reason,
+        weekly_balance: { ...hit.weeklyBalance },
         resource_pressure_rank: resourcePressureClass(hit),
         conservation_demotion: null,
         expiry_promotion: null,
         stranded_promotion: null,
         burst_depletion_demotion: null,
         pace_demotion: null,
+        weekly_balance_promotion: null,
+        weekly_balance_demotion: null,
         pinned: true,
         router_reserve_band: hitReserveBand,
         router_reserve_override: reserveOverride,
@@ -1382,6 +1579,34 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
     // pressured the band still routes, in registry order within the worst rank.
     const ordered = [...inRank("CLEAR"), ...inRank("SOFT_PRESSURED"), ...inRank("BUDGET_SCARCE")];
 
+    // Weekly Balance (PRIMARY long-horizon subscription-balancing signal, runs
+    // before the offensive promotions). Promote the candidate whose weekly
+    // balance is MATERIALLY better than the registry-order head's - "materially"
+    // gated by hysteresis so a tiny surplus gap never reorders. Both the head
+    // and the challenger need a numeric surplus (comparable evidence); UNKNOWN
+    // stays neutral. Guarded like the other promotions so it can never rescue a
+    // candidate that is itself BUDGET-scarce, BURST-depleted, acutely paced, or
+    // on its own reserve floor.
+    const wbHead = ordered[0];
+    const weeklyBalancePromoted =
+      isPlainObject(wbHead?.weeklyBalance) && Number.isFinite(wbHead.weeklyBalance.budget_surplus)
+        ? ordered.find(
+            (c) =>
+              c !== wbHead &&
+              Number.isFinite(c.weeklyBalance?.budget_surplus) &&
+              weeklyBalanceRank(c.weeklyBalance.state) > weeklyBalanceRank(wbHead.weeklyBalance.state) &&
+              c.weeklyBalance.budget_surplus - wbHead.weeklyBalance.budget_surplus >= wbConfig.hysteresis &&
+              !CONSERVE_PRESSURES.has(c.conservation.conservation_pressure) &&
+              c.burstDepletion.burst_depletion_pressure !== "HIGH" &&
+              !paceIsDemoting(c.pace) &&
+              c.weeklyBalance.state !== "RESERVE" &&
+              c.weeklyBalance.state !== "CRITICAL_RESERVE",
+          )
+        : undefined;
+    if (weeklyBalancePromoted !== undefined) {
+      return { pick: weeklyBalancePromoted, head, movedBy: "weekly_balance" };
+    }
+
     // BUDGET expiry opportunity (offensive). Prefer a candidate whose own
     // long-horizon budget has room left and is about to reset - but never one
     // whose own BUDGET is under HIGH/CRITICAL scarcity, or whose own PACE is
@@ -1440,6 +1665,7 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
       pace_pressure: pick.pace.pace_pressure,
       pace_confidence: pick.pace.pace_confidence,
       pace_reason: pick.pace.pace_reason,
+      weekly_balance: { ...pick.weeklyBalance },
       resource_pressure_rank: pickClass,
       conservation_demotion:
         demoted && headBudgetScarce
@@ -1480,6 +1706,31 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
               over: head.label,
               reset_proximity: pick.stranded.reset_proximity,
               stranded_capacity_risk: pick.stranded.stranded_capacity_risk,
+            }
+          : null,
+      // A Weekly Balance move can read as a promotion (a healthier-balance peer
+      // stepped ahead of the registry head) or a demotion (the registry head is
+      // itself STRONG_CONSERVE / on its reserve floor and a peer went ahead).
+      weekly_balance_promotion:
+        moved && !demoted && movedBy === "weekly_balance"
+          ? {
+              over: head.label,
+              weekly_balance_state: pick.weeklyBalance.state,
+              budget_surplus: pick.weeklyBalance.budget_surplus,
+            }
+          : null,
+      weekly_balance_demotion:
+        demoted &&
+        !headBudgetScarce &&
+        head.burstDepletion.burst_depletion_pressure !== "HIGH" &&
+        !paceIsDemoting(head.pace) &&
+        (head.weeklyBalance?.state === "STRONG_CONSERVE" ||
+          head.weeklyBalance?.state === "RESERVE" ||
+          head.weeklyBalance?.state === "CRITICAL_RESERVE")
+          ? {
+              over: head.label,
+              weekly_balance_state: head.weeklyBalance.state,
+              budget_surplus: head.weeklyBalance.budget_surplus,
             }
           : null,
     };
