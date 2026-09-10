@@ -1,0 +1,3 @@
+[orca] reading rate limit service...
+{"queried_at":"2026-09-10T08:00:00.000Z","providers":{"codex":{"available":true,"status":"ok","source_updated_at":"2026-09-10T08:00:00.000Z","data_age_ms":1000,"rate_limited":false,"retry_at":null,"windows":[{"scope":"weekly","role":"BUDGET","window_minutes":10080,"remaining_ratio":0.5,"remaining_ratio_granularity":0.01,"reset_at":"2026-09-15T10:39:00.000Z","reset_at_source":"unknown"}]}}}
+[orca] done in 42ms

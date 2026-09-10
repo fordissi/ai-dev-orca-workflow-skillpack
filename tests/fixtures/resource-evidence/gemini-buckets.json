@@ -1,0 +1,61 @@
+{
+  "queried_at": "2026-09-10T08:00:00.000Z",
+  "providers": {
+    "antigravity.gemini": {
+      "available": true,
+      "status": "ok",
+      "source_updated_at": "2026-09-10T08:00:00.000Z",
+      "data_age_ms": 60000,
+      "rate_limited": false,
+      "retry_at": null,
+      "windows": [
+        {
+          "scope": "bucket",
+          "role": "BURST",
+          "window_minutes": 300,
+          "remaining_ratio": 1,
+          "remaining_ratio_granularity": 0.01,
+          "reset_at": null,
+          "reset_at_source": "unknown"
+        },
+        {
+          "scope": "bucket",
+          "role": "BUDGET",
+          "window_minutes": 10080,
+          "remaining_ratio": 0.61,
+          "remaining_ratio_granularity": 0.01,
+          "reset_at": "2026-09-17T02:46:00.000Z",
+          "reset_at_source": "RELATIVE_PROVIDER_DURATION"
+        }
+      ]
+    },
+    "antigravity.non_gemini": {
+      "available": true,
+      "status": "ok",
+      "source_updated_at": "2026-09-10T08:00:00.000Z",
+      "data_age_ms": 60000,
+      "rate_limited": false,
+      "retry_at": null,
+      "windows": [
+        {
+          "scope": "bucket",
+          "role": "BURST",
+          "window_minutes": 300,
+          "remaining_ratio": 0.12,
+          "remaining_ratio_granularity": 0.01,
+          "reset_at": "2026-09-10T09:00:00.000Z",
+          "reset_at_source": "RELATIVE_PROVIDER_DURATION"
+        },
+        {
+          "scope": "bucket",
+          "role": "BUDGET",
+          "window_minutes": 10080,
+          "remaining_ratio": 0.08,
+          "remaining_ratio_granularity": 0.01,
+          "reset_at": "2026-09-16T00:00:00.000Z",
+          "reset_at_source": "RELATIVE_PROVIDER_DURATION"
+        }
+      ]
+    }
+  }
+}
