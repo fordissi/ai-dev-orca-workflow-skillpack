@@ -200,6 +200,11 @@ runtime_adapters:
     model_resolution: live_catalog
     catalog_resolver: antigravity_models
     efforts: [low, medium, high]
+    # Catalog entries WITHOUT effort variants (claude-sonnet-4-6,
+    # claude-opus-4-6-thinking): effort is fixed by the runtime and `--effort`
+    # must NOT be passed. Candidates on these models use reasoning
+    # provider_default.
+    unsuffixed_model_effort: none
     resource_pools: { gemini: antigravity.gemini, claude: antigravity.non_gemini, gpt-oss: antigravity.non_gemini }
     verified_at: "2026-09-18"
     note: >-
@@ -207,8 +212,12 @@ runtime_adapters:
       ids), Gemini 3.1 Pro (high|low only), Claude Sonnet 4.6 (Thinking)
       `claude-sonnet-4-6`, Claude Opus 4.6 (Thinking) `claude-opus-4-6-thinking`,
       GPT-OSS 120B (Medium) `gpt-oss-120b-medium`. Not frozen here - resolve live.
-      `--effort` on the single-id Claude entries is documented by `agy --help`
-      only; no live dispatch has verified it yet.
+      Live launch probe 2026-09-18, agy 1.2.6, claude-sonnet-4-6:
+      `--effort low|medium|high` each REJECTED pre-launch ("--effort is not
+      supported for model", 0 tokens, process exit 0 with JSON status ERROR);
+      no `--effort` -> SUCCESS. VERIFIED for claude-sonnet-4-6 only;
+      claude-opus-4-6-thinking has the same catalog shape but was not probed.
+      A launch probe must read the JSON `status`, not the exit code.
 
 # No verified direct Gemini CLI adapter exists on this host. `provider: gemini`
 # must not be dispatched; Gemini routes through the antigravity runtime.

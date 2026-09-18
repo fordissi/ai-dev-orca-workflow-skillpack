@@ -547,14 +547,20 @@ agy --print "/usage" --output-format json --print-timeout <duration>   # quota p
 |---|---|---|---|
 | Gemini 3.8 / 3.7 / 3.6 Flash | `gemini-3.x-flash-{high,medium,low}` | gemini | id 後綴 |
 | Gemini 3.1 Pro | `gemini-3.1-pro-{high,low}` | gemini | id 後綴（**無 medium**） |
-| Claude Sonnet 4.6 (Thinking) | `claude-sonnet-4-6` | claude | `--effort` 旗標 |
-| Claude Opus 4.6 (Thinking) | `claude-opus-4-6-thinking` | claude | `--effort` 旗標 |
+| Claude Sonnet 4.6 (Thinking) | `claude-sonnet-4-6` | claude | **不接受 `--effort`**（live 驗證） |
+| Claude Opus 4.6 (Thinking) | `claude-opus-4-6-thinking` | claude | 不接受 `--effort`（同形，未 probe） |
 | GPT-OSS 120B (Medium) | `gpt-oss-120b-medium` | gpt-oss | 僅 medium |
 
 Antigravity 視為**多模型 runtime adapter**（registry `runtime_adapters.antigravity`），
 不是 Gemini provider。上表只是觀察紀錄；dispatch 時一律以當下 `agy models` 解析。
-單一 id 的 Claude entry 以 `--effort` 傳 effort，這一點只有 `agy --help` 的說明為據，
-尚未以 live dispatch 驗證。`agy --help` 沒有 login / auth 子命令。
+**Live probe（2026-09-18，`agy 1.2.6`，`claude-sonnet-4-6`）**：`--effort low|medium|high`
+三者皆在 launch 前被拒（`invalid model selection (...): --effort is not supported for
+model "claude-sonnet-4-6"`，0 tokens）；**不帶 `--effort`** 則 `SUCCESS`。所以單一 id 的
+Claude entry effort 由 runtime 固定，dispatch 不得傳 `--effort`，registry 以
+`reasoning: provider_default` 表示（`unsuffixed_model_effort: none`）。注意：被拒時
+process **exit code 仍為 0**，JSON `status` 為 `ERROR`——launch probe 必須讀
+`status`，不得只看 exit code。`claude-opus-4-6-thinking` 同形但未 probe。
+`agy --help` 沒有 login / auth 子命令。
 
 ---
 

@@ -24,6 +24,7 @@ export const LAUNCH_FAILURE_CLASSES = [
   "AUTH_INVALID",
   "MODEL_UNKNOWN",
   "MODEL_UNAVAILABLE",
+  "EFFORT_UNSUPPORTED",
 ];
 export const WORKER_HEALTH_STAGES = ["TERMINAL_STARTED", "MODEL_LAUNCHED", "WORKER_ACTIVE"];
 
@@ -156,17 +157,23 @@ export function parseAntigravityModels(output) {
  * exact id, an exact display name, a display name without the effort suffix
  * ("Gemini 3.8 Flash"), or AUTO_GEMINI (newest Gemini Flash generation for the
  * requested effort; the catalog lists newest first).
+ *
+ * `unsuffixedEffort` is the registry's `unsuffixed_model_effort` for entries
+ * without effort variants: "none" (agy rejects `--effort` for the model - live
+ * probe 2026-09-18, agy 1.2.6, claude-sonnet-4-6) or "session_flag".
  */
-export function resolveAntigravityModel(catalogInput, { model, effort, efforts = ["low", "medium", "high"] } = {}) {
+export function resolveAntigravityModel(catalogInput, { model, effort, efforts = ["low", "medium", "high"], unsuffixedEffort = "none" } = {}) {
   const catalog = parseAntigravityModels(catalogInput);
   const unknown = (why) => ({ status: "MODEL_UNKNOWN", cli_model: null, why });
   if (!isNonEmptyString(model)) return unknown("no model value");
-  if (!isNonEmptyString(effort) || !efforts.includes(effort)) {
-    return { status: "EFFORT_UNSUPPORTED", cli_model: null, supported_efforts: efforts, why: `effort ${JSON.stringify(effort ?? null)} is not one of ${efforts.join("|")}` };
+  const noEffort = !isNonEmptyString(effort) || effort === "provider_default";
+  if (!noEffort && !efforts.includes(effort)) {
+    return { status: "EFFORT_UNSUPPORTED", cli_model: null, supported_efforts: efforts, why: `effort ${JSON.stringify(effort)} is not one of ${efforts.join("|")}` };
   }
 
   let group;
   if (model === "AUTO_GEMINI") {
+    if (noEffort) return { status: "EFFORT_UNSUPPORTED", cli_model: null, supported_efforts: efforts, why: "AUTO_GEMINI needs an explicit effort" };
     group = catalog.filter((e) => /^gemini-[\d.]+-flash$/.test(e.base_id));
     const pick = group.find((e) => e.effort === effort);
     if (pick !== undefined) return resolvedAgy(pick, effort, "ID_SUFFIX", efforts);
@@ -186,8 +193,23 @@ export function resolveAntigravityModel(catalogInput, { model, effort, efforts =
     const pick = suffixed.find((e) => e.effort === effort && (exact === undefined || exact.base_id === e.base_id));
     return pick !== undefined ? resolvedAgy(pick, effort, "ID_SUFFIX", efforts) : effortUnsupported(suffixed, effort);
   }
-  // Single-id entry (e.g. claude-sonnet-4-6): effort goes on the session flag.
-  return resolvedAgy(exact ?? group[0], effort, "SESSION_FLAG", efforts);
+  // Single-id entry (e.g. claude-sonnet-4-6).
+  const entry = exact ?? group[0];
+  if (unsuffixedEffort === "session_flag") {
+    return noEffort
+      ? { status: "EFFORT_UNSUPPORTED", cli_model: null, supported_efforts: efforts, why: `${entry.id} needs an explicit effort` }
+      : resolvedAgy(entry, effort, "SESSION_FLAG", efforts);
+  }
+  // "none": the model's effort is fixed by the runtime; `--effort` is refused.
+  if (!noEffort) {
+    return {
+      status: "EFFORT_UNSUPPORTED",
+      cli_model: null,
+      supported_efforts: ["provider_default"],
+      why: `agy does not accept --effort for ${entry.id}; dispatch it with reasoning provider_default`,
+    };
+  }
+  return resolvedAgy(entry, "provider_default", "NONE", ["provider_default"]);
 }
 
 function resolvedAgy(entry, effort, mode, efforts) {
@@ -242,7 +264,12 @@ export function resolveDispatchTarget({ registry, runtime_adapter = null, provid
     if (live_catalog === null) {
       return { ...base, status: "PROBE_REQUIRED", probe_command: "agy models", why: "resolve against the live catalog before dispatch" };
     }
-    resolved = resolveAntigravityModel(live_catalog, { model, effort, efforts: efforts ?? undefined });
+    resolved = resolveAntigravityModel(live_catalog, {
+      model,
+      effort,
+      efforts: efforts ?? undefined,
+      unsuffixedEffort: adapter.unsuffixed_model_effort ?? "none",
+    });
   } else {
     const cli = resolveCliModelArgument(registry, adapter.registry_provider, model);
     if (cli.status !== "RESOLVED") return { ...base, status: cli.status, why: cli.why };
@@ -289,6 +316,9 @@ export function familyDispatchable(registry, family, { providerAuth = {}, integr
 // before generic integration ones so "model not available" or "please log in"
 // is never read as the whole provider being unavailable.
 const FAILURE_PATTERNS = [
+  // agy: `invalid model selection (...): --effort is not supported for model "<id>"`.
+  // Must precede MODEL_UNKNOWN, whose "invalid model" would otherwise match.
+  ["EFFORT_UNSUPPORTED", /--effort is not supported|effort[^\n]{0,30}not supported/i],
   ["MODEL_UNKNOWN", /isn'?t described by this version'?s model catalog|unknown model|model[^\n]{0,40}not found|invalid model|no such model/i],
   ["MODEL_UNAVAILABLE", /model[^\n]{0,60}(not available|unavailable|not supported|not enabled|no access)|(not available|unavailable)[^\n]{0,40}model|does not have access to (the )?model/i],
   ["AUTH_EXPIRED", /(session|token|login|credentials?)[^\n]{0,30}(has |have )?expired|expired[^\n]{0,20}(session|token|login)|refresh token/i],
@@ -445,7 +475,13 @@ export function preDispatchCheck({
     return {
       ...base,
       action: "DO_NOT_DISPATCH",
-      failed_step: MODEL_FAILURE_STATES.has(cls) ? "MODEL" : cls === "RESOURCE_EXHAUSTED" ? "RESOURCE" : "RUNTIME",
+      failed_step: MODEL_FAILURE_STATES.has(cls)
+        ? "MODEL"
+        : cls === "EFFORT_UNSUPPORTED"
+          ? "EFFORT"
+          : cls === "RESOURCE_EXHAUSTED"
+            ? "RESOURCE"
+            : "RUNTIME",
       failure_class: cls,
       capability: MODEL_FAILURE_STATES.has(cls) ? cls : "UNVERIFIED",
       auth_state: authState,

@@ -4,6 +4,7 @@ import test from "node:test";
 import { parse } from "yaml";
 import { selectCandidate } from "../scripts/lib/resource-routing.mjs";
 import {
+  classifyLaunchFailure,
   classifyWorkerHealth,
   familyDispatchable,
   parseAntigravityModels,
@@ -68,14 +69,48 @@ test("Claude is routed through Claude CLI with a catalog alias", () => {
   assert.deepEqual(t.launch_args, ["--model", "sonnet", "--effort", "high"]);
 });
 
-test("Claude is routed through Antigravity on its own resource pool", () => {
-  const t = resolveDispatchTarget({ registry, runtime_adapter: "antigravity", provider_family: "claude", model: "Claude Sonnet 4.6 (Thinking)", effort: "high", live_catalog: AGY });
+test("Claude is routed through Antigravity on its own pool, without --effort", () => {
+  const t = resolveDispatchTarget({ registry, runtime_adapter: "antigravity", provider_family: "claude", model: "Claude Sonnet 4.6 (Thinking)", effort: "provider_default", live_catalog: AGY });
   assert.equal(t.status, "RESOLVED");
   assert.equal(t.cli_model, "claude-sonnet-4-6");
   assert.equal(t.provider_family, "claude");
-  assert.equal(t.effort_mode, "SESSION_FLAG");
+  assert.equal(t.effort_mode, "NONE");
+  assert.equal(t.effort, "provider_default");
   assert.equal(t.resource_state_key, "antigravity.non_gemini");
-  assert.deepEqual(t.launch_args, ["--model", "claude-sonnet-4-6", "--effort", "high"]);
+  assert.deepEqual(t.launch_args, ["--model", "claude-sonnet-4-6"]);
+});
+
+// Live probe 2026-09-18, agy 1.2.6: every --effort value was refused before
+// launch for claude-sonnet-4-6; the bare model launched.
+const AGY_EFFORT_REFUSED = (effort) =>
+  `{"conversation_id":"","status":"ERROR","response":"","error":"invalid model selection (--model \\"claude-sonnet-4-6\\" --effort \\"${effort}\\"): --effort is not supported for model \\"claude-sonnet-4-6\\"","duration_seconds":0,"num_turns":0}`;
+
+for (const effort of ["low", "medium", "high"]) {
+  test(`Antigravity Claude Sonnet 4.6 refuses --effort ${effort} before any terminal`, () => {
+    const t = resolveDispatchTarget({ registry, runtime_adapter: "antigravity", model: "claude-sonnet-4-6", effort, live_catalog: AGY });
+    assert.equal(t.status, "EFFORT_UNSUPPORTED");
+    assert.deepEqual(t.supported_efforts, ["provider_default"]);
+    const check = preDispatchCheck({ registry, provider: "antigravity", model: "claude-sonnet-4-6", effort, live_catalog: AGY, auth: "AUTH_OK" });
+    assert.equal(check.action, "DO_NOT_DISPATCH");
+    assert.equal(check.failed_step, "EFFORT");
+  });
+}
+
+test("the recorded agy effort refusal classifies as EFFORT_UNSUPPORTED, not MODEL_UNKNOWN", () => {
+  const out = AGY_EFFORT_REFUSED("high");
+  assert.equal(classifyLaunchFailure(out), "EFFORT_UNSUPPORTED");
+  const h = classifyWorkerHealth({ terminal_started: true, model_launched: false, output: out });
+  assert.equal(h.action, "FAIL_FAST");
+  assert.equal(h.provider_failure, false);
+  const check = preDispatchCheck({ registry, provider: "antigravity", model: "claude-sonnet-4-6", live_catalog: AGY, auth: "AUTH_OK", model_probe: { launched: false, output: out } });
+  assert.equal(check.failed_step, "EFFORT");
+  assert.equal(check.capability, "UNVERIFIED");
+});
+
+test("bare Antigravity Claude launch is dispatchable", () => {
+  const check = preDispatchCheck({ registry, provider: "antigravity", model: "Claude Sonnet 4.6 (Thinking)", live_catalog: AGY, auth: "AUTH_OK", model_probe: { launched: true } });
+  assert.equal(check.action, "CREATE_TERMINAL");
+  assert.deepEqual(check.launch_args, ["--model", "claude-sonnet-4-6"]);
 });
 
 test("provider=gemini has no direct adapter; Antigravity is offered instead", () => {
@@ -148,7 +183,7 @@ test("effort resolution honours the variants the catalog actually lists", () => 
 });
 
 test("a declared family that the resolved model does not belong to is CONFIG_INVALID", () => {
-  const t = resolveDispatchTarget({ registry, runtime_adapter: "antigravity", provider_family: "gemini", model: "Claude Sonnet 4.6 (Thinking)", effort: "high", live_catalog: AGY });
+  const t = resolveDispatchTarget({ registry, runtime_adapter: "antigravity", provider_family: "gemini", model: "Claude Sonnet 4.6 (Thinking)", effort: "provider_default", live_catalog: AGY });
   assert.equal(t.status, "CONFIG_INVALID");
 });
 

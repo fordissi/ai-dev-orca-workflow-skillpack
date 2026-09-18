@@ -354,7 +354,8 @@ Dispatch target 是 **`runtime_adapter + provider_family + exact_model + effort`
 4. effort 是否受支援                  → 否：EFFORT_UNSUPPORTED
    - catalog 有 effort 變體（gemini-3.8-flash-high）：effort 必須是其中之一
      （例：Gemini 3.1 Pro 只有 high|low；GPT-OSS 120B 只有 medium）
-   - 單一 id（claude-sonnet-4-6）：以 --effort session 旗標傳遞
+   - 單一 id（claude-sonnet-4-6）：effort 由 runtime 固定，**不得**傳 --effort（live 驗證會被拒）；
+     要求 low|medium|high ⇒ EFFORT_UNSUPPORTED，只能以 reasoning provider_default dispatch
 5. 才 launch
 ```
 
