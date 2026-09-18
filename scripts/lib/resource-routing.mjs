@@ -1281,6 +1281,15 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
     activeRouterResourceKey = null,
     isRouterSlot = false,
     weeklyBalanceConfig = WEEKLY_BALANCE,
+    // Exact model capability, keyed "provider/model" -> MODEL_UNKNOWN |
+    // MODEL_UNAVAILABLE (scripts/lib/model-dispatch.mjs). Excludes only that
+    // one model; the provider's resource entry is never touched, so another
+    // model on the same provider stays eligible.
+    modelCapability = null,
+    // Provider auth state, keyed provider -> AUTH_* (model-dispatch.mjs).
+    // Anything but AUTH_OK / AUTH_UNKNOWN excludes that provider's candidates
+    // for this selection only; resource state is untouched.
+    providerAuth = null,
   } = options;
 
   const wbConfig = isPlainObject(weeklyBalanceConfig)
@@ -1365,6 +1374,16 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
 
     if (entry?.available === false) {
       failures.push({ kind: "unavailable", why: `${label}: provider or pool is unavailable` });
+    }
+
+    const modelState = isPlainObject(modelCapability) ? modelCapability[label] : undefined;
+    if (modelState === "MODEL_UNKNOWN" || modelState === "MODEL_UNAVAILABLE") {
+      failures.push({ kind: "model", why: `${label}: ${modelState} (model-level; provider unaffected)` });
+    }
+
+    const authState = isPlainObject(providerAuth) ? providerAuth[candidate?.provider] : undefined;
+    if (isNonEmptyString(authState) && authState !== "AUTH_OK" && authState !== "AUTH_UNKNOWN") {
+      failures.push({ kind: "auth", why: `${label}: ${authState} (human login action required; quota unaffected)` });
     }
 
     // Registry membership + `enabled` are human-authoritative. `enabled: false`
@@ -1525,7 +1544,11 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
           ? "CONFIG_INVALID"
           : rej.onlyUnavailable
             ? "ROUTING_UNAVAILABLE"
-            : "POLICY_BLOCKED";
+            : rej.failures.every(({ kind }) => kind === "auth")
+              ? "AUTH_REQUIRED"
+              : rej.failures.every(({ kind }) => kind === "model")
+                ? "MODEL_UNAVAILABLE"
+                : "POLICY_BLOCKED";
     return {
       status: "BLOCKED",
       code,
@@ -1757,7 +1780,11 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
     ? "CONFIG_INVALID"
     : rejected.some(({ onlyUnavailable }) => onlyUnavailable)
       ? "ROUTING_UNAVAILABLE"
-      : "POLICY_BLOCKED";
+      : rejected.some(({ failures }) => failures.every(({ kind }) => kind === "auth"))
+        ? "AUTH_REQUIRED"
+        : rejected.some(({ failures }) => failures.every(({ kind }) => kind === "model"))
+          ? "MODEL_UNAVAILABLE"
+          : "POLICY_BLOCKED";
 
   return {
     status: "BLOCKED",

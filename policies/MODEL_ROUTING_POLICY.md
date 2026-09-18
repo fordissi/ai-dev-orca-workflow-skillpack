@@ -393,8 +393,12 @@ Dispatch 前後的 contract attestation（expected vs actual 的 `provider` / `m
 | `POLICY_BLOCKED` | 所有候選都被政策排除（experimental 未授權、低於 `minimum_tier` 或 `stage`、與 implementer 不 disjoint） | 只有 human 能決定 |
 | `RESOURCE_BLOCKED` | 有合格候選但全為 `RED`，且本 task 不允許 `RED` | 等待重置或 human 明確放行 |
 | `PERMISSION_BLOCKED` | 完成任務所需權限超出 permission ceiling | human 調整 ceiling 或改做法 |
+| `AUTH_REQUIRED` | 存在**只差 provider auth** 的候選（`AUTH_REQUIRED` / `AUTH_EXPIRED` / `AUTH_INVALID`） | human 執行 reviewed 互動登入命令，然後只重跑 auth probe |
+| `MODEL_UNAVAILABLE` | 存在**只差 exact model capability** 的候選（`MODEL_UNKNOWN` / `MODEL_UNAVAILABLE`）；provider 本身不受影響 | 修 registry alias／reviewed `model_overrides`，或等 model 可用 |
 
-判定規則：只要存在**唯一失敗原因是 unavailable** 的候選，就是 `ROUTING_UNAVAILABLE`；否則為 `POLICY_BLOCKED`。候選的每個條件都必須完整評估，不得短路。
+判定規則：只要存在**唯一失敗原因是 unavailable** 的候選，就是 `ROUTING_UNAVAILABLE`；其次，唯一失敗原因是 auth ⇒ `AUTH_REQUIRED`；唯一失敗原因是 model capability ⇒ `MODEL_UNAVAILABLE`；否則為 `POLICY_BLOCKED`。候選的每個條件都必須完整評估，不得短路。Auth 與 model 軸的定義、pre-dispatch 順序與 failover 見 [`RESOURCE_AWARE_ROUTING.md`](RESOURCE_AWARE_ROUTING.md) 的 “Auth state and exact model capability”。
+
+**`PROVIDER_UNAVAILABLE` 不得由單一 model 的 catalog / startup 錯誤推得**（例：`claude --model sonnet-5` 失敗 ≠ Claude 不可用），也不得由「需要互動重新登入」推得。
 
 `PERMISSION_BLOCKED` 不由 candidate 選擇產生，發生在 permission ceiling 的比對階段。
 

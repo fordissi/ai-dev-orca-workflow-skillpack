@@ -209,6 +209,15 @@ slow != blocked
 | 到達 hard ceiling 但還活著 | `HARD_EXECUTION_CEILING` | **human gate，不自動 FAIL** |
 | session 不可達且無 exit 紀錄 | `ROUTING_UNAVAILABLE` | 交回 human |
 
+**Terminal 存在 ≠ worker 健康。** 啟動分三段追蹤：`TERMINAL_STARTED` →
+`MODEL_LAUNCHED` → `WORKER_ACTIVE`。在 `MODEL_LAUNCHED` 之前出現 catalog / model
+錯誤（例：`isn't described by this version's model catalog`）或登入要求，立即
+fail fast（`MODEL_UNKNOWN` / `MODEL_UNAVAILABLE` / `AUTH_*`），不走 stall 等待、不重試
+同一 model，也不把 provider 標為不可用。更好的是在建立 terminal 前先跑 pre-dispatch
+probe（runtime → auth → model alias → quota），見 RESOURCE_AWARE_ROUTING 的
+“Auth state and exact model capability”。Claude 一律傳 catalog alias
+（`sonnet` / `opus` / `haiku`），不傳由 display name 推出的 `sonnet-5`。
+
 **Continuation 不是 repair。** turn budget 用盡不是錯誤結果，不累加
 `failed_repair_count`。
 

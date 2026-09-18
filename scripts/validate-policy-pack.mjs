@@ -57,6 +57,7 @@ import {
   selectCandidate,
   resolveActiveRouterResourcePool,
 } from "./lib/resource-routing.mjs";
+import { resolveCliModelArgument } from "./lib/model-dispatch.mjs";
 
 // ...and re-exported so this module's public surface stays identical for tests
 // and importers.
@@ -606,6 +607,18 @@ export function validateRegistry(registry) {
         findings.push(
           `${candidateAt}.capability_tier: ${candidate.capability_tier} is below minimum tier ${minimumTier}`,
         );
+      }
+    });
+  }
+
+  // Every candidate on a provider with a CLI alias catalog must name a catalog
+  // alias or a reviewed model_override - never a display-name-derived id.
+  for (const [slotName, slot] of Object.entries(slots)) {
+    (Array.isArray(slot?.candidates) ? slot.candidates : []).forEach((candidate, index) => {
+      if (!isPlainObject(candidate)) return;
+      const resolved = resolveCliModelArgument(registry, candidate.provider, candidate.model);
+      if (resolved.status !== "RESOLVED") {
+        findings.push(`capability_slots.${slotName}.candidates[${index}].model: ${resolved.why}`);
       }
     });
   }

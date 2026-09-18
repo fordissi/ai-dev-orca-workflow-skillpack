@@ -142,6 +142,28 @@ resolvers:
       Model eligibility is evaluated PER EXECUTION TASK: the headless
       permission limitation recorded in E6 constrains specific task shapes,
       it is not global ineligibility.
+  claude_models:
+    command: "claude --model <alias>"
+    verified_at: "2026-09-18"
+    # CLI catalog aliases. The `model:` value of every claude candidate MUST
+    # be one of these keys (or a reviewed `model_overrides` key). The value is
+    # the exact `--model` argument dispatched. Routing intent is informational
+    # guidance for the human editing slots; it does not add slot candidates.
+    catalog_aliases:
+      sonnet: { cli_model: sonnet, display: "Sonnet 5", routing_intent: routine_default }
+      opus: { cli_model: opus, display: "Opus 5", routing_intent: complex_high_quality }
+      haiku: { cli_model: haiku, display: "Haiku 4.5", routing_intent: quick_cheap }
+    # Reviewed explicit mappings (behavesAs / modelOverrides equivalent) for
+    # any non-catalog id. Empty by design: a key here is a human decision,
+    # never something an AI derives from a display name.
+    model_overrides: {}
+    note: >-
+      Verified 2026-09-18 in the interactive picker and `claude --model sonnet`:
+      Sonnet -> Sonnet 5, Opus -> Opus 5, Haiku -> Haiku 4.5. A versioned id
+      built from a display name (e.g. `sonnet-5`) is NOT in this CLI's catalog
+      and fails with "isn't described by this version's model catalog". That
+      is MODEL_UNKNOWN for that one model - never PROVIDER_UNAVAILABLE for
+      Claude. Do not invent versioned model ids from display names.
 
 capability_slots:
 

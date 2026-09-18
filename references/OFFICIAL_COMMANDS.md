@@ -399,10 +399,42 @@ Official: https://docs.anthropic.com/en/docs/claude-code/cli-usage
 ```bash
 claude --model sonnet
 claude --model opus
+claude --model haiku
 claude --permission-mode plan
 claude -p "query" --output-format json
 claude -p --max-turns 3 "query"
 ```
+
+### Model aliases（Claude Code）
+
+2026-09-18 本機（Claude Code 2.1.276）互動 model picker：`Sonnet → Sonnet 5`、
+`Opus → Opus 5`、`Haiku → Haiku 4.5`。`--model` **只傳 catalog alias**：
+
+| Routing intent | `--model` |
+|---|---|
+| routine / default | `sonnet` |
+| complex / high-quality | `opus` |
+| quick / cheap | `haiku` |
+
+`claude --model sonnet-5` 會被當成 custom model 並回
+`"sonnet-5" isn't described by this version's model catalog`——這是
+`MODEL_UNKNOWN`，不是 provider 不可用。版本化 id 只有在 registry
+`resolvers.claude_models.model_overrides` 有 human 審閱過的對應時才可 dispatch；
+**不得由 display name 推導**。
+
+### Authentication（pre-dispatch auth probe）
+
+本機 `--help` 驗證（Claude Code 2.1.276、codex 同日）：
+
+```bash
+claude auth status --json   # 非互動 probe；讀 loggedIn，不讀／不記錄任何 credential 欄位
+claude auth login           # reviewed 互動登入命令：交給 human 執行，Router 不代跑
+codex login status          # 非互動 probe
+codex login                 # reviewed 互動登入命令
+```
+
+`agy` 的 `--help` 沒有 login / auth 子命令：Antigravity 沒有 reviewed 登入命令，
+auth 失敗時回報 `AUTH_*` 並交 human，不猜命令。
 
 ### Reasoning effort（Claude Code）
 

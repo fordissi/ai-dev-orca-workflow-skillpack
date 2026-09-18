@@ -261,6 +261,67 @@ Orca integration 說 available 可作為 weak fallback evidence（integration �
 但不因此得到有信心的 `AVAILABLE` quota 讀數——那仍需要 provider-native 證據。
 成功的 provider-native `reset_at` 優先於任何 stale aggregate reset。
 
+### Auth state and exact model capability（第三、四軸）
+
+2026-09-18 hotfix：Orca dispatch 了 `claude --model sonnet-5`（由 display name
+「Sonnet 5」推導出的 id），CLI 回 `"sonnet-5" isn't described by this version's model
+catalog`，Router 卻把它當成 **Claude provider 不可用**。這是錯的：`claude --model
+sonnet` 同時可正常啟動。
+
+在上面兩軸之外，再分開追蹤兩個概念，四者互不覆寫：
+
+| 概念 | 來源 | 值域 |
+|---|---|---|
+| `provider_auth_state` | provider 自己的 auth status 命令（見 [`OFFICIAL_COMMANDS.md`](../references/OFFICIAL_COMMANDS.md)） | `AUTH_OK` / `AUTH_REQUIRED` / `AUTH_EXPIRED` / `AUTH_INVALID` / `AUTH_UNKNOWN` |
+| `exact_model_capability` | registry alias catalog ＋ launch probe，**以 `provider/model` 為 key** | `VERIFIED` / `UNVERIFIED` / `MODEL_UNKNOWN` / `MODEL_UNAVAILABLE` |
+
+Launch failure 分類（`scripts/lib/model-dispatch.mjs` 為可執行的 conformance）：
+
+| Class | 影響範圍 |
+|---|---|
+| `RESOURCE_EXHAUSTED` | provider resource 軸 |
+| `INTEGRATION_UNAVAILABLE` | CLI 不存在 / 不可達（integration 軸） |
+| `AUTH_REQUIRED` / `AUTH_EXPIRED` / `AUTH_INVALID` | 僅 auth 軸；需 human 互動登入 |
+| `MODEL_UNKNOWN` / `MODEL_UNAVAILABLE` | **僅該 model**；同 provider 其他已驗證 alias 仍可 dispatch |
+
+規則：
+
+- unknown / unsupported model ⇒ `MODEL_UNKNOWN` 或 `MODEL_UNAVAILABLE`，**絕不是**
+  `PROVIDER_UNAVAILABLE`。
+- 需要互動重新登入 ⇒ `AUTH_*`，**絕不是** `PROVIDER_UNAVAILABLE`，也不改
+  `provider_resource_state`。
+- Auth / model 失敗不寫入 resource snapshot；selection 以 `modelCapability` /
+  `providerAuth` 參數把**該 model / 該 provider** 排除於本次選擇之外，quota routing
+  不變。全部候選只因 model 失敗而被排除 ⇒ `MODEL_UNAVAILABLE`；只因 auth ⇒
+  `AUTH_REQUIRED`（見 MODEL_ROUTING_POLICY 的 blocked reason codes）。
+
+**Pre-dispatch 順序**（任何一步失敗都不建立 worker terminal，也不等 worker timeout）：
+
+```text
+1. provider CLI / runtime 存在                → 否：INTEGRATION_UNAVAILABLE
+2. provider auth 可用                         → 否：AUTH_*，回傳 reviewed 互動登入命令
+3. routing alias → 精確 CLI --model 參數，且可啟動 → 否：MODEL_UNKNOWN / MODEL_UNAVAILABLE
+4. resource / quota                           → 否：RESOURCE_EXHAUSTED
+5. 建立 worker terminal
+```
+
+步驟 3 只接受 registry `resolvers.claude_models.catalog_aliases`（`sonnet` / `opus`
+/ `haiku`）或 human 審閱過的 `model_overrides`（behavesAs / modelOverrides 等價物）。
+**不得由 display name 推導版本化 model id。**
+
+**Failover**：失敗 class 只記在它所屬的軸上，再以一般 selection 取下一個候選，已嘗試的
+`provider/model` 在本 task 內排除，所以同一 model 不會重複 dispatch。同 provider
+的另一個 alias 只有在它本來就是同一 slot 的合格候選時才可接手（stage / flagship
+guard 不因 failover 放寬）；否則評估下一個已驗證 provider。已知的 model startup
+error 不重試、不等 timeout。
+
+**Re-auth recovery**：human 完成互動登入後，只重跑 auth probe（必要時加一次 model
+capability probe）；成功即把該 provider 恢復為 `AUTH_OK`，其他軸與其他 provider 的
+狀態原樣保留，**不需要重啟 Router**（除非 provider CLI 本身要求）。
+
+Auth probe / launch 輸出可能含 credential：diagnostics 只記 class token 與 reviewed
+命令，**不得**記錄、轉述或要求 token / key / secret。
+
 執行形式：`separateQuotaEvidence()` in
 [`../scripts/validate-policy-pack.mjs`](../scripts/validate-policy-pack.mjs)。
 `provider_resource_state` 只由 provider-native 證據設定，Orca aggregate state
