@@ -539,6 +539,23 @@ agy --print "/usage" --output-format json --print-timeout <duration>   # quota p
 - registry 中 `AUTO_GEMINI` 的 resolver 必須解析到 Gemini 家族的 ID，
   解析結果若不屬於宣告的 `model_family`，該候選即為 `CONFIG_INVALID`。
 
+### Runtime model catalog（實測 2026-09-18）
+
+`agy models` 每行 `<id>\t<display>`，與互動 `/model` picker 一致：
+
+| Picker display | id(s) | provider family | effort |
+|---|---|---|---|
+| Gemini 3.8 / 3.7 / 3.6 Flash | `gemini-3.x-flash-{high,medium,low}` | gemini | id 後綴 |
+| Gemini 3.1 Pro | `gemini-3.1-pro-{high,low}` | gemini | id 後綴（**無 medium**） |
+| Claude Sonnet 4.6 (Thinking) | `claude-sonnet-4-6` | claude | `--effort` 旗標 |
+| Claude Opus 4.6 (Thinking) | `claude-opus-4-6-thinking` | claude | `--effort` 旗標 |
+| GPT-OSS 120B (Medium) | `gpt-oss-120b-medium` | gpt-oss | 僅 medium |
+
+Antigravity 視為**多模型 runtime adapter**（registry `runtime_adapters.antigravity`），
+不是 Gemini provider。上表只是觀察紀錄；dispatch 時一律以當下 `agy models` 解析。
+單一 id 的 Claude entry 以 `--effort` 傳 effort，這一點只有 `agy --help` 的說明為據，
+尚未以 live dispatch 驗證。`agy --help` 沒有 login / auth 子命令。
+
 ---
 
 ## GitHub CLI

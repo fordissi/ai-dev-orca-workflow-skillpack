@@ -217,6 +217,9 @@ fail fast（`MODEL_UNKNOWN` / `MODEL_UNAVAILABLE` / `AUTH_*`），不走 stall �
 probe（runtime → auth → model alias → quota），見 RESOURCE_AWARE_ROUTING 的
 “Auth state and exact model capability”。Claude 一律傳 catalog alias
 （`sonnet` / `opus` / `haiku`），不傳由 display name 推出的 `sonnet-5`。
+Antigravity 是多模型 runtime（Gemini、Claude 4.6、GPT-OSS），不是 Gemini provider：
+model 與 effort 以當下 `agy models` 解析；沒有 direct Gemini adapter，Gemini 一律經
+Antigravity。一條 runtime path 失敗（例：`claude_cli` 需重新登入）不代表該 family 全面不可用。
 
 **Continuation 不是 repair。** turn budget 用盡不是錯誤結果，不累加
 `failed_repair_count`。

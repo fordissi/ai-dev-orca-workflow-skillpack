@@ -57,7 +57,7 @@ import {
   selectCandidate,
   resolveActiveRouterResourcePool,
 } from "./lib/resource-routing.mjs";
-import { resolveCliModelArgument } from "./lib/model-dispatch.mjs";
+import { providerFamilyOf, resolveCliModelArgument, runtimeAdapterFor } from "./lib/model-dispatch.mjs";
 
 // ...and re-exported so this module's public surface stays identical for tests
 // and importers.
@@ -616,9 +616,24 @@ export function validateRegistry(registry) {
   for (const [slotName, slot] of Object.entries(slots)) {
     (Array.isArray(slot?.candidates) ? slot.candidates : []).forEach((candidate, index) => {
       if (!isPlainObject(candidate)) return;
+      const at = `capability_slots.${slotName}.candidates[${index}]`;
       const resolved = resolveCliModelArgument(registry, candidate.provider, candidate.model);
       if (resolved.status !== "RESOLVED") {
-        findings.push(`capability_slots.${slotName}.candidates[${index}].model: ${resolved.why}`);
+        findings.push(`${at}.model: ${resolved.why}`);
+      }
+      // A candidate's provider names its runtime path; a bare family with no
+      // verified direct adapter (e.g. gemini) must route through a runtime.
+      if (isPlainObject(registry.runtime_adapters)) {
+        const found = runtimeAdapterFor(registry, candidate.provider);
+        if (found === null) {
+          findings.push(`${at}.provider: ${JSON.stringify(candidate.provider)} has no verified runtime adapter`);
+        } else {
+          const family = providerFamilyOf(candidate.model_family);
+          const families = found.adapter.provider_families ?? [];
+          if (family !== null && !families.includes(family)) {
+            findings.push(`${at}.model_family: runtime ${found.name} does not serve provider family ${family}`);
+          }
+        }
       }
     });
   }

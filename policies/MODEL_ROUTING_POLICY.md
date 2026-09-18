@@ -398,6 +398,8 @@ Dispatch 前後的 contract attestation（expected vs actual 的 `provider` / `m
 
 判定規則：只要存在**唯一失敗原因是 unavailable** 的候選，就是 `ROUTING_UNAVAILABLE`；其次，唯一失敗原因是 auth ⇒ `AUTH_REQUIRED`；唯一失敗原因是 model capability ⇒ `MODEL_UNAVAILABLE`；否則為 `POLICY_BLOCKED`。候選的每個條件都必須完整評估，不得短路。Auth 與 model 軸的定義、pre-dispatch 順序與 failover 見 [`RESOURCE_AWARE_ROUTING.md`](RESOURCE_AWARE_ROUTING.md) 的 “Auth state and exact model capability”。
 
+Registry 的 `provider:` 指的是 **runtime path**（`codex` / `claude` / `antigravity` ⇒ `codex_cli` / `claude_cli` / `antigravity` adapter），`model_family` 才是 provider family；dispatch target 是 runtime adapter ＋ family ＋ exact model ＋ effort（見 RESOURCE_AWARE_ROUTING 的 “Runtime adapters”）。沒有 direct Gemini adapter，`provider: gemini` 是 conformance finding。
+
 **`PROVIDER_UNAVAILABLE` 不得由單一 model 的 catalog / startup 錯誤推得**（例：`claude --model sonnet-5` 失敗 ≠ Claude 不可用），也不得由「需要互動重新登入」推得。
 
 `PERMISSION_BLOCKED` 不由 candidate 選擇產生，發生在 permission ceiling 的比對階段。

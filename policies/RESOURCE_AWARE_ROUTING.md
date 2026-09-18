@@ -322,6 +322,44 @@ capability probe）；成功即把該 provider 恢復為 `AUTH_OK`，其他軸�
 Auth probe / launch 輸出可能含 credential：diagnostics 只記 class token 與 reviewed
 命令，**不得**記錄、轉述或要求 token / key / secret。
 
+### Runtime adapters（dispatch target ≠ provider name）
+
+Dispatch target 是 **`runtime_adapter + provider_family + exact_model + effort`**，
+不是單一 provider 名稱。Registry `runtime_adapters` 宣告三個 adapter：
+
+| runtime_adapter | registry `provider:` | provider families | model 解析 | effort |
+|---|---|---|---|---|
+| `codex_cli` | `codex` | openai | pass-through（`-m`） | `-c model_reasoning_effort=` |
+| `claude_cli` | `claude` | claude（Sonnet 5 / Opus 5 / Haiku 4.5） | catalog alias | `--effort low…max` |
+| `antigravity` | `antigravity` | gemini、claude（Sonnet 4.6 / Opus 4.6 Thinking）、gpt-oss | **live `agy models`** | id 後綴或 `--effort low\|medium\|high` |
+
+- **Antigravity 是多模型 runtime，不是 Gemini provider。** 同一 family 可有多條 runtime
+  path（Claude：`claude_cli` 與 `antigravity`）；auth、integration、model capability
+  都以 **runtime path** 為單位記錄。一條 path 失敗不代表該 family 全面不可用。
+- **沒有已驗證的 direct Gemini adapter**（`direct_adapters_absent: [gemini]`）。
+  `provider: gemini` 不得 dispatch ⇒ `INTEGRATION_UNAVAILABLE`，並列出替代 runtime path；
+  Gemini 一律經 `antigravity`。
+- 各 path 的 quota pool 不同：`antigravity` 的 Gemini ⇒ `antigravity.gemini`，
+  Claude / GPT-OSS ⇒ `antigravity.non_gemini`，與 `claude_cli` 的 `claude` pool 無關。
+- Reviewer disjointness 仍比對 `provider` **與** `model_family`：經 Antigravity 的
+  Claude 候選必須宣告 `claude-*` family，才不會與 `claude_cli` 的 implementer 混過。
+
+**Antigravity capability probe**（pre-dispatch 順序的 Antigravity 版本）：
+
+```text
+1. agy runtime 存在                   → 否：INTEGRATION_UNAVAILABLE
+2. auth / session 可用                → 否：AUTH_*（agy 無 reviewed 登入命令，交 human）
+3. 以 live `agy models` 解析 exact id → 無 catalog：PROBE_REQUIRED；查無：MODEL_UNKNOWN
+   （接受 exact id、display name、去掉 effort 的 display name，或 AUTO_GEMINI）
+4. effort 是否受支援                  → 否：EFFORT_UNSUPPORTED
+   - catalog 有 effort 變體（gemini-3.8-flash-high）：effort 必須是其中之一
+     （例：Gemini 3.1 Pro 只有 high|low；GPT-OSS 120B 只有 medium）
+   - 單一 id（claude-sonnet-4-6）：以 --effort session 旗標傳遞
+5. 才 launch
+```
+
+以上任何一項都**不得**合併為 `PROVIDER_UNAVAILABLE`。
+
 執行形式：`separateQuotaEvidence()` in
 [`../scripts/validate-policy-pack.mjs`](../scripts/validate-policy-pack.mjs)。
 `provider_resource_state` 只由 provider-native 證據設定，Orca aggregate state

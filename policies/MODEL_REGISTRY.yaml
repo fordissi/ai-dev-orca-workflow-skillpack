@@ -165,6 +165,55 @@ resolvers:
       is MODEL_UNKNOWN for that one model - never PROVIDER_UNAVAILABLE for
       Claude. Do not invent versioned model ids from display names.
 
+# Runtime adapters. A dispatch target is
+#   runtime_adapter + provider_family + exact model + effort
+# never a provider name alone. A candidate's `provider:` field names the
+# runtime path it is dispatched through (its `registry_provider` below) and
+# its `model_family` names the provider family. One family may have several
+# runtime paths (Claude: claude_cli AND antigravity); one runtime may serve
+# several families (antigravity: gemini, claude, gpt-oss). A failure on one
+# runtime path never implies an outage of the family on another path.
+runtime_adapters:
+  codex_cli:
+    registry_provider: codex
+    command: codex
+    provider_families: [openai]
+    model_resolution: pass_through
+    # Effort values are owned by OFFICIAL_COMMANDS.md / checkReasoningDispatch.
+    efforts: null
+    resource_pools: { openai: codex }
+  claude_cli:
+    registry_provider: claude
+    command: claude
+    provider_families: [claude]
+    model_resolution: catalog_alias
+    catalog_resolver: claude_models
+    efforts: [low, medium, high, xhigh, max]
+    resource_pools: { claude: claude }
+  antigravity:
+    registry_provider: antigravity
+    command: agy
+    provider_families: [gemini, claude, gpt-oss]
+    # Resolved against the LIVE `agy models` catalog at dispatch time (id +
+    # display name per line). Effort is an id suffix where the catalog lists
+    # variants (gemini-3.8-flash-high), otherwise the `--effort` session flag.
+    model_resolution: live_catalog
+    catalog_resolver: antigravity_models
+    efforts: [low, medium, high]
+    resource_pools: { gemini: antigravity.gemini, claude: antigravity.non_gemini, gpt-oss: antigravity.non_gemini }
+    verified_at: "2026-09-18"
+    note: >-
+      2026-09-18 `agy models` (live): Gemini 3.8/3.7/3.6 Flash (low|medium|high
+      ids), Gemini 3.1 Pro (high|low only), Claude Sonnet 4.6 (Thinking)
+      `claude-sonnet-4-6`, Claude Opus 4.6 (Thinking) `claude-opus-4-6-thinking`,
+      GPT-OSS 120B (Medium) `gpt-oss-120b-medium`. Not frozen here - resolve live.
+      `--effort` on the single-id Claude entries is documented by `agy --help`
+      only; no live dispatch has verified it yet.
+
+# No verified direct Gemini CLI adapter exists on this host. `provider: gemini`
+# must not be dispatched; Gemini routes through the antigravity runtime.
+direct_adapters_absent: [gemini]
+
 capability_slots:
 
   ROUTER:
