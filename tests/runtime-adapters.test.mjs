@@ -12,7 +12,7 @@ import {
   resolveDispatchTarget,
   runtimePathsForFamily,
 } from "../scripts/lib/model-dispatch.mjs";
-import { validateRegistry } from "../scripts/validate-policy-pack.mjs";
+import { checkReasoningDispatch, validateRegistry } from "../scripts/validate-policy-pack.mjs";
 
 const registry = parse(await readFile("policies/MODEL_REGISTRY.yaml", "utf8"));
 // Verbatim `agy models` output captured 2026-09-18.
@@ -105,6 +105,61 @@ test("the recorded agy effort refusal classifies as EFFORT_UNSUPPORTED, not MODE
   const check = preDispatchCheck({ registry, provider: "antigravity", model: "claude-sonnet-4-6", live_catalog: AGY, auth: "AUTH_OK", model_probe: { launched: false, output: out } });
   assert.equal(check.failed_step, "EFFORT");
   assert.equal(check.capability, "UNVERIFIED");
+});
+
+// End-to-end: adapter resolution -> launch command -> exact-dispatch check.
+const agyCommand = (args) => `agy -p "<prompt>" ${args.join(" ")} --output-format json`;
+const exactCheck = (target, family, actualEffort = target.effort) =>
+  checkReasoningDispatch({
+    provider: "antigravity",
+    effort_mode: target.effort_mode,
+    expected: { model: target.cli_model, model_family: family, reasoning_effort: target.effort },
+    actual: { model: target.cli_model, model_family: family, reasoning_effort: actualEffort },
+    command: agyCommand(target.launch_args),
+  });
+
+test("exact dispatch per Antigravity model effort semantics", () => {
+  const at = (model, effort) => resolveDispatchTarget({ registry, runtime_adapter: "antigravity", model, effort, live_catalog: AGY });
+
+  // Gemini Flash: catalog-encoded effort, flag passed; live-probed medium on agy 1.2.6.
+  const flash = at("Gemini 3.8 Flash", "medium");
+  assert.deepEqual(flash.launch_args, ["--model", "gemini-3.8-flash-medium", "--effort", "medium"]);
+  assert.equal(exactCheck(flash, "gemini").result, "DISPATCH_IDENTITY_MATCH");
+
+  // Gemini 3.1 Pro: only catalog variants.
+  assert.equal(exactCheck(at("Gemini 3.1 Pro", "low"), "gemini").result, "DISPATCH_IDENTITY_MATCH");
+  assert.equal(at("Gemini 3.1 Pro", "medium").status, "EFFORT_UNSUPPORTED");
+
+  // GPT-OSS: medium only.
+  assert.equal(exactCheck(at("GPT-OSS 120B", "medium"), "gpt-oss").result, "DISPATCH_IDENTITY_MATCH");
+  for (const e of ["low", "high"]) assert.equal(at("GPT-OSS 120B", e).status, "EFFORT_UNSUPPORTED");
+
+  // Claude Sonnet / Opus 4.6: no --effort, provider_default only.
+  for (const model of ["Claude Sonnet 4.6 (Thinking)", "Claude Opus 4.6 (Thinking)"]) {
+    const t = at(model, "provider_default");
+    assert.equal(t.effort_mode, "NONE");
+    assert.ok(!t.launch_args.includes("--effort"));
+    assert.equal(exactCheck(t, "claude-sonnet").result, "DISPATCH_IDENTITY_MATCH");
+    for (const e of ["low", "medium", "high"]) assert.equal(at(model, e).status, "EFFORT_UNSUPPORTED");
+  }
+});
+
+test("effort mode NONE does not weaken exact dispatch elsewhere", () => {
+  const cmd = 'agy -p "<prompt>" --model claude-sonnet-4-6';
+  const id = { model: "claude-sonnet-4-6", model_family: "claude-sonnet", reasoning_effort: "provider_default" };
+  // Without the adapter-resolved mode, a flagless Antigravity launch stays unverified.
+  assert.equal(checkReasoningDispatch({ provider: "antigravity", expected: id, actual: id, command: cmd }).result, "DISPATCH_IDENTITY_UNVERIFIED");
+  // A NONE claim is ignored on other providers.
+  const claudeId = { model: "sonnet", model_family: "claude-sonnet", reasoning_effort: "provider_default" };
+  assert.equal(
+    checkReasoningDispatch({ provider: "claude", effort_mode: "NONE", expected: claudeId, actual: claudeId, command: "claude --model sonnet" }).result,
+    "DISPATCH_IDENTITY_UNVERIFIED",
+  );
+  // Mode NONE with an effort flag is a contract mismatch.
+  assert.equal(
+    checkReasoningDispatch({ provider: "antigravity", effort_mode: "NONE", expected: id, command: `${cmd} --effort low` }).result,
+    "DISPATCH_CONTRACT_MISMATCH",
+  );
 });
 
 test("bare Antigravity Claude launch is dispatchable", () => {

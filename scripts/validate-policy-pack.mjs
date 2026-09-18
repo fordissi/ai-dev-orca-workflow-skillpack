@@ -242,9 +242,27 @@ function extractFlagValue(command, flags) {
   return match ? (match[1] ?? match[2] ?? match[3]) : null;
 }
 
-function inspectExplicitDispatchCommand(provider, command) {
+function inspectExplicitDispatchCommand(provider, command, effortMode = null) {
   if (!isNonEmptyString(command)) {
     return { explicit: false, missing: ["launch_command"], provider_supported: false };
+  }
+
+  // Antigravity catalog entries whose effort mode is NONE (e.g. the Claude
+  // 4.6 models, live-probed on agy 1.2.6) refuse `--effort`. Their exact launch
+  // is `--model <id>` with NO effort flag; an effort flag is a contract error.
+  // Only this provider + mode takes this path; every other launch still needs
+  // an explicit effort.
+  if (provider === "antigravity" && effortMode === "NONE") {
+    const model = extractFlagValue(command, ["--model"]);
+    const effort = extractFlagValue(command, ["--effort"]);
+    return {
+      explicit: model !== null && effort === null,
+      model,
+      reasoning_effort: effort,
+      forbidden_effort_flag: effort !== null,
+      missing: model === null ? ["model"] : [],
+      provider_supported: true,
+    };
   }
 
   if (provider === "codex") {
@@ -303,10 +321,22 @@ export function checkReasoningDispatch(dispatch) {
     };
   }
 
-  const commandCheck = inspectExplicitDispatchCommand(expected.provider, command);
+  // `effort_mode` is the resolved adapter mode (resolveDispatchTarget). NONE
+  // is honoured for antigravity only, and only with provider_default.
+  const effortMode = d.effort_mode === "NONE" && expected.provider === "antigravity" ? "NONE" : null;
+  if (effortMode === "NONE" && expected.reasoning_effort !== "provider_default") {
+    return {
+      result: "CONFIG_INVALID",
+      why: `EFFORT_UNSUPPORTED: ${expected.model ?? "this model"} has effort mode NONE on antigravity; only provider_default (no --effort) is launchable`,
+    };
+  }
+
+  const commandCheck = inspectExplicitDispatchCommand(expected.provider, command, effortMode);
   const commandMismatches = [];
   if (commandCheck.model !== null && commandCheck.model !== expected.model) commandMismatches.push("model");
-  if (commandCheck.reasoning_effort !== null && commandCheck.reasoning_effort !== expected.reasoning_effort) {
+  if (commandCheck.forbidden_effort_flag) {
+    commandMismatches.push("reasoning_effort");
+  } else if (commandCheck.reasoning_effort !== null && commandCheck.reasoning_effort !== expected.reasoning_effort) {
     commandMismatches.push("reasoning_effort");
   }
 

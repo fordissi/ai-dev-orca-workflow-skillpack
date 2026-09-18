@@ -374,6 +374,8 @@ provider + model + model_family + reasoning_effort is the execution identity.
 
 `reasoning_effort` 與 provider、model、model family 同等，是 dispatch 必須明確傳遞的欄位，不是可省略的細節。Registry 的 `reasoning:` 是該候選的**預設** effort；只有在 task evidence 支持時才可調高（例如 Stage 3 從 `medium` 調到 `high`），且**不得**把任何模型預設為 `max`（Luna 例外，由 registry 明確指定）。
 
+**唯一例外：runtime 不接受 effort 的 model。** Runtime adapter 由 live catalog 宣告某 model 的 effort mode 為 `NONE`（目前僅 Antigravity 上的 Claude Sonnet / Opus 4.6；agy 1.2.6 live probe 拒絕 `--effort low|medium|high`）時，該 model 的 exact launch 是 `reasoning_effort: provider_default`＋**不帶** `--effort`；明確要求 low / medium / high 為 `EFFORT_UNSUPPORTED`。此例外只適用於 adapter 宣告的 `NONE`；其他 model 省略 effort 仍不是 exact dispatch。
+
 **Codex dispatch 一律在命令列明確傳入 reasoning，永不繼承 local config。** 本機 `~/.codex/config.toml` 的 `model_reasoning_effort` 會靜默覆蓋未明示的值（實測：local config 設 `max` 會把 registry 的 `medium` 靜默提升成 `max`）。精確語法、各 provider 的機制差異與 runtime attestation 由 [`../references/OFFICIAL_COMMANDS.md`](../references/OFFICIAL_COMMANDS.md) 定義。
 
 Dispatch 前後的 contract attestation（expected vs actual 的 `provider` / `model` /

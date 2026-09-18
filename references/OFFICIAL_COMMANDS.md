@@ -128,7 +128,7 @@ orca orchestration worker-start --task <id> --agent codex \
 | existing terminal + `terminal send` | `DEFAULT_FALLBACK_RISK` | send 只送文字；未證明 terminal identity 不可重用 |
 | Codex direct invocation | `EXACT_IDENTITY_PRESERVED` | `-m <model>` 與 `-c 'model_reasoning_effort="<effort>"'` 均明確傳入並完成 attestation；任一省略即 `DEFAULT_FALLBACK_RISK` |
 | Claude direct invocation | `EXACT_IDENTITY_PRESERVED` | `--model <model>` 與 `--effort <level>` 均明確傳入並完成 attestation；任一省略即 `DEFAULT_FALLBACK_RISK` |
-| Antigravity / `agy` direct invocation | `EXACT_IDENTITY_PRESERVED` | resolver 先得到 exact model，再明確傳入 model / effort 並完成 attestation；否則 `DEFAULT_FALLBACK_RISK` |
+| Antigravity / `agy` direct invocation | `EXACT_IDENTITY_PRESERVED` | resolver 先由 live `agy models` 得到 exact model 與該 model 的 effort mode，再完成 attestation：(A) `ID_SUFFIX` 等可用 effort 的 model 必須明確傳 `--model <id> --effort <受支援值>`；(B) adapter 宣告 effort mode `NONE` 的 model（Antigravity Claude 4.6）必須以 `reasoning_effort: provider_default` 傳 `--model <id>` 且**不得**帶 `--effort`。其他情況（未宣告 `NONE` 卻省略 `--effort`）為 `DEFAULT_FALLBACK_RISK`；`NONE` 卻帶 `--effort` 為 `DISPATCH_CONTRACT_MISMATCH` |
 | repo-local `orca-multi-agent-dev` skill | `EXACT_IDENTITY_PRESERVED` | 完整遵循 slot → registry → contract → explicit command → attestation；若 caller bypasses any stage 即 `DEFAULT_FALLBACK_RISK` |
 | generic subagent / Superpowers reviewer helper | `DEFAULT_FALLBACK_RISK` | helper 不是 registry authority；未接收完整 contract 不得 dispatch |
 
@@ -561,6 +561,11 @@ Claude entry effort 由 runtime 固定，dispatch 不得傳 `--effort`，registr
 process **exit code 仍為 0**，JSON `status` 為 `ERROR`——launch probe 必須讀
 `status`，不得只看 exit code。`claude-opus-4-6-thinking` 同形但未 probe。
 `agy --help` 沒有 login / auth 子命令。
+
+**Live probe（2026-09-18，`agy 1.2.6`，Router 目標 Gemini 3.8 Flash / medium）**：
+`agy -p "<prompt>" --model gemini-3.8-flash-medium --effort medium --output-format json`
+回 `"status":"SUCCESS"`，無 auth 提示、無 error。Gemini 的 id 後綴＋`--effort` 契約自
+`1.1.24` 起未變。
 
 ---
 

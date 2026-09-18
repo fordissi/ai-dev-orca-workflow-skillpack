@@ -1772,6 +1772,64 @@ cases:
       supported_efforts: [low, medium, high, xhigh, max]
     expect: { result: CONFIG_INVALID }
 
+  # ---- Antigravity per-model effort mode (live probe 2026-09-18, agy 1.2.6) --
+
+  - name: antigravity_claude_effort_mode_none_without_flag_is_exact
+    kind: reasoning_dispatch
+    why: >-
+      agy refuses --effort for claude-sonnet-4-6. With the adapter-resolved
+      effort mode NONE, `--model <id>` and no effort flag is the exact launch.
+    dispatch:
+      provider: antigravity
+      effort_mode: NONE
+      expected: { model: claude-sonnet-4-6, model_family: claude-sonnet, reasoning_effort: provider_default }
+      actual: { model: claude-sonnet-4-6, model_family: claude-sonnet, reasoning_effort: provider_default }
+      command: agy -p "<prompt>" --model claude-sonnet-4-6 --output-format json
+    expect: { result: DISPATCH_IDENTITY_MATCH }
+
+  - name: antigravity_claude_effort_mode_none_with_flag_is_mismatch
+    kind: reasoning_dispatch
+    why: An effort flag on a NONE-mode model is refused by the runtime; the command contradicts the contract.
+    dispatch:
+      provider: antigravity
+      effort_mode: NONE
+      expected: { model: claude-sonnet-4-6, model_family: claude-sonnet, reasoning_effort: provider_default }
+      command: agy -p "<prompt>" --model claude-sonnet-4-6 --effort high
+    expect: { result: DISPATCH_CONTRACT_MISMATCH }
+
+  - name: antigravity_claude_explicit_effort_is_config_invalid
+    kind: reasoning_dispatch
+    why: EFFORT_UNSUPPORTED - low/medium/high cannot be expressed for a NONE-mode model.
+    dispatch:
+      provider: antigravity
+      effort_mode: NONE
+      expected: { model: claude-sonnet-4-6, model_family: claude-sonnet, reasoning_effort: high }
+      command: agy -p "<prompt>" --model claude-sonnet-4-6
+    expect: { result: CONFIG_INVALID }
+
+  - name: antigravity_gemini_without_effort_flag_stays_unverified
+    kind: reasoning_dispatch
+    why: >-
+      Exact dispatch is not weakened: without effort mode NONE, an Antigravity
+      launch that omits --effort is still not exact.
+    dispatch:
+      provider: antigravity
+      expected: { model: gemini-3.8-flash-medium, model_family: gemini, reasoning_effort: medium }
+      actual: { model: gemini-3.8-flash-medium, model_family: gemini, reasoning_effort: medium }
+      command: agy -p "<prompt>" --model gemini-3.8-flash-medium
+    expect: { result: DISPATCH_IDENTITY_UNVERIFIED }
+
+  - name: antigravity_gemini_flash_medium_explicit_is_exact
+    kind: reasoning_dispatch
+    why: Live-probed 2026-09-18 on agy 1.2.6 - `--model gemini-3.8-flash-medium --effort medium` returned SUCCESS.
+    dispatch:
+      provider: antigravity
+      effort_mode: ID_SUFFIX
+      expected: { model: gemini-3.8-flash-medium, model_family: gemini, reasoning_effort: medium }
+      actual: { model: gemini-3.8-flash-medium, model_family: gemini, reasoning_effort: medium }
+      command: agy -p "<prompt>" --model gemini-3.8-flash-medium --effort medium
+    expect: { result: DISPATCH_IDENTITY_MATCH }
+
   - name: quota_differentiates_two_enabled_stage_2_peers
     kind: selection
     why: >-
