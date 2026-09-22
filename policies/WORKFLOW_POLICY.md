@@ -712,6 +712,67 @@ slow != blocked
 routing failure。architecture review、long-context discovery、deep reasoning
 與大型 repository audit 本來就可能需要較長 wall-clock runtime。
 
+### HARD INVARIANT：`NO_LLM_BUSY_POLLING`
+
+```text
+LLM Router / Worker 不得僅為了觀察「未改變的外部非同步狀態」而被重新進入。
+```
+
+Incident `LLM_BUSY_POLLING_AND_STALE_CHECK_RUN_TARGET`（HIGH）。適用於所有外部
+非同步等待：Cloudflare Pages、GitHub Actions / check run、CI/CD、Docker 啟動、
+背景測試、migration、其他網路或行程等待。
+
+等待機制的偏好順序（取第一個可用者）：
+
+1. **native blocking / watch CLI**（`gh run watch`、`wrangler`、`docker wait` …）
+2. **deterministic background shell wait**
+3. **bounded helper script with backoff**（見下方 backoff 標準）
+4. **event / webhook completion signal**
+
+四者皆不可用 ⇒ **human gate**，不得退化成「用模型定時看一眼」。
+
+**只有四個 terminal signal 可以重新進入 LLM**：`SUCCESS`、`FAILURE`、`TIMEOUT`、
+`ACTION_REQUIRED`。中間狀態（`queued → in_progress`、百分比變化、日誌增長）即使
+**有變化**也不是 terminal，不得重新進入模型。**等待期間不得產出過程性敘述**
+（「還在 build…」「再等一下」）——那是一次沒有新資訊的 reasoning turn，正是本
+incident 的內容。Human override 不能解除本不變式：這不是「授權模型做 worker 的
+事」，而是這件事本來就不是模型的工作。
+
+Router execution class 對應：`intent: EXTERNAL_ASYNC_WAIT` ⇒
+`router_execution_class: EXTERNAL_WAIT`、decision `DETERMINISTIC_WAIT_REQUIRED`
+（收到 terminal signal 的那一次才是 `DIRECT_ALLOWED`），`dispatch_slot: null`。
+它既不是 control-plane probe，也不是 worker dispatch。
+
+#### Polling backoff 標準（僅在無法使用 1–2 時）
+
+```text
+30s -> 60s -> 120s -> 240s（之後維持 240s）
+max 8 attempts、max 10 minutes、helper 於 SUCCESS / FAILURE / TIMEOUT 自行結束
+```
+
+polls 之間**不得**重新進入 LLM；預算耗盡即以 `TIMEOUT` 作為 terminal signal，
+此時（也只有此時）Router 重新進入一次。
+
+### HARD INVARIANT：async target re-resolution
+
+```text
+不得把監控永久釘在「第一次看到的 external run / check id」上。
+```
+
+平台會為同一 commit / deployment 建立**後繼 run**（superseding run）。因此：
+
+- 監控的主鍵是 **immutable commit SHA ＋ provider/app**，不是 run id；
+- **每一次** deterministic status check 都要重新解析當下最新的相關 run；
+- 偵測並記錄 superseded run；
+- **最新權威 run 的 terminal success 即結束監控**；
+- 舊的 `in_progress` run 是 stale，**不得**無限期延長 workflow；
+- 另一個 commit SHA 的新 run **不是**本次 deployment 的 target。
+
+本 incident 的 regression fixture：
+`tests/fixtures/check-runs/cloudflare-superseded-run.json`（run A `in_progress`、
+後繼 run B `completed/success`、同一 commit SHA）。正確行為是以 B 結束並回報
+`SUCCESS`，且不再輪詢 A。
+
 ### Execution states
 
 | State | 意義 | 動作 |

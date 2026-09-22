@@ -58,6 +58,12 @@ import {
   resolveActiveRouterResourcePool,
 } from "./lib/resource-routing.mjs";
 import { providerFamilyOf, resolveCliModelArgument, runtimeAdapterFor } from "./lib/model-dispatch.mjs";
+import {
+  accountRouterBudget,
+  classifyAsyncWait,
+  monitorAsyncDeployment,
+  resolveAsyncTarget,
+} from "./lib/async-wait.mjs";
 
 // ...and re-exported so this module's public surface stays identical for tests
 // and importers.
@@ -1630,7 +1636,9 @@ export function classifyExecutionState(observation, options = {}) {
  * lifecycle section of WORKFLOW_POLICY.md, which stays normative.
  * ------------------------------------------------------------------------ */
 
-const EXECUTION_CASE_KINDS = ["waiting", "permission"];
+const EXECUTION_CASE_KINDS = ["waiting", "permission", "async_wait", "async_target", "router_budget"];
+const LLM_REENTRY_VALUES = ["REQUIRED", "FORBIDDEN"];
+const ASYNC_MONITORING_VALUES = ["CONTINUE", "COMPLETE"];
 
 export function validateExecutionCases(document) {
   const findings = [];
@@ -1666,6 +1674,49 @@ export function validateExecutionCases(document) {
 
     if (!isPlainObject(testCase.expect)) {
       findings.push(`${named}: expected an \`expect\` mapping`);
+      continue;
+    }
+
+    // NO_LLM_BUSY_POLLING: one observation of an external asynchronous wait.
+    if (testCase.kind === "async_wait") {
+      const result = classifyAsyncWait(testCase.observation, { capabilities: testCase.capabilities });
+      if (!LLM_REENTRY_VALUES.includes(result.llm_reentry)) {
+        findings.push(`${named}: produced unknown llm_reentry ${JSON.stringify(result.llm_reentry)}`);
+      }
+      for (const field of ["llm_reentry", "wait_mechanism", "narration", "action", "terminal_signal", "next_delay_ms"]) {
+        if (field in testCase.expect && testCase.expect[field] !== (result[field] ?? null)) {
+          findings.push(`${named}: expected ${field} ${JSON.stringify(testCase.expect[field])}, got ${JSON.stringify(result[field] ?? null)}`);
+        }
+      }
+      continue;
+    }
+
+    // Async target re-resolution: the latest authoritative run for the commit.
+    if (testCase.kind === "async_target") {
+      const result = isPlainObject(testCase.monitor)
+        ? monitorAsyncDeployment({ ...testCase.monitor, runs: testCase.runs })
+        : { ...resolveAsyncTarget({ ...testCase.target, runs: testCase.runs }), target: null };
+      const target = result.target ?? result;
+      if (!ASYNC_MONITORING_VALUES.includes(target.monitoring)) {
+        findings.push(`${named}: produced unknown monitoring ${JSON.stringify(target.monitoring)}`);
+      }
+      for (const [field, value] of Object.entries(testCase.expect)) {
+        const produced =
+          field === "llm_reentry" || field === "signal" ? (result[field] ?? null) : (target[field] ?? null);
+        const match = Array.isArray(value) ? JSON.stringify(value) === JSON.stringify(produced) : value === produced;
+        if (!match) findings.push(`${named}: expected ${field} ${JSON.stringify(value)}, got ${JSON.stringify(produced)}`);
+      }
+      continue;
+    }
+
+    // Burst-aware Router self-accounting over a recorded turn sequence.
+    if (testCase.kind === "router_budget") {
+      const result = accountRouterBudget(testCase.events, isPlainObject(testCase.options) ? testCase.options : {});
+      for (const [field, value] of Object.entries(testCase.expect)) {
+        const produced = result[field] ?? null;
+        const match = Array.isArray(value) ? JSON.stringify(value) === JSON.stringify(produced) : value === produced;
+        if (!match) findings.push(`${named}: expected ${field} ${JSON.stringify(value)}, got ${JSON.stringify(produced)}`);
+      }
       continue;
     }
 
@@ -2199,8 +2250,8 @@ export function validateContinuationCases(document) {
  * rest of MODEL_ROUTING_POLICY.md, untouched.
  * ------------------------------------------------------------------------ */
 
-const ROUTER_EXECUTION_CLASSES = ["CONTROL_PLANE", "WORKER_DISCOVERY", "WORKER_IMPLEMENTATION", "WORKER_REGRESSION", "WORKER_REASONING"];
-const ROUTER_EXECUTION_DECISIONS = ["DIRECT_ALLOWED", "DISPATCH_REQUIRED", "HUMAN_OVERRIDE"];
+const ROUTER_EXECUTION_CLASSES = ["CONTROL_PLANE", "WORKER_DISCOVERY", "WORKER_IMPLEMENTATION", "WORKER_REGRESSION", "WORKER_REASONING", "EXTERNAL_WAIT"];
+const ROUTER_EXECUTION_DECISIONS = ["DIRECT_ALLOWED", "DISPATCH_REQUIRED", "HUMAN_OVERRIDE", "DETERMINISTIC_WAIT_REQUIRED"];
 const ROUTER_EXECUTION_SOURCES = ["POLICY_DEFAULT", "HUMAN_EXPLICIT_OVERRIDE"];
 
 // What a step is FOR, not what tool it happens to call. This is the primary,
@@ -2212,6 +2263,10 @@ const ROUTER_INTENTS = [
   "REGRESSION_TEST_EXECUTION",
   "DEEP_REASONING",
   "LONG_RUNNING_INVESTIGATION",
+  // Waiting on external asynchronous state (deployment, check run, CI,
+  // container start, migration). Neither control plane nor worker work: it is
+  // not dispatched to a model at all, it is handed to a deterministic waiter.
+  "EXTERNAL_ASYNC_WAIT",
 ];
 
 // Worker-shaped signals map onto the EXISTING Slot decision table in
@@ -2306,6 +2361,29 @@ export function classifyRouterExecution(observation, options = {}) {
     return overrideCurrent
       ? { ...base, router_execution_decision: "HUMAN_OVERRIDE", router_execution_source: "HUMAN_EXPLICIT_OVERRIDE" }
       : { ...base, router_execution_decision: "DISPATCH_REQUIRED", router_execution_source: "POLICY_DEFAULT" };
+  }
+
+  // NO_LLM_BUSY_POLLING: an external async wait is never a Router turn and
+  // never a worker dispatch. It goes to a deterministic waiter, which re-enters
+  // the model only on SUCCESS / FAILURE / TIMEOUT / ACTION_REQUIRED. A human
+  // override cannot buy back busy polling - there is nothing to authorise,
+  // the work is simply not model work.
+  if (o.intent === "EXTERNAL_ASYNC_WAIT") {
+    const wait = classifyAsyncWait(
+      { signal: o.terminal_signal ?? null, state_changed: o.state_changed, poll_attempt: o.poll_attempt },
+      { capabilities: o.wait_capabilities ?? {} },
+    );
+    return {
+      router_execution_class: "EXTERNAL_WAIT",
+      router_execution_decision: wait.llm_reentry === "REQUIRED" ? "DIRECT_ALLOWED" : "DETERMINISTIC_WAIT_REQUIRED",
+      dispatch_slot: null,
+      router_execution_source: "POLICY_DEFAULT",
+      guardrail_triggered: [],
+      llm_reentry: wait.llm_reentry,
+      wait_mechanism: wait.wait_mechanism,
+      narration: wait.narration,
+      reason: wait.reason,
+    };
   }
 
   const mapping = ROUTER_INTENTS.includes(o.intent) ? INTENT_EXECUTION[o.intent] : null;

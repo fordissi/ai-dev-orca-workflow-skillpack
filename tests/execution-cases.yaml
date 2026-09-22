@@ -333,3 +333,247 @@ cases:
     ceiling: { sandbox: workspace-write, network: none }
     request: { kind: network, target: "registry.npmjs.org" }
     expect: { allowed: false, code: PERMISSION_BLOCKED }
+
+  # --------------------------------------------------------------------- #
+  # External asynchronous waiting (incident
+  # LLM_BUSY_POLLING_AND_STALE_CHECK_RUN_TARGET).
+  #
+  # kind: async_wait     -> classifyAsyncWait(); may this observation re-enter
+  #                         the model at all?
+  # kind: async_target   -> resolveAsyncTarget() / monitorAsyncDeployment();
+  #                         which external run is authoritative right now?
+  # kind: router_budget  -> accountRouterBudget(); what did the Router's own
+  #                         turns cost, and was any of it busy polling?
+  # --------------------------------------------------------------------- #
+
+  - name: unchanged_in_progress_deploy_must_not_re_enter_the_model
+    kind: async_wait
+    why: >-
+      REQUIRED CASE 2. The Cloudflare deployment is still in_progress and
+      nothing has changed since the last look. Re-entering the model to say
+      "still building" is the incident: a reasoning turn spent on no new
+      information. The native watch CLI keeps waiting instead.
+    capabilities: { native_watch: true, background_wait: true }
+    observation: { signal: null, state_changed: false, poll_attempt: 3 }
+    expect:
+      llm_reentry: FORBIDDEN
+      wait_mechanism: NATIVE_WATCH
+      narration: SUPPRESSED
+      action: WAIT_DETERMINISTICALLY
+
+  - name: intermediate_state_change_is_still_not_a_re_entry
+    kind: async_wait
+    why: >-
+      queued -> in_progress is a state change, but it is not terminal and the
+      Router can do nothing with it. Only SUCCESS / FAILURE / TIMEOUT /
+      ACTION_REQUIRED may re-enter the model.
+    capabilities: { background_wait: true }
+    observation: { signal: null, state_changed: true, poll_attempt: 1 }
+    expect: { llm_reentry: FORBIDDEN, wait_mechanism: BACKGROUND_WAIT, narration: SUPPRESSED }
+
+  - name: helper_backoff_is_used_when_no_native_watch_exists
+    kind: async_wait
+    why: >-
+      Preference order: native watch, then a deterministic background wait,
+      then a bounded helper with backoff. With only the helper available the
+      next poll is the standard 60s second step - still with no model re-entry.
+    capabilities: { helper_backoff: true }
+    observation: { signal: null, state_changed: false, poll_attempt: 1 }
+    expect: { llm_reentry: FORBIDDEN, wait_mechanism: HELPER_BACKOFF, next_delay_ms: 60000 }
+
+  - name: no_deterministic_waiter_is_a_human_gate_not_model_polling
+    kind: async_wait
+    why: >-
+      If nothing can wait deterministically, the answer is to ask the human -
+      never to fall back to re-entering the model on a timer.
+    capabilities: {}
+    observation: { signal: null, state_changed: false }
+    expect: { llm_reentry: FORBIDDEN, wait_mechanism: null, action: HUMAN_GATE }
+
+  - name: terminal_success_re_enters_the_model_exactly_once
+    kind: async_wait
+    why: >-
+      The deterministic waiter finished. This is the one re-entry the whole
+      wait is allowed, and the point at which narration is useful again.
+    capabilities: { native_watch: true }
+    observation: { signal: SUCCESS }
+    expect: { llm_reentry: REQUIRED, terminal_signal: SUCCESS, narration: ALLOWED }
+
+  - name: timeout_re_enters_the_model_exactly_once
+    kind: async_wait
+    why: >-
+      REQUIRED CASE 3. The bounded schedule expired. TIMEOUT is a terminal
+      signal, so the Router is re-entered once to decide what to do - it is
+      not a silent continuation and not another poll.
+    capabilities: { helper_backoff: true }
+    observation: { signal: TIMEOUT, poll_attempt: 8 }
+    expect: { llm_reentry: REQUIRED, terminal_signal: TIMEOUT }
+
+  - name: action_required_conclusion_re_enters_the_model
+    kind: async_wait
+    why: A check run that needs a human decision is terminal for the waiter and needs the Router back.
+    capabilities: { native_watch: true }
+    observation: { signal: ACTION_REQUIRED }
+    expect: { llm_reentry: REQUIRED, terminal_signal: ACTION_REQUIRED }
+
+  - name: superseding_check_run_for_the_same_commit_ends_monitoring
+    kind: async_target
+    why: >-
+      REQUIRED CASE 1 and the incident regression. Check run A is still
+      in_progress; a superseding run B for the SAME commit succeeded.
+      Monitoring is keyed on the commit SHA, so B is authoritative, the wait
+      ends SUCCESS, and A must not keep it alive. Mirrors
+      tests/fixtures/check-runs/cloudflare-superseded-run.json.
+    monitor:
+      commit_sha: "9f1c0a77c3d4e5b6a7980123456789abcdef0123"
+      app: cloudflare-pages
+      capabilities: { native_watch: true }
+      poll_attempt: 2
+    runs:
+      - id: A-104417
+        app: cloudflare-pages
+        head_sha: "9f1c0a77c3d4e5b6a7980123456789abcdef0123"
+        status: in_progress
+        conclusion: null
+        created_at: "2026-09-22T09:14:02Z"
+      - id: B-104462
+        app: cloudflare-pages
+        head_sha: "9f1c0a77c3d4e5b6a7980123456789abcdef0123"
+        status: completed
+        conclusion: success
+        created_at: "2026-09-22T09:16:31Z"
+    expect:
+      monitoring: COMPLETE
+      outcome: SUCCESS
+      target_run_id: B-104462
+      stale_in_progress_ignored: [A-104417]
+      signal: SUCCESS
+      llm_reentry: REQUIRED
+
+  - name: monitoring_is_not_pinned_to_the_first_observed_run_id
+    kind: async_target
+    why: >-
+      The first observed run is not the target; the commit SHA is. Re-resolving
+      returns the newest run for that SHA on every deterministic check.
+    target:
+      commit_sha: "9f1c0a77c3d4e5b6a7980123456789abcdef0123"
+      app: cloudflare-pages
+    runs:
+      - id: A-104417
+        app: cloudflare-pages
+        head_sha: "9f1c0a77c3d4e5b6a7980123456789abcdef0123"
+        status: in_progress
+        created_at: "2026-09-22T09:14:02Z"
+      - id: B-104462
+        app: cloudflare-pages
+        head_sha: "9f1c0a77c3d4e5b6a7980123456789abcdef0123"
+        status: in_progress
+        created_at: "2026-09-22T09:16:31Z"
+    expect:
+      monitoring: CONTINUE
+      target_run_id: B-104462
+      superseded_run_ids: [A-104417]
+      re_resolved: true
+
+  - name: a_run_for_another_commit_is_not_this_deployment
+    kind: async_target
+    why: >-
+      A newer run for a DIFFERENT commit must never be adopted as this
+      deployment target; the SHA is the identity.
+    target:
+      commit_sha: "9f1c0a77c3d4e5b6a7980123456789abcdef0123"
+      app: cloudflare-pages
+    runs:
+      - id: A-104417
+        app: cloudflare-pages
+        head_sha: "9f1c0a77c3d4e5b6a7980123456789abcdef0123"
+        status: completed
+        conclusion: success
+        created_at: "2026-09-22T09:14:02Z"
+      - id: C-999999
+        app: cloudflare-pages
+        head_sha: "0000000000000000000000000000000000000000"
+        status: in_progress
+        created_at: "2026-09-22T09:30:00Z"
+    expect: { monitoring: COMPLETE, outcome: SUCCESS, target_run_id: A-104417 }
+
+  - name: failing_latest_run_is_a_terminal_failure_not_a_continue
+    kind: async_target
+    why: A concluded failure on the authoritative run ends monitoring with FAILURE, which re-enters the Router once.
+    monitor:
+      commit_sha: "9f1c0a77c3d4e5b6a7980123456789abcdef0123"
+      capabilities: { native_watch: true }
+    runs:
+      - id: B-104462
+        head_sha: "9f1c0a77c3d4e5b6a7980123456789abcdef0123"
+        status: completed
+        conclusion: failure
+        created_at: "2026-09-22T09:16:31Z"
+    expect: { monitoring: COMPLETE, outcome: FAILURE, signal: FAILURE, llm_reentry: REQUIRED }
+
+  - name: no_run_for_the_commit_yet_keeps_waiting_without_a_target
+    kind: async_target
+    why: >-
+      The deployment has not produced a run yet. That is a CONTINUE for the
+      deterministic waiter, bounded by its own schedule - not a model turn and
+      not a failure.
+    target: { commit_sha: "9f1c0a77c3d4e5b6a7980123456789abcdef0123", app: cloudflare-pages }
+    runs: []
+    expect: { monitoring: CONTINUE, target_run_id: null, outcome: null }
+
+  - name: deterministic_wait_costs_no_reasoning_turns
+    kind: router_budget
+    why: >-
+      REQUIRED CASE 2, measured. Six deterministic polls happened inside the
+      waiter; the Router was entered twice in total - once to start the wait,
+      once on the terminal signal. Router invocation count does not grow per
+      poll.
+    events:
+      - { kind: ROUTER_TURN }
+      - { kind: DETERMINISTIC_WAIT }
+      - { kind: DETERMINISTIC_WAIT }
+      - { kind: DETERMINISTIC_WAIT }
+      - { kind: DETERMINISTIC_WAIT }
+      - { kind: DETERMINISTIC_WAIT }
+      - { kind: DETERMINISTIC_WAIT }
+      - { kind: ROUTER_TURN, during_wait: true, terminal_signal: SUCCESS }
+    expect: { llm_turns: 2, deterministic_waits: 6, busy_poll_turns: 0, compliant: true, violations: [] }
+
+  - name: timer_wakeups_during_a_wait_are_the_incident
+    kind: router_budget
+    why: >-
+      The observed incident: timer wakeups and status re-checks re-entered the
+      model while the external status was unchanged. They are counted, named
+      and reported as NO_LLM_BUSY_POLLING.
+    events:
+      - { kind: ROUTER_TURN }
+      - { kind: TIMER_WAKEUP, during_wait: true }
+      - { kind: STATUS_RECHECK, during_wait: true }
+      - { kind: TIMER_WAKEUP, during_wait: true }
+      - { kind: ROUTER_TURN, during_wait: true, terminal_signal: SUCCESS }
+    expect: { llm_turns: 5, busy_poll_turns: 3, compliant: false, violations: [NO_LLM_BUSY_POLLING], severity: MEDIUM }
+
+  - name: busy_polling_under_burst_reserve_is_high_severity
+    kind: router_budget
+    why: >-
+      REQUIRED CASE 4. With the provider BURST budget near its reserve,
+      low-information waiting is exactly what the pool cannot afford, so the
+      same violation is graded harder. Router reasoning is itself quota.
+    options: { burstPressure: CRITICAL }
+    events:
+      - { kind: ROUTER_TURN }
+      - { kind: STATUS_RECHECK, during_wait: true }
+      - { kind: STATUS_RECHECK, during_wait: true }
+    expect: { llm_turns: 3, busy_poll_turns: 2, compliant: false, severity: HIGH }
+
+  - name: worker_launches_and_review_passes_are_counted_as_router_cost
+    kind: router_budget
+    why: >-
+      Router self-accounting includes the turns that are easy to forget:
+      launches and review passes are reasoning too, not free overhead.
+    events:
+      - { kind: ROUTER_TURN }
+      - { kind: WORKER_LAUNCH }
+      - { kind: REVIEW_PASS }
+      - { kind: DETERMINISTIC_WAIT }
+    expect: { llm_turns: 3, deterministic_waits: 1, compliant: true }

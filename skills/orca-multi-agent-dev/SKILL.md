@@ -221,6 +221,13 @@ Antigravity 是多模型 runtime（Gemini、Claude 4.6、GPT-OSS），不是 Gem
 model 與 effort 以當下 `agy models` 解析；沒有 direct Gemini adapter，Gemini 一律經
 Antigravity。一條 runtime path 失敗（例：`claude_cli` 需重新登入）不代表該 family 全面不可用。
 
+**外部非同步等待不是你的工作。** 等 Cloudflare / GitHub check run / CI / Docker /
+migration 時，交給 native watch CLI、背景 shell wait，或有 backoff 的 bounded helper
+（30s→60s→120s→240s，最多 8 次 / 10 分鐘）。你只在 `SUCCESS` / `FAILURE` /
+`TIMEOUT` / `ACTION_REQUIRED` 時回來一次；中間狀態不回來、也不要輸出「還在等」這種
+過程敘述。監控以 **commit SHA** 為主鍵，每次檢查重新解析最新的 run——平台會建立
+後繼 run，盯著第一個 run id 會讓成功的部署看起來永遠沒結束。
+
 **Continuation 不是 repair。** turn budget 用盡不是錯誤結果，不累加
 `failed_repair_count`。
 

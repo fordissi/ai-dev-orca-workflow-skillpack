@@ -322,6 +322,27 @@ capability probe）；成功即把該 provider 恢復為 `AUTH_OK`，其他軸�
 Auth probe / launch 輸出可能含 credential：diagnostics 只記 class token 與 reviewed
 命令，**不得**記錄、轉述或要求 token / key / secret。
 
+### Burst-aware Router self-accounting
+
+**Router 自己的推理也消耗 quota。** Resource accounting 不得只算 worker，必須包含：
+
+- top-level Router turns
+- timer-triggered wakeups
+- status re-checks
+- worker launches
+- review passes
+
+因此 **low-information external waiting 必須消耗約等於零的 LLM reasoning budget**：
+外部非同步等待交給 deterministic waiter（見 WORKFLOW_POLICY 的
+`NO_LLM_BUSY_POLLING`），Router 只在 terminal signal 時重新進入一次。一次完整的
+等待不論輪詢幾次，Router turn 數都不隨 poll 數成長。
+
+在等待期間、且沒有 terminal signal 的 Router 重新進入，一律記為
+`NO_LLM_BUSY_POLLING` violation。當該 pool 的 BURST depletion 或 conservation
+pressure 為 `HIGH` / `CRITICAL`（接近 Router capacity reserve 的情境）時，同一個
+violation 以更高 severity 計——reserve 要保護的正是「還能路由、還能收尾」的控制面
+容量，不該花在沒有新資訊的輪詢上。
+
 ### Runtime adapters（dispatch target ≠ provider name）
 
 Dispatch target 是 **`runtime_adapter + provider_family + exact_model + effort`**，

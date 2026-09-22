@@ -543,3 +543,52 @@ cases:
       operational_state: AUTHORIZED
       required_action: DISPATCH
       verdict: VALID
+
+  - name: external_async_wait_is_neither_control_plane_nor_worker
+    kind: router_execution
+    why: >-
+      Incident LLM_BUSY_POLLING_AND_STALE_CHECK_RUN_TARGET. Waiting on a
+      Cloudflare/GitHub deployment is not a bounded control-plane probe and not
+      worker-shaped work: it is handed to a deterministic waiter. The Router
+      does not stay in the loop between polls.
+    observation:
+      intent: EXTERNAL_ASYNC_WAIT
+      terminal_signal: null
+      wait_capabilities: { native_watch: true }
+    expect:
+      router_execution_class: EXTERNAL_WAIT
+      router_execution_decision: DETERMINISTIC_WAIT_REQUIRED
+      dispatch_slot: null
+
+  - name: external_async_wait_re_enters_the_router_on_a_terminal_signal
+    kind: router_execution
+    why: >-
+      SUCCESS / FAILURE / TIMEOUT / ACTION_REQUIRED are the only re-entries.
+      On one of them the Router legitimately runs again - that turn is
+      control-plane work it may do directly.
+    observation:
+      intent: EXTERNAL_ASYNC_WAIT
+      terminal_signal: FAILURE
+      wait_capabilities: { native_watch: true }
+    expect:
+      router_execution_class: EXTERNAL_WAIT
+      router_execution_decision: DIRECT_ALLOWED
+      dispatch_slot: null
+
+  - name: a_human_override_does_not_license_busy_polling
+    kind: router_execution
+    why: >-
+      A current human override can authorise direct Router execution of
+      worker-shaped work. It cannot turn unchanged external status into model
+      work: there is nothing to authorise, the waiting simply is not the model
+      job.
+    observation:
+      intent: EXTERNAL_ASYNC_WAIT
+      terminal_signal: null
+      wait_capabilities: { background_wait: true }
+      current_task_id: deploy-watch
+      current_instruction_revision: rev-1
+      human_override: { task_id: deploy-watch, instruction_revision: rev-1 }
+    expect:
+      router_execution_class: EXTERNAL_WAIT
+      router_execution_decision: DETERMINISTIC_WAIT_REQUIRED
