@@ -208,6 +208,30 @@ attestation:                  # dispatch 後比對；語意見 WORKFLOW_POLICY.m
   attestation_result:         # unresolved — DISPATCH_IDENTITY_MATCH |
                               # DISPATCH_IDENTITY_UNVERIFIED | DISPATCH_CONTRACT_MISMATCH
 
+# Orca worker 與 internal subagent 是互斥模式。任一 worker / specialist / reviewer
+# task 若選 ORCA_WORKER，以下 evidence 必須來自實際 terminal/runtime，不得由 label 推測。
+dispatch_compliance:
+  dispatch_mode:              # unresolved — ORCA_WORKER | INTERNAL_SUBAGENT
+  orca_worker_dispatch_required: # unresolved — true | false
+  orca_terminal_handle:       # unresolved；缺少時 ORCA_DISPATCH_VERIFIED = NO
+  runtime_adapter:            # unresolved
+  provider_family:            # unresolved
+  exact_model:                # unresolved
+  effort:                     # unresolved
+  launch_command:             # unresolved — exact command，需遵守 secret/redaction 規則
+  lifecycle:
+    terminal_started:         # unresolved — true | false
+    model_launched:           # unresolved — true | false
+    worker_active:            # unresolved — true | false
+    completed:                # unresolved — true | false
+  exact_runtime_attestation:  # unresolved — MATCH | MISMATCH | UNVERIFIED
+  orca_dispatch_verified:     # unresolved — YES | NO
+  workflow_policy_compliance: # unresolved — COMPLIANT | NON_COMPLIANT
+  dispatch_result:            # unresolved — PASS | HARD_FAIL | DISPATCH_BLOCKED
+  reason_code:                # unresolved — INTERNAL_SUBAGENT_AS_ORCA_WORKER |
+                              # EXACT_DISPATCH_FAILURE | ORCA_TERMINAL_HANDLE_MISSING |
+                              # ORCA_DISPATCH_EVIDENCE_INCOMPLETE | EXACT_RUNTIME_UNVERIFIED
+
 # 僅在 selected_stage 為 STAGE_3_FLAGSHIP 時必填（由 operational router 從
 # strategic contract 的 flagship_admission 複製 + 補實際判定）。
 flagship_admission:           # unresolved

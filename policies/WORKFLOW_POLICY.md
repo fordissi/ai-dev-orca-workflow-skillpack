@@ -239,6 +239,52 @@ resource acquisition、套用既有 Router capacity reserve、保留 provider + 
 reasoning、要求 dispatch identity attestation、維持既有的 reviewer disjointness。
 **不建立第二條、不受治理的 helper path。**
 
+### `ORCA_WORKER_DISPATCH_REQUIRED`
+
+凡 task 被分類為 Orca worker，包括 implementation worker、specialist reviewer、
+independent / disjoint reviewer、architecture specialist、security specialist 與
+database specialist，`dispatch_mode` 必須為 `ORCA_WORKER`，且必須走以下實際路徑：
+
+```text
+Router → choose runtime_adapter/provider/exact_model/effort
+       → orca terminal create → obtain terminal handle
+       → launch exact runtime/model
+       → verify TERMINAL_STARTED → MODEL_LAUNCHED → WORKER_ACTIVE
+       → orca terminal send bounded task
+       → deterministic terminal wait / screen
+       → collect structured handoff → settle terminal
+```
+
+`ORCA_WORKER` 與 `INTERNAL_SUBAGENT` 是互斥的 dispatch mode。Antigravity
+`invoke_subagent` / `Agent(...)`、research subagent、self subagent 或 nested agent
+都不是 Orca worker evidence，且不得被 terminal title、`model = pro`、
+`type = research` 等 label 升格為 Orca dispatch。若 Orca worker 實際由上述機制
+執行，結果固定為：
+
+```text
+INTERNAL_SUBAGENT_AS_ORCA_WORKER = HARD_FAIL
+WORKFLOW_POLICY_COMPLIANCE = NON_COMPLIANT
+ORCA_DISPATCH_VERIFIED = NO
+```
+
+Internal subagent 只有在 Router **明示** `dispatch_mode: INTERNAL_SUBAGENT`，且該
+task class 的 policy 明示允許時才可使用；它不繼承或滿足任何 Orca worker contract。
+
+每份 Orca worker handoff 必須保存：`ORCA_TERMINAL_HANDLE`、`RUNTIME_ADAPTER`、
+`PROVIDER_FAMILY`、`EXACT_MODEL`、`EFFORT`、`LAUNCH_COMMAND`，以及 lifecycle
+`TERMINAL_STARTED`、`MODEL_LAUNCHED`、`WORKER_ACTIVE`、`COMPLETED`。缺少
+`ORCA_TERMINAL_HANDLE` 時，`ORCA_DISPATCH_VERIFIED = NO`，Router 不得宣稱已
+Orca-dispatched。
+
+Exact-runtime attestation 比對 routing decision 與**實際 launch evidence** 的
+runtime adapter、provider family、exact model、effort；requested identity 或
+internal-subagent label 都不能代替 actual evidence。不符時為
+`EXACT_DISPATCH_FAILURE` / `HARD_FAIL`。
+
+若 Orca daemon 不可用、terminal creation 失敗、exact model 無法 launch、worker
+health 無法驗證，或 required evidence 不完整，結果為 `DISPATCH_BLOCKED`。**不得
+silently fallback 到 `INTERNAL_SUBAGENT`。**
+
 ### Authorized dispatch is mandatory（confirmation-loop 防治）
 
 上面幾節管「Router 何時該停止直接做、改為派工」。這一節管**相反方向的失效**：

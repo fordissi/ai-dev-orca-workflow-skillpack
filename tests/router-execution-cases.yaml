@@ -10,6 +10,8 @@
 # kind: contract_consistency -> executed through validateRouterExecutionRecord();
 #                                expects whether a self-reported record is
 #                                internally consistent.
+# kind: dispatch_compliance  -> executed through evaluateDispatchCompliance();
+#                                verifies Orca-vs-internal dispatch evidence.
 #
 # The incident this section answers: a long-lived Operational Router
 # (codex/gpt-5.6-luna/max) spent ~25 minutes doing repository discovery, data
@@ -20,6 +22,96 @@
 version: "0.3"
 
 cases:
+  - name: orca_worker_cannot_use_internal_subagent
+    kind: dispatch_compliance
+    why: An internal Antigravity subagent cannot satisfy an Orca specialist contract.
+    input:
+      task_class: SPECIALIST_REVIEWER
+      dispatch_mode: ORCA_WORKER
+      execution_mechanism: ANTIGRAVITY_INVOKE_SUBAGENT
+    expect:
+      result: HARD_FAIL
+      reason_code: INTERNAL_SUBAGENT_AS_ORCA_WORKER
+      workflow_policy_compliance: NON_COMPLIANT
+      orca_dispatch_verified: NO
+
+  - name: explicit_policy_allowed_internal_subagent_passes
+    kind: dispatch_compliance
+    why: Internal execution is legal only when both selected explicitly and allowed for the class.
+    input:
+      task_class: BOUNDED_RESEARCH_ASSIST
+      dispatch_mode: INTERNAL_SUBAGENT
+      execution_mechanism: ANTIGRAVITY_INVOKE_SUBAGENT
+      internal_subagent_policy: ALLOWED
+    expect:
+      result: PASS
+      workflow_policy_compliance: COMPLIANT
+      orca_dispatch_required: false
+
+  - name: exact_orca_terminal_dispatch_passes
+    kind: dispatch_compliance
+    why: Complete terminal, lifecycle, and actual identity evidence proves Orca dispatch.
+    input:
+      task_class: IMPLEMENTATION_WORKER
+      dispatch_mode: ORCA_WORKER
+      execution_mechanism: ORCA_TERMINAL
+      requested_identity: &requested_codex
+        runtime_adapter: codex_cli
+        provider_family: codex
+        exact_model: gpt-5.6-terra
+        effort: high
+      evidence: &valid_orca_evidence
+        orca_terminal_handle: terminal-42
+        runtime_adapter: codex_cli
+        provider_family: codex
+        exact_model: gpt-5.6-terra
+        effort: high
+        launch_command: codex exec -m gpt-5.6-terra -c model_reasoning_effort=high -
+        lifecycle: { terminal_started: true, model_launched: true, worker_active: true, completed: true }
+    expect:
+      result: PASS
+      orca_dispatch_verified: YES
+      exact_runtime_attestation: MATCH
+
+  - name: missing_terminal_handle_cannot_verify_orca
+    kind: dispatch_compliance
+    why: A launch claim without an Orca terminal handle is not verified dispatch.
+    input:
+      task_class: ARCHITECTURE_SPECIALIST
+      dispatch_mode: ORCA_WORKER
+      execution_mechanism: ORCA_TERMINAL
+      requested_identity: *requested_codex
+      evidence:
+        runtime_adapter: codex_cli
+        provider_family: codex
+        exact_model: gpt-5.6-terra
+        effort: high
+        launch_command: codex exec -m gpt-5.6-terra -c model_reasoning_effort=high -
+        lifecycle: { terminal_started: true, model_launched: true, worker_active: true, completed: true }
+    expect:
+      result: DISPATCH_BLOCKED
+      reason_code: ORCA_TERMINAL_HANDLE_MISSING
+      orca_dispatch_verified: NO
+
+  - name: actual_runtime_mismatch_fails_exact_dispatch
+    kind: dispatch_compliance
+    why: Requested provider/model labels cannot override different actual runtime evidence.
+    input:
+      task_class: SECURITY_SPECIALIST
+      dispatch_mode: ORCA_WORKER
+      execution_mechanism: ORCA_TERMINAL
+      requested_identity:
+        runtime_adapter: claude_cli
+        provider_family: claude
+        exact_model: opus
+        effort: high
+      evidence: *valid_orca_evidence
+    expect:
+      result: HARD_FAIL
+      reason_code: EXACT_DISPATCH_FAILURE
+      exact_runtime_attestation: MISMATCH
+      workflow_policy_compliance: NON_COMPLIANT
+
 
   - name: git_status_and_handoff_read_is_control_plane
     kind: router_execution

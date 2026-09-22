@@ -77,6 +77,28 @@ Router capacity reserve。
 
 ## 3. 六階段路由
 
+### Orca worker dispatch hard invariant
+
+Implementation worker、specialist reviewer、independent / disjoint reviewer、
+architecture / security / database specialist 一律套用
+`ORCA_WORKER_DISPATCH_REQUIRED`。它們必須由 `orca terminal create` 建立 terminal、
+launch contract 指定的 exact runtime/model、驗證 `TERMINAL_STARTED` →
+`MODEL_LAUNCHED` → `WORKER_ACTIVE`，再用 `orca terminal send` 下發 bounded task，
+最後收 structured handoff 並 settle terminal。
+
+`ORCA_WORKER` 與 `INTERNAL_SUBAGENT` 互斥。Antigravity `invoke_subagent`、
+`Agent(...)`、research/self/nested subagent 不得充當 Orca worker；若這樣替代，
+`INTERNAL_SUBAGENT_AS_ORCA_WORKER = HARD_FAIL`。Internal subagent 只有在 policy
+允許該 task class 且 Router 明示選擇 `INTERNAL_SUBAGENT` 時才合法。
+
+Orca handoff 必須含 terminal handle、runtime adapter、provider family、exact model、
+effort、launch command 與四段 lifecycle evidence；缺 terminal handle 時不得宣稱
+`ORCA_DISPATCH_VERIFIED = YES`。Actual runtime evidence 必須吻合 routing decision，
+不能從 subagent label 推測。Orca/terminal/model/health 無法驗證時回
+`DISPATCH_BLOCKED`，不得 silent fallback。完整 normative 語意見
+[`WORKFLOW_POLICY.md`](../../policies/WORKFLOW_POLICY.md) 的
+`ORCA_WORKER_DISPATCH_REQUIRED`。
+
 ```text
 classify -> slot -> overlay -> candidate -> contract -> dispatch
 ```

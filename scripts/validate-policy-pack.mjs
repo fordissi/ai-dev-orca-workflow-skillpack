@@ -2250,6 +2250,122 @@ export function validateContinuationCases(document) {
  * rest of MODEL_ROUTING_POLICY.md, untouched.
  * ------------------------------------------------------------------------ */
 
+const ORCA_WORKER_TASK_CLASSES = new Set([
+  "IMPLEMENTATION_WORKER",
+  "SPECIALIST_REVIEWER",
+  "INDEPENDENT_REVIEWER",
+  "DISJOINT_REVIEWER",
+  "ARCHITECTURE_SPECIALIST",
+  "SECURITY_SPECIALIST",
+  "DATABASE_SPECIALIST",
+]);
+
+const INTERNAL_SUBAGENT_MECHANISMS = new Set([
+  "ANTIGRAVITY_INVOKE_SUBAGENT",
+  "ANTIGRAVITY_AGENT",
+  "RESEARCH_SUBAGENT",
+  "SELF_SUBAGENT",
+  "NESTED_AGENT",
+]);
+
+const ORCA_EVIDENCE_FIELDS = [
+  "orca_terminal_handle",
+  "runtime_adapter",
+  "provider_family",
+  "exact_model",
+  "effort",
+  "launch_command",
+];
+
+const ORCA_LIFECYCLE_FIELDS = ["terminal_started", "model_launched", "worker_active", "completed"];
+
+/**
+ * Verifies that an Orca-worker classification was executed through the Orca
+ * terminal path and that the actual runtime identity matches the routing
+ * decision. ORCA_WORKER and INTERNAL_SUBAGENT are deliberately mutually
+ * exclusive dispatch modes; an internal agent label is never Orca evidence.
+ */
+export function evaluateDispatchCompliance(input) {
+  const i = isPlainObject(input) ? input : {};
+  const evidence = isPlainObject(i.evidence) ? i.evidence : {};
+  const lifecycle = isPlainObject(evidence.lifecycle) ? evidence.lifecycle : {};
+  const workerClass = ORCA_WORKER_TASK_CLASSES.has(i.task_class);
+  const internalMechanism = INTERNAL_SUBAGENT_MECHANISMS.has(i.execution_mechanism);
+  const orcaRequired = workerClass || i.dispatch_mode === "ORCA_WORKER";
+
+  const result = (values) => ({
+    orca_worker_dispatch_required: orcaRequired,
+    orca_dispatch_required: orcaRequired,
+    orca_dispatch_verified: "NO",
+    workflow_policy_compliance: "NON_COMPLIANT",
+    exact_runtime_attestation: "UNVERIFIED",
+    ...values,
+  });
+
+  if (i.dispatch_mode === "INTERNAL_SUBAGENT") {
+    if (workerClass) {
+      return result({ result: "HARD_FAIL", reason_code: "INTERNAL_SUBAGENT_AS_ORCA_WORKER" });
+    }
+    if (i.internal_subagent_policy !== "ALLOWED") {
+      return result({ result: "HARD_FAIL", reason_code: "INTERNAL_SUBAGENT_NOT_ALLOWED" });
+    }
+    return result({
+      orca_worker_dispatch_required: false,
+      orca_dispatch_required: false,
+      workflow_policy_compliance: "COMPLIANT",
+      result: "PASS",
+      reason_code: null,
+    });
+  }
+
+  if (!orcaRequired) {
+    return result({ result: "HARD_FAIL", reason_code: "DISPATCH_MODE_UNCLASSIFIED" });
+  }
+
+  if (internalMechanism || i.execution_mechanism !== "ORCA_TERMINAL") {
+    return result({ result: "HARD_FAIL", reason_code: "INTERNAL_SUBAGENT_AS_ORCA_WORKER" });
+  }
+
+  if (!isNonEmptyString(evidence.orca_terminal_handle)) {
+    return result({ result: "DISPATCH_BLOCKED", reason_code: "ORCA_TERMINAL_HANDLE_MISSING" });
+  }
+
+  const missingEvidence = ORCA_EVIDENCE_FIELDS.filter((field) => !isNonEmptyString(evidence[field]));
+  const missingLifecycle = ORCA_LIFECYCLE_FIELDS.filter((field) => lifecycle[field] !== true);
+  if (missingEvidence.length > 0 || missingLifecycle.length > 0) {
+    return result({
+      result: "DISPATCH_BLOCKED",
+      reason_code: "ORCA_DISPATCH_EVIDENCE_INCOMPLETE",
+      missing_evidence: missingEvidence,
+      missing_lifecycle: missingLifecycle,
+    });
+  }
+
+  const requested = isPlainObject(i.requested_identity) ? i.requested_identity : {};
+  const identityFields = ["runtime_adapter", "provider_family", "exact_model", "effort"];
+  const identityComplete = identityFields.every((field) => isNonEmptyString(requested[field]));
+  if (!identityComplete) {
+    return result({ result: "DISPATCH_BLOCKED", reason_code: "EXACT_RUNTIME_UNVERIFIED" });
+  }
+
+  const mismatch = identityFields.some((field) => requested[field] !== evidence[field]);
+  if (mismatch) {
+    return result({
+      result: "HARD_FAIL",
+      reason_code: "EXACT_DISPATCH_FAILURE",
+      exact_runtime_attestation: "MISMATCH",
+    });
+  }
+
+  return result({
+    orca_dispatch_verified: "YES",
+    workflow_policy_compliance: "COMPLIANT",
+    exact_runtime_attestation: "MATCH",
+    result: "PASS",
+    reason_code: null,
+  });
+}
+
 const ROUTER_EXECUTION_CLASSES = ["CONTROL_PLANE", "WORKER_DISCOVERY", "WORKER_IMPLEMENTATION", "WORKER_REGRESSION", "WORKER_REASONING", "EXTERNAL_WAIT"];
 const ROUTER_EXECUTION_DECISIONS = ["DIRECT_ALLOWED", "DISPATCH_REQUIRED", "HUMAN_OVERRIDE", "DETERMINISTIC_WAIT_REQUIRED"];
 const ROUTER_EXECUTION_SOURCES = ["POLICY_DEFAULT", "HUMAN_EXPLICIT_OVERRIDE"];
@@ -2685,7 +2801,7 @@ export function validateRouterExecutionRecord(record) {
  * stays normative.
  * ------------------------------------------------------------------------ */
 
-const ROUTER_EXECUTION_CASE_KINDS = ["router_execution", "contract_consistency", "authorized_dispatch"];
+const ROUTER_EXECUTION_CASE_KINDS = ["router_execution", "contract_consistency", "authorized_dispatch", "dispatch_compliance"];
 
 export function validateRouterExecutionCases(document) {
   const findings = [];
@@ -2742,6 +2858,16 @@ export function validateRouterExecutionCases(document) {
       for (const key of ["operational_state", "required_action", "ack_only_valid", "verdict"]) {
         if (key in testCase.expect && result[key] !== testCase.expect[key]) {
           findings.push(`${named}: expected ${key} ${JSON.stringify(testCase.expect[key])}, got ${JSON.stringify(result[key])}`);
+        }
+      }
+      continue;
+    }
+
+    if (testCase.kind === "dispatch_compliance") {
+      const result = evaluateDispatchCompliance(testCase.input);
+      for (const [key, expected] of Object.entries(testCase.expect)) {
+        if (JSON.stringify(result[key]) !== JSON.stringify(expected)) {
+          findings.push(`${named}: expected ${key} ${JSON.stringify(expected)}, got ${JSON.stringify(result[key])}`);
         }
       }
       continue;
