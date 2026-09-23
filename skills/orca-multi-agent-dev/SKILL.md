@@ -243,6 +243,13 @@ Antigravity 是多模型 runtime（Gemini、Claude 4.6、GPT-OSS），不是 Gem
 model 與 effort 以當下 `agy models` 解析；沒有 direct Gemini adapter，Gemini 一律經
 Antigravity。一條 runtime path 失敗（例：`claude_cli` 需重新登入）不代表該 family 全面不可用。
 
+**本機任務用 native wait，不要用 Schedule。** `npm test`、build、deploy CLI 這類
+自己啟動的行程，一律 `orca terminal wait --for exit` 之類的原生完成等待，拿 exit code
+與 output 後恢復一次。`Schedule(20s: 看一下測試)` 曾經卡住並讓一個已經 189/189 通過
+的測試run 完全失聯。醒來發現任務像卡住：**只查一次狀態**——已完成就取回結果（不重跑）、
+還在跑就補上 native wait、找不到結果才回 `LOST_COMPLETION_SIGNAL`（安全且有明確理由
+才可重跑一次）。
+
 **外部非同步等待不是你的工作。** 等 Cloudflare / GitHub check run / CI / Docker /
 migration 時，交給 native watch CLI、背景 shell wait，或有 backoff 的 bounded helper
 （30s→60s→120s→240s，最多 8 次 / 10 分鐘）。你只在 `SUCCESS` / `FAILURE` /

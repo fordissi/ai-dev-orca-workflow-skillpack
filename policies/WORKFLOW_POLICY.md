@@ -799,6 +799,53 @@ max 8 attempts、max 10 minutes、helper 於 SUCCESS / FAILURE / TIMEOUT 自行�
 polls 之間**不得**重新進入 LLM；預算耗盡即以 `TIMEOUT` 作為 terminal signal，
 此時（也只有此時）Router 重新進入一次。
 
+### HARD INVARIANT：`LOCAL_TASK_WAIT_MUST_BE_DETERMINISTIC`
+
+```text
+本機長時間任務的完成等待，必須用 native process / task 完成等待，
+不得用 Schedule 或任何 model-side timer 當 completion waiter。
+```
+
+Incident `SCHEDULE_TOOL_HANG` / `LOST_COMPLETION_RESUME`。`npm --prefix web test`
+正常結束（`EXIT_CODE = 0`、18/18 檔案、189/189 測試通過），但 Router 用
+`Schedule(20s: check in on vitest test execution)` 當等待機制；Schedule 呼叫卡住，
+Router 沒有在任務完成時恢復。
+
+**這與 `NO_LLM_BUSY_POLLING` 是兩種失效**：busy polling 是把 reasoning 花在沒變化
+的狀態上；這一個是**完全遺失完成訊號**——本機任務是我們自己啟動、拿得到 exit code
+的行程，本來就一定有 deterministic waiter 可用。
+
+適用對象：local subprocess、test runner、build、deployment CLI，以及其他長時間
+terminal 任務。
+
+必要流程：
+
+```text
+launch deterministic task
+→ wait on native task/process completion   （例：orca terminal wait --for exit）
+→ capture exit code
+→ capture output/result
+→ resume Router exactly once
+```
+
+**禁止**：`Schedule(Ns: check task)`、重複的 LLM status polling、為了檢視本機行程
+而週期性喚醒 Router、以 Schedule 作為完成偵測。waiter 機制正確但**沒有捕獲 exit
+code 或 output**，同樣不算完成（`COMPLETION_EVIDENCE_INCOMPLETE`）。
+
+#### Failure recovery（Router 醒來、任務看似卡住）
+
+**狀態只檢查一次**，recovery 不是輪詢迴圈：
+
+| 一次檢查的結果 | 動作 |
+|---|---|
+| `DONE` 且結果可取 | `RECOVER_RESULT`：取回 exit code 與 output 後繼續，**不得 rerun** |
+| `RUNNING` | `ATTACH_NATIVE_WAIT`：補上 deterministic native wait（不是再一個 timer） |
+| 任務不存在／結果不可取 | `LOST_COMPLETION_SIGNAL`：據實回報 |
+
+`LOST_COMPLETION_SIGNAL` 之後**最多 rerun 一次**，且必須同時滿足「side-effect
+safe」與「明確書面理由」。**已完成的任務永不盲目重跑**——即使它「看起來卡住」；
+這樣做會丟掉已得的結果並重複其副作用（`BLIND_RERUN_OF_COMPLETED_TASK`）。
+
 ### HARD INVARIANT：async target re-resolution
 
 ```text

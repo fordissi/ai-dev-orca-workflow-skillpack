@@ -61,7 +61,10 @@ import { providerFamilyOf, resolveCliModelArgument, runtimeAdapterFor } from "./
 import {
   accountRouterBudget,
   classifyAsyncWait,
+  classifyLocalTaskWait,
+  LOCAL_TASK_RECOVERY_ACTIONS,
   monitorAsyncDeployment,
+  recoverLocalTaskResult,
   resolveAsyncTarget,
 } from "./lib/async-wait.mjs";
 
@@ -1636,7 +1639,15 @@ export function classifyExecutionState(observation, options = {}) {
  * lifecycle section of WORKFLOW_POLICY.md, which stays normative.
  * ------------------------------------------------------------------------ */
 
-const EXECUTION_CASE_KINDS = ["waiting", "permission", "async_wait", "async_target", "router_budget"];
+const EXECUTION_CASE_KINDS = [
+  "waiting",
+  "permission",
+  "async_wait",
+  "async_target",
+  "router_budget",
+  "local_task_wait",
+  "local_task_recovery",
+];
 const LLM_REENTRY_VALUES = ["REQUIRED", "FORBIDDEN"];
 const ASYNC_MONITORING_VALUES = ["CONTINUE", "COMPLETE"];
 
@@ -1674,6 +1685,26 @@ export function validateExecutionCases(document) {
 
     if (!isPlainObject(testCase.expect)) {
       findings.push(`${named}: expected an \`expect\` mapping`);
+      continue;
+    }
+
+    // LOCAL_TASK_WAIT_MUST_BE_DETERMINISTIC: the waiter chosen for a local
+    // subprocess / test run / build / deploy CLI.
+    if (testCase.kind === "local_task_wait" || testCase.kind === "local_task_recovery") {
+      const result =
+        testCase.kind === "local_task_wait"
+          ? classifyLocalTaskWait(testCase.wait)
+          : recoverLocalTaskResult(testCase.recovery);
+      if (testCase.kind === "local_task_recovery" && !LOCAL_TASK_RECOVERY_ACTIONS.includes(result.action)) {
+        findings.push(`${named}: produced unknown recovery action ${JSON.stringify(result.action)}`);
+      }
+      for (const [field, value] of Object.entries(testCase.expect)) {
+        const produced = result[field] ?? null;
+        const match = Array.isArray(value)
+          ? JSON.stringify([...value].sort()) === JSON.stringify([...(produced ?? [])].sort())
+          : value === produced;
+        if (!match) findings.push(`${named}: expected ${field} ${JSON.stringify(value)}, got ${JSON.stringify(produced)}`);
+      }
       continue;
     }
 

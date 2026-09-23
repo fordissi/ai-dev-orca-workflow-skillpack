@@ -126,6 +126,171 @@ export function classifyAsyncWait(observation = {}, options = {}) {
 }
 
 /* ------------------------------------------------------------------------ *
+ * LOCAL_TASK_WAIT_MUST_BE_DETERMINISTIC
+ *
+ * Incident SCHEDULE_TOOL_HANG / LOST_COMPLETION_RESUME. `npm --prefix web
+ * test` finished cleanly (exit 0, 189/189 tests), but the Router had used
+ * `Schedule(20s: check in on vitest)` as its completion waiter. The Schedule
+ * call hung and the Router never resumed on the completion it was waiting for.
+ *
+ * This is NOT the same failure as NO_LLM_BUSY_POLLING. Busy polling wastes
+ * reasoning budget on unchanged state; this loses the completion signal
+ * entirely, because a timer was used where a process wait was available. A
+ * local task is one WE launched and whose exit code we can wait on, so there
+ * is always a deterministic waiter.
+ * ------------------------------------------------------------------------ */
+
+export const LOCAL_TASK_KINDS = [
+  "LOCAL_SUBPROCESS",
+  "TEST_RUNNER",
+  "BUILD",
+  "DEPLOY_CLI",
+  "LONG_RUNNING_TERMINAL_TASK",
+];
+
+// Accepted: each one ends when the task ends, and yields an exit code.
+export const LOCAL_WAIT_MECHANISMS = ["NATIVE_PROCESS_WAIT", "BLOCKING_RUN", "TASK_COMPLETION_CALLBACK"];
+
+// Refused: each one is a model-side timer standing in for a process wait.
+export const PROHIBITED_LOCAL_WAITERS = ["SCHEDULE", "TIMER_WAKEUP", "LLM_STATUS_POLL", "PERIODIC_ROUTER_WAKEUP"];
+
+export const LOCAL_TASK_RECOVERY_ACTIONS = ["RECOVER_RESULT", "ATTACH_NATIVE_WAIT", "LOST_COMPLETION_SIGNAL"];
+
+/**
+ * Grades the waiter chosen for a local long-running task.
+ *
+ * Schedule (and any other model-side timer) is never a completion waiter: the
+ * required pattern is launch -> wait on native task/process completion ->
+ * capture exit code -> capture output -> resume the Router exactly once.
+ * Repeating the timer is additionally the busy-polling violation.
+ */
+export function classifyLocalTaskWait(input = {}) {
+  const i = isPlainObject(input) ? input : {};
+  const waiter = isNonEmptyString(i.waiter) ? i.waiter : null;
+  const pollCount = typeof i.poll_count === "number" ? i.poll_count : 0;
+  const violations = [];
+
+  const base = {
+    task_kind: i.task_kind ?? null,
+    waiter,
+    required_mechanism: LOCAL_WAIT_MECHANISMS[0],
+    required_pattern: [
+      "launch deterministic task",
+      "wait on native task/process completion",
+      "capture exit code",
+      "capture output/result",
+      "resume Router exactly once",
+    ],
+  };
+
+  if (waiter === null || PROHIBITED_LOCAL_WAITERS.includes(waiter)) {
+    violations.push("LOCAL_TASK_WAIT_MUST_BE_DETERMINISTIC");
+    // More than one timer hop is the Router being re-entered to look at a
+    // task it should simply have waited on.
+    if (pollCount > 1) violations.push("NO_LLM_BUSY_POLLING");
+    return {
+      ...base,
+      verdict: pollCount > 1 ? "HARD_FAIL" : "NON_COMPLIANT",
+      compliant: false,
+      router_resumes: Math.max(pollCount, 1),
+      violations,
+      reason:
+        waiter === null
+          ? "no waiter declared; a local task must be waited on natively"
+          : `${waiter} is a model-side timer, not a completion waiter for a local task`,
+    };
+  }
+
+  if (!LOCAL_WAIT_MECHANISMS.includes(waiter)) {
+    return {
+      ...base,
+      verdict: "NON_COMPLIANT",
+      compliant: false,
+      router_resumes: 1,
+      violations: ["LOCAL_TASK_WAIT_MUST_BE_DETERMINISTIC"],
+      reason: `unknown waiter ${JSON.stringify(waiter)}; fail closed toward the native wait`,
+    };
+  }
+
+  // The mechanism is right, but a wait that drops the exit code or the output
+  // has not actually captured the completion.
+  if (i.exit_code_captured === false) violations.push("COMPLETION_EVIDENCE_INCOMPLETE");
+  if (i.output_captured === false) violations.push("COMPLETION_EVIDENCE_INCOMPLETE");
+
+  return {
+    ...base,
+    required_mechanism: waiter,
+    verdict: violations.length === 0 ? "PASS" : "NON_COMPLIANT",
+    compliant: violations.length === 0,
+    router_resumes: 1,
+    violations,
+    reason:
+      violations.length === 0
+        ? `${waiter} ends with the task and yields its exit code; the Router resumes once`
+        : "the waiter is deterministic but the completion evidence is incomplete",
+  };
+}
+
+/**
+ * What to do when the Router resumes and a local task looks stuck. Status is
+ * inspected ONCE - this is recovery, not a polling loop.
+ *
+ *   DONE with a result  -> recover the exit code and output; never rerun
+ *   RUNNING             -> attach a deterministic native wait
+ *   missing / no result -> LOST_COMPLETION_SIGNAL, rerun at most once and
+ *                          only when the rerun is safe AND justified
+ */
+export function recoverLocalTaskResult(input = {}) {
+  const i = isPlainObject(input) ? input : {};
+  const task = isPlainObject(i.task) ? i.task : {};
+  const status = isNonEmptyString(task.status) ? task.status.toUpperCase() : "MISSING";
+  const rerunCount = typeof i.rerun_count === "number" ? i.rerun_count : 0;
+  const violations = [];
+
+  const base = { status, status_inspections: 1, violations };
+
+  const finished = status === "DONE" || status === "COMPLETED" || status === "EXITED";
+  const resultAvailable = task.output_available !== false && task.exit_code !== undefined && task.exit_code !== null;
+
+  if (finished && resultAvailable) {
+    // A completed task is recovered, never repeated - rerunning it would
+    // discard a good result and redo its side effects.
+    if (i.rerun_safe === true || isNonEmptyString(i.justification)) {
+      violations.push("BLIND_RERUN_OF_COMPLETED_TASK");
+    }
+    return {
+      ...base,
+      action: "RECOVER_RESULT",
+      rerun: false,
+      exit_code: task.exit_code,
+      reason: "the task already finished; recover its exit code and output and continue",
+    };
+  }
+
+  if (status === "RUNNING" || status === "IN_PROGRESS") {
+    return {
+      ...base,
+      action: "ATTACH_NATIVE_WAIT",
+      rerun: false,
+      exit_code: null,
+      reason: "the task is still running; attach a deterministic native wait instead of another timer",
+    };
+  }
+
+  // Finished but the result is gone, or the task cannot be found at all.
+  const rerun = i.rerun_safe === true && isNonEmptyString(i.justification) && rerunCount < 1;
+  return {
+    ...base,
+    action: "LOST_COMPLETION_SIGNAL",
+    rerun,
+    exit_code: null,
+    reason: rerun
+      ? "completion signal lost and no result is recoverable; one justified, side-effect-safe rerun is permitted"
+      : "completion signal lost; a rerun needs an explicit safety justification and is allowed at most once",
+  };
+}
+
+/* ------------------------------------------------------------------------ *
  * D. Polling backoff standard
  * ------------------------------------------------------------------------ */
 

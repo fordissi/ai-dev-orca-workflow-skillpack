@@ -577,3 +577,122 @@ cases:
       - { kind: REVIEW_PASS }
       - { kind: DETERMINISTIC_WAIT }
     expect: { llm_turns: 3, deterministic_waits: 1, compliant: true }
+
+  # --------------------------------------------------------------------- #
+  # Local task waiting (incident SCHEDULE_TOOL_HANG / LOST_COMPLETION_RESUME).
+  #
+  # Distinct from NO_LLM_BUSY_POLLING: busy polling burns reasoning on
+  # unchanged state; this loses the completion signal outright, because a
+  # model-side timer was used where a process wait was available.
+  #
+  # kind: local_task_wait     -> classifyLocalTaskWait()
+  # kind: local_task_recovery -> recoverLocalTaskResult()
+  # --------------------------------------------------------------------- #
+
+  - name: local_test_run_waited_on_by_schedule_is_non_compliant
+    kind: local_task_wait
+    why: >-
+      REGRESSION CASE 1 and the incident itself. `npm --prefix web test` exited
+      0 with 189/189 passing, but the Router waited with
+      Schedule(20s: check in on vitest). The Schedule hung and the completion
+      was never collected. Schedule is not a completion waiter.
+    wait:
+      task_kind: TEST_RUNNER
+      waiter: SCHEDULE
+      command: npm --prefix web test
+    expect:
+      verdict: NON_COMPLIANT
+      compliant: false
+      violations: [LOCAL_TASK_WAIT_MUST_BE_DETERMINISTIC]
+
+  - name: native_process_wait_on_a_local_test_run_passes
+    kind: local_task_wait
+    why: >-
+      REGRESSION CASE 2. The required pattern: wait on native process
+      completion, capture the exit code and the output, resume the Router
+      exactly once.
+    wait:
+      task_kind: TEST_RUNNER
+      waiter: NATIVE_PROCESS_WAIT
+      command: npm --prefix web test
+      exit_code_captured: true
+      output_captured: true
+    expect: { verdict: PASS, compliant: true, router_resumes: 1, violations: [] }
+
+  - name: repeated_schedule_polling_is_a_hard_fail
+    kind: local_task_wait
+    why: >-
+      REGRESSION CASE 5. One Schedule hop is the wrong waiter; repeating it is
+      also the Router being re-entered to inspect a local process it should
+      have waited on - both violations are named.
+    wait: { task_kind: BUILD, waiter: SCHEDULE, poll_count: 5 }
+    expect:
+      verdict: HARD_FAIL
+      violations: [LOCAL_TASK_WAIT_MUST_BE_DETERMINISTIC, NO_LLM_BUSY_POLLING]
+
+  - name: periodic_router_wakeup_is_not_a_waiter_either
+    kind: local_task_wait
+    why: >-
+      The prohibition is on model-side timers as a class, not on one tool
+      name. A periodic wake-up to inspect a local process is the same defect.
+    wait: { task_kind: DEPLOY_CLI, waiter: PERIODIC_ROUTER_WAKEUP }
+    expect: { compliant: false, violations: [LOCAL_TASK_WAIT_MUST_BE_DETERMINISTIC] }
+
+  - name: a_native_wait_that_drops_the_exit_code_is_incomplete
+    kind: local_task_wait
+    why: >-
+      The mechanism is right but the evidence is not: a wait that does not
+      capture the exit code cannot tell success from failure, which is what
+      the Router resumes on.
+    wait: { task_kind: LOCAL_SUBPROCESS, waiter: NATIVE_PROCESS_WAIT, exit_code_captured: false }
+    expect: { verdict: NON_COMPLIANT, violations: [COMPLETION_EVIDENCE_INCOMPLETE] }
+
+  - name: completed_task_missed_by_the_router_is_recovered_not_rerun
+    kind: local_task_recovery
+    why: >-
+      REGRESSION CASE 3. Exactly the incident aftermath: the task was DONE with
+      exit 0 all along. Inspect status once, recover the result, continue.
+      Rerunning a 189-test suite that already passed is waste, and for a
+      non-idempotent task it is damage.
+    recovery:
+      task: { status: DONE, exit_code: 0, output_available: true }
+    expect: { action: RECOVER_RESULT, rerun: false, exit_code: 0, status_inspections: 1 }
+
+  - name: still_running_task_gets_a_deterministic_wait_attached
+    kind: local_task_recovery
+    why: >-
+      If the task is genuinely still running, the fix is to attach the native
+      wait that should have been used from the start - not another timer.
+    recovery: { task: { status: RUNNING } }
+    expect: { action: ATTACH_NATIVE_WAIT, rerun: false }
+
+  - name: missing_task_result_is_a_lost_completion_signal
+    kind: local_task_recovery
+    why: >-
+      REGRESSION CASE 4. The task cannot be found and no result is
+      recoverable. That is reported as LOST_COMPLETION_SIGNAL rather than
+      guessed at, and it does not silently rerun.
+    recovery: { task: { status: MISSING } }
+    expect: { action: LOST_COMPLETION_SIGNAL, rerun: false }
+
+  - name: a_lost_completion_may_be_rerun_once_when_safe_and_justified
+    kind: local_task_recovery
+    why: >-
+      A rerun is permitted only when it is side-effect safe AND explicitly
+      justified, and at most once. A read-only test run qualifies.
+    recovery:
+      task: { status: MISSING }
+      rerun_safe: true
+      justification: read-only test run, no side effects
+    expect: { action: LOST_COMPLETION_SIGNAL, rerun: true }
+
+  - name: never_blindly_rerun_a_completed_task
+    kind: local_task_recovery
+    why: >-
+      "It looks stuck" is not a reason to repeat a finished task. The result
+      is recovered and the attempted rerun is recorded as a violation.
+    recovery:
+      task: { status: DONE, exit_code: 0, output_available: true }
+      rerun_safe: true
+      justification: looks stuck
+    expect: { action: RECOVER_RESULT, rerun: false, violations: [BLIND_RERUN_OF_COMPLETED_TASK] }
