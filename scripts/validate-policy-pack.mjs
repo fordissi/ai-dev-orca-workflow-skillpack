@@ -67,6 +67,18 @@ import {
   recoverLocalTaskResult,
   resolveAsyncTarget,
 } from "./lib/async-wait.mjs";
+import {
+  classifyCompletionWaiter,
+  classifyOrchestrationMessaging,
+  decideWorkerRecovery,
+  EXECUTION_MECHANISM_PATH,
+  mapTaskResultToOutcome,
+  processDelivery,
+  validateWorkerDone,
+  workerStartSupport,
+  CAPABILITY_EVIDENCE_SOURCES,
+  WORKER_START_CAPABILITY_FIELDS,
+} from "./lib/orca-orchestration.mjs";
 
 // ...and re-exported so this module's public surface stays identical for tests
 // and importers.
@@ -648,6 +660,29 @@ export function validateRegistry(registry) {
         );
       }
     });
+  }
+
+  // Orca worker-start capability claims must say where they came from, so
+  // help-derived or guide-derived support is never read as live-probed.
+  if (isPlainObject(registry.runtime_adapters)) {
+    for (const [name, adapter] of Object.entries(registry.runtime_adapters)) {
+      const ws = adapter?.orca_worker_start;
+      if (ws === undefined) continue;
+      const at = `runtime_adapters.${name}.orca_worker_start`;
+      if (!isPlainObject(ws)) {
+        findings.push(`${at}: expected a mapping`);
+        continue;
+      }
+      const evidence = isPlainObject(ws.evidence) ? ws.evidence : {};
+      for (const field of WORKER_START_CAPABILITY_FIELDS) {
+        const source = evidence[field];
+        if (!CAPABILITY_EVIDENCE_SOURCES.includes(source)) {
+          findings.push(`${at}.evidence.${field}: expected one of ${CAPABILITY_EVIDENCE_SOURCES.join("|")}`);
+        } else if (source === "live_probe" && !isNonEmptyString(ws.verified_at)) {
+          findings.push(`${at}.evidence.${field}: live_probe requires a verified_at date`);
+        }
+      }
+    }
   }
 
   // Every candidate on a provider with a CLI alias catalog must name a catalog
@@ -2299,22 +2334,29 @@ const INTERNAL_SUBAGENT_MECHANISMS = new Set([
   "NESTED_AGENT",
 ]);
 
-const ORCA_EVIDENCE_FIELDS = [
-  "orca_terminal_handle",
-  "runtime_adapter",
-  "provider_family",
-  "exact_model",
-  "effort",
-  "launch_command",
-];
+// Lifecycle a supervised or tracked worker must prove. `terminal_started` is
+// deliberately absent: not every worker has a terminal (orca 1.4.209
+// worker-start), so a terminal is optional evidence, never the identity.
+const ORCA_LIFECYCLE_FIELDS = ["model_launched", "worker_active", "completed"];
+const EXACT_IDENTITY_FIELDS = ["runtime_adapter", "provider_family", "exact_model", "effort"];
 
-const ORCA_LIFECYCLE_FIELDS = ["terminal_started", "model_launched", "worker_active", "completed"];
+// Normalises "no effort flag" spellings so an effort-mode NONE runtime and a
+// provider_default contract compare equal.
+function normEffort(value) {
+  return value === null || value === undefined || value === "" || value === "provider_default" ? "provider_default" : value;
+}
 
 /**
- * Verifies that an Orca-worker classification was executed through the Orca
- * terminal path and that the actual runtime identity matches the routing
- * decision. ORCA_WORKER and INTERNAL_SUBAGENT are deliberately mutually
- * exclusive dispatch modes; an internal agent label is never Orca evidence.
+ * Verifies that an Orca-worker classification was executed as a tracked Orca
+ * worker and that the actual runtime identity matches the routing decision.
+ *
+ * Canonical worker identity is TASK_ID + DISPATCH_ID + valid launch/dispatch
+ * evidence. A terminal handle is optional. Paths:
+ *   ORCA_WORKER_START    -> WORKER_START (supervised; the default)
+ *   ORCA_CUSTOM_DISPATCH -> CUSTOM_DISPATCHED_WORKER (operator terminal + dispatch --inject)
+ *   ORCA_TERMINAL_PROMPT -> LIGHTWEIGHT_TERMINAL_PROMPT (never an Orca worker)
+ * ORCA_WORKER and INTERNAL_SUBAGENT stay mutually exclusive; an internal agent
+ * label is never Orca evidence.
  */
 export function evaluateDispatchCompliance(input) {
   const i = isPlainObject(input) ? input : {};
@@ -2323,6 +2365,7 @@ export function evaluateDispatchCompliance(input) {
   const workerClass = ORCA_WORKER_TASK_CLASSES.has(i.task_class);
   const internalMechanism = INTERNAL_SUBAGENT_MECHANISMS.has(i.execution_mechanism);
   const orcaRequired = workerClass || i.dispatch_mode === "ORCA_WORKER";
+  const requested = isPlainObject(i.requested_identity) ? i.requested_identity : {};
 
   const result = (values) => ({
     orca_worker_dispatch_required: orcaRequired,
@@ -2330,20 +2373,24 @@ export function evaluateDispatchCompliance(input) {
     orca_dispatch_verified: "NO",
     workflow_policy_compliance: "NON_COMPLIANT",
     exact_runtime_attestation: "UNVERIFIED",
+    dispatch_path: null,
+    supervision: "NONE",
+    release_semantics: null,
     ...values,
   });
 
   if (i.dispatch_mode === "INTERNAL_SUBAGENT") {
     if (workerClass) {
-      return result({ result: "HARD_FAIL", reason_code: "INTERNAL_SUBAGENT_AS_ORCA_WORKER" });
+      return result({ result: "HARD_FAIL", reason_code: "INTERNAL_SUBAGENT_AS_ORCA_WORKER", dispatch_path: "INTERNAL_SUBAGENT" });
     }
     if (i.internal_subagent_policy !== "ALLOWED") {
-      return result({ result: "HARD_FAIL", reason_code: "INTERNAL_SUBAGENT_NOT_ALLOWED" });
+      return result({ result: "HARD_FAIL", reason_code: "INTERNAL_SUBAGENT_NOT_ALLOWED", dispatch_path: "INTERNAL_SUBAGENT" });
     }
     return result({
       orca_worker_dispatch_required: false,
       orca_dispatch_required: false,
       workflow_policy_compliance: "COMPLIANT",
+      dispatch_path: "INTERNAL_SUBAGENT",
       result: "PASS",
       reason_code: null,
     });
@@ -2353,47 +2400,122 @@ export function evaluateDispatchCompliance(input) {
     return result({ result: "HARD_FAIL", reason_code: "DISPATCH_MODE_UNCLASSIFIED" });
   }
 
-  if (internalMechanism || i.execution_mechanism !== "ORCA_TERMINAL") {
-    return result({ result: "HARD_FAIL", reason_code: "INTERNAL_SUBAGENT_AS_ORCA_WORKER" });
+  if (internalMechanism) {
+    return result({ result: "HARD_FAIL", reason_code: "INTERNAL_SUBAGENT_AS_ORCA_WORKER", dispatch_path: "INTERNAL_SUBAGENT" });
   }
 
-  if (!isNonEmptyString(evidence.orca_terminal_handle)) {
-    return result({ result: "DISPATCH_BLOCKED", reason_code: "ORCA_TERMINAL_HANDLE_MISSING" });
+  // Legacy ORCA_TERMINAL (the pre-supervised-first path): a Task/Dispatch pair
+  // plus an inject makes it a custom dispatched worker; a bare terminal is a
+  // lightweight prompt.
+  let path = EXECUTION_MECHANISM_PATH[i.execution_mechanism] ?? null;
+  if (i.execution_mechanism === "ORCA_TERMINAL") {
+    path = isNonEmptyString(evidence.dispatch_id) && evidence.injected === true ? "CUSTOM_DISPATCHED_WORKER" : "LIGHTWEIGHT_TERMINAL_PROMPT";
+  }
+  if (path === null) {
+    return result({ result: "HARD_FAIL", reason_code: "DISPATCH_PATH_UNKNOWN" });
   }
 
-  const missingEvidence = ORCA_EVIDENCE_FIELDS.filter((field) => !isNonEmptyString(evidence[field]));
-  const missingLifecycle = ORCA_LIFECYCLE_FIELDS.filter((field) => lifecycle[field] !== true);
-  if (missingEvidence.length > 0 || missingLifecycle.length > 0) {
+  if (path === "LIGHTWEIGHT_TERMINAL_PROMPT") {
     return result({
+      result: "HARD_FAIL",
+      reason_code: "LIGHTWEIGHT_TERMINAL_PROMPT_AS_ORCA_WORKER",
+      dispatch_path: path,
+    });
+  }
+
+  const pathValues =
+    path === "WORKER_START"
+      ? { dispatch_path: path, supervision: "SUPERVISED", release_semantics: "WORKER_RELEASE" }
+      : { dispatch_path: path, supervision: "TRACKED_CUSTOM", release_semantics: "OPERATOR_OWNED_TERMINAL" };
+
+  if (!isNonEmptyString(evidence.task_id) || !isNonEmptyString(evidence.dispatch_id)) {
+    return result({ ...pathValues, result: "DISPATCH_BLOCKED", reason_code: "ORCA_DISPATCH_IDENTITY_MISSING" });
+  }
+
+  const requestComplete = EXACT_IDENTITY_FIELDS.every((f) => (f === "effort" ? true : isNonEmptyString(requested[f])));
+  if (!requestComplete) {
+    return result({ ...pathValues, result: "DISPATCH_BLOCKED", reason_code: "EXACT_RUNTIME_UNVERIFIED" });
+  }
+
+  const support = workerStartSupport(i.registry, requested.runtime_adapter);
+  let actual;
+
+  if (path === "WORKER_START") {
+    // An exact model the runtime cannot take at launch cannot be proven either.
+    if (support.known && !support.expressible) {
+      return result({
+        ...pathValues,
+        result: "DISPATCH_BLOCKED",
+        reason_code: "WORKER_START_CANNOT_EXPRESS_EXACT_MODEL",
+        recommended_path: "CUSTOM_DISPATCHED_WORKER",
+      });
+    }
+    // launch.effective is the evidence; launch.requested alone never is.
+    const effective = isPlainObject(evidence.launch?.effective) ? evidence.launch.effective : null;
+    if (effective === null || !isNonEmptyString(effective.model)) {
+      return result({ ...pathValues, result: "DISPATCH_BLOCKED", reason_code: "EXACT_RUNTIME_UNVERIFIED" });
+    }
+    const agentOk = support.agent === null || effective.agent === support.agent;
+    actual = {
+      runtime_adapter: agentOk ? requested.runtime_adapter : `agent:${effective.agent}`,
+      provider_family: requested.provider_family,
+      exact_model: effective.model,
+      effort: effective.effort,
+    };
+  } else {
+    // Custom topology: the operator launched the exact argv; the Dispatch
+    // exists only if `dispatch --inject` was accepted into a ready TUI.
+    if (evidence.injected !== true) {
+      return result({ ...pathValues, result: "DISPATCH_BLOCKED", reason_code: "CUSTOM_DISPATCH_NOT_INJECTED" });
+    }
+    if (!isNonEmptyString(evidence.launch_command)) {
+      return result({ ...pathValues, result: "DISPATCH_BLOCKED", reason_code: "ORCA_DISPATCH_EVIDENCE_INCOMPLETE", missing_evidence: ["launch_command"] });
+    }
+    actual = Object.fromEntries(EXACT_IDENTITY_FIELDS.map((f) => [f, evidence[f]]));
+    if (!["runtime_adapter", "provider_family", "exact_model"].every((f) => isNonEmptyString(actual[f]))) {
+      return result({ ...pathValues, result: "DISPATCH_BLOCKED", reason_code: "EXACT_RUNTIME_UNVERIFIED" });
+    }
+  }
+
+  const mismatch = EXACT_IDENTITY_FIELDS.some((f) =>
+    f === "effort" ? normEffort(requested.effort) !== normEffort(actual.effort) : requested[f] !== actual[f],
+  );
+  if (mismatch) {
+    return result({ ...pathValues, result: "HARD_FAIL", reason_code: "EXACT_DISPATCH_FAILURE", exact_runtime_attestation: "MISMATCH" });
+  }
+
+  const missingLifecycle = ORCA_LIFECYCLE_FIELDS.filter((f) => lifecycle[f] !== true);
+  if (missingLifecycle.length > 0) {
+    return result({
+      ...pathValues,
+      exact_runtime_attestation: "MATCH",
       result: "DISPATCH_BLOCKED",
       reason_code: "ORCA_DISPATCH_EVIDENCE_INCOMPLETE",
-      missing_evidence: missingEvidence,
       missing_lifecycle: missingLifecycle,
     });
   }
 
-  const requested = isPlainObject(i.requested_identity) ? i.requested_identity : {};
-  const identityFields = ["runtime_adapter", "provider_family", "exact_model", "effort"];
-  const identityComplete = identityFields.every((field) => isNonEmptyString(requested[field]));
-  if (!identityComplete) {
-    return result({ result: "DISPATCH_BLOCKED", reason_code: "EXACT_RUNTIME_UNVERIFIED" });
-  }
-
-  const mismatch = identityFields.some((field) => requested[field] !== evidence[field]);
-  if (mismatch) {
+  // COMPLETED is proven by the worker's own worker_done for THIS Dispatch.
+  const done = validateWorkerDone(evidence.completion, { task_id: evidence.task_id, dispatch_id: evidence.dispatch_id });
+  if (!done.valid) {
     return result({
-      result: "HARD_FAIL",
-      reason_code: "EXACT_DISPATCH_FAILURE",
-      exact_runtime_attestation: "MISMATCH",
+      ...pathValues,
+      exact_runtime_attestation: "MATCH",
+      result: "DISPATCH_BLOCKED",
+      reason_code: "WORKER_DONE_INVALID",
+      worker_done_reason: done.reason_code,
     });
   }
 
   return result({
+    ...pathValues,
     orca_dispatch_verified: "YES",
     workflow_policy_compliance: "COMPLIANT",
     exact_runtime_attestation: "MATCH",
+    worker_outcome: done.outcome,
     result: "PASS",
     reason_code: null,
+    advisory: path === "CUSTOM_DISPATCHED_WORKER" && support.expressible ? "WORKER_START_PREFERRED" : null,
   });
 }
 
@@ -2832,9 +2954,31 @@ export function validateRouterExecutionRecord(record) {
  * stays normative.
  * ------------------------------------------------------------------------ */
 
-const ROUTER_EXECUTION_CASE_KINDS = ["router_execution", "contract_consistency", "authorized_dispatch", "dispatch_compliance"];
+const ROUTER_EXECUTION_CASE_KINDS = [
+  "router_execution",
+  "contract_consistency",
+  "authorized_dispatch",
+  "dispatch_compliance",
+  "orca_worker_done",
+  "orca_completion_wait",
+  "orca_delivery",
+  "orca_messaging",
+  "orca_recovery",
+  "orca_task_result",
+];
 
-export function validateRouterExecutionCases(document) {
+// Supervised-first orchestration protocol cases: each kind runs one pure
+// function from scripts/lib/orca-orchestration.mjs over the case's input.
+const ORCA_PROTOCOL_CASES = {
+  orca_worker_done: (c) => validateWorkerDone(c.message, c.expected_dispatch ?? {}),
+  orca_completion_wait: (c) => classifyCompletionWaiter(c.waiter),
+  orca_delivery: (c) => processDelivery(c.delivery),
+  orca_messaging: (c) => classifyOrchestrationMessaging(c.event),
+  orca_recovery: (c) => decideWorkerRecovery(c.state),
+  orca_task_result: (c) => mapTaskResultToOutcome(c.task_result?.status, { blocker_kind: c.task_result?.blocker_kind ?? null }),
+};
+
+export function validateRouterExecutionCases(document, registry = null) {
   const findings = [];
 
   if (!isPlainObject(document) || !Array.isArray(document.cases) || document.cases.length === 0) {
@@ -2894,8 +3038,20 @@ export function validateRouterExecutionCases(document) {
       continue;
     }
 
+    if (testCase.kind in ORCA_PROTOCOL_CASES) {
+      const result = ORCA_PROTOCOL_CASES[testCase.kind](testCase);
+      for (const [key, expected] of Object.entries(testCase.expect)) {
+        if (JSON.stringify(result[key] ?? null) !== JSON.stringify(expected)) {
+          findings.push(`${named}: expected ${key} ${JSON.stringify(expected)}, got ${JSON.stringify(result[key] ?? null)}`);
+        }
+      }
+      continue;
+    }
+
     if (testCase.kind === "dispatch_compliance") {
-      const result = evaluateDispatchCompliance(testCase.input);
+      const result = evaluateDispatchCompliance(
+        registry !== null && isPlainObject(testCase.input) ? { registry, ...testCase.input } : testCase.input,
+      );
       for (const [key, expected] of Object.entries(testCase.expect)) {
         if (JSON.stringify(result[key]) !== JSON.stringify(expected)) {
           findings.push(`${named}: expected ${key} ${JSON.stringify(expected)}, got ${JSON.stringify(result[key])}`);
@@ -3964,7 +4120,7 @@ export function validateRepository(root = process.cwd()) {
 
   const routerExecutionCases = readInput(root, "tests/router-execution-cases.yaml", "yaml", findings);
   if (routerExecutionCases !== undefined) {
-    for (const finding of validateRouterExecutionCases(routerExecutionCases)) {
+    for (const finding of validateRouterExecutionCases(routerExecutionCases, registry ?? null)) {
       findings.push(`tests/router-execution-cases.yaml: ${finding}`);
     }
     summary.routerExecutionCases = Array.isArray(routerExecutionCases?.cases) ? routerExecutionCases.cases.length : 0;

@@ -239,51 +239,210 @@ resource acquisition、套用既有 Router capacity reserve、保留 provider + 
 reasoning、要求 dispatch identity attestation、維持既有的 reviewer disjointness。
 **不建立第二條、不受治理的 helper path。**
 
-### `ORCA_WORKER_DISPATCH_REQUIRED`
+### `ORCA_WORKER_DISPATCH_REQUIRED`（supervised-first）
 
 凡 task 被分類為 Orca worker，包括 implementation worker、specialist reviewer、
 independent / disjoint reviewer、architecture specialist、security specialist 與
-database specialist，`dispatch_mode` 必須為 `ORCA_WORKER`，且必須走以下實際路徑：
+database specialist，`dispatch_mode` 必須為 `ORCA_WORKER`，並以**被追蹤的 Orca
+worker** 執行。本不變式的安全目的不變：internal Agent / `invoke_subagent` 不得冒充
+Orca worker。
+
+**Canonical worker identity** 是：
 
 ```text
-Router → choose runtime_adapter/provider/exact_model/effort
-       → orca terminal create → obtain terminal handle
-       → launch exact runtime/model
-       → verify TERMINAL_STARTED → MODEL_LAUNCHED → WORKER_ACTIVE
-       → orca terminal send bounded task
-       → deterministic terminal wait / screen
-       → collect structured handoff → settle terminal
+TASK_ID + DISPATCH_ID + valid launch/dispatch evidence
 ```
 
-`ORCA_WORKER` 與 `INTERNAL_SUBAGENT` 是互斥的 dispatch mode。Antigravity
-`invoke_subagent` / `Agent(...)`、research subagent、self subagent 或 nested agent
-都不是 Orca worker evidence，且不得被 terminal title、`model = pro`、
-`type = research` 等 label 升格為 Orca dispatch。若 Orca worker 實際由上述機制
-執行，結果固定為：
+`TERMINAL_HANDLE` 是**選填證據**，不是 identity——orca 1.4.209 的 worker 不一定有
+terminal，啟動後一律以 Dispatch ID 定址。「有 terminal handle」不等於「是 worker」。
+
+#### Dispatch path 與 state machine
+
+舊（2026-09-22，已廢止）：
 
 ```text
-INTERNAL_SUBAGENT_AS_ORCA_WORKER = HARD_FAIL
-WORKFLOW_POLICY_COMPLIANCE = NON_COMPLIANT
-ORCA_DISPATCH_VERIFIED = NO
+terminal create → handle → launch → TERMINAL_STARTED → MODEL_LAUNCHED
+→ WORKER_ACTIVE → terminal send → terminal wait → handoff → settle terminal
 ```
+
+新（supervised-first，依 installed orca 1.4.209 orchestration guide）：
+
+```text
+Router → runtime_adapter / provider / exact_model / effort
+  │
+  ├─ runtime_adapters.<x>.orca_worker_start.launch_model_selection = supported
+  │    （codex_cli、claude_cli、Cursor）
+  │    → orca orchestration worker-start --task|--spec ... --agent <a>
+  │         --model <m> --effort <e> --worktree <placement> --json
+  │    → 回條 launch.effective == routing decision？    否 → EXACT_DISPATCH_FAILURE
+  │    → WORKER_START（SUPERVISED，release = worker-release）
+  │
+  └─ unsupported（Antigravity：--model 被拒、effective.model = null）
+       → operator terminal/worktree 以 exact argv 啟動（agy --model <id> ...）
+       → orca terminal wait --for tui-idle（只為 TUI ready）
+       → orca orchestration dispatch --task <id> --to <handle> --inject
+       → CUSTOM_DISPATCHED_WORKER（TRACKED_CUSTOM，terminal = operator-owned）
+  │
+  ▼
+MODEL_LAUNCHED → WORKER_ACTIVE
+  → coordinator: orchestration check --wait（見下方 wait protocol）
+  → worker_done（TASK_ID + DISPATCH_ID + outcome）→ COMPLETED
+  → completion accounting：reuse / worker-retain / worker-release
+```
+
+| Path | 來源 | 分類 | 可否滿足本不變式 |
+|---|---|---|---|
+| `worker-start` | Task + Dispatch + terminal + 注入 + supervised 資源歸屬一次完成 | `WORKER_START` / `SUPERVISED` | 是（預設） |
+| operator terminal + TUI ready + `dispatch --inject` | `worker-start` 無法表達 exact runtime / model 時 | `CUSTOM_DISPATCHED_WORKER` / `TRACKED_CUSTOM` | 是：有 Task/Dispatch 追蹤與 `worker_done` contract；terminal lifecycle 由 operator 負責，`worker-release` 不對它做 process action |
+| `terminal create` + `terminal send` | 只送文字 | `LIGHTWEIGHT_TERMINAL_PROMPT` | **否**：沒有 Task、沒有 Dispatch、沒有 `worker_done` 權限 → `HARD_FAIL` |
+| internal Agent / `invoke_subagent` / research / self / nested subagent | 非 Orca | `INTERNAL_SUBAGENT` | **否** → `INTERNAL_SUBAGENT_AS_ORCA_WORKER = HARD_FAIL` |
+
+`CUSTOM_DISPATCHED_WORKER` **不**一律稱為 unsupervised：它的 Task 與 Dispatch 是
+authoritative、worker 以 `worker_done` 結算；差別只在 terminal 的 lifecycle
+ownership 與 release 語意（orca 顯示該 lane 為 `unsupervised` 指的是 process 資源列）。
+Codex / Claude / Cursor 也可走 custom 路徑，但會標 `WORKER_START_PREFERRED`
+advisory——它們的 exact model 應該由 `worker-start --model --effort` 表達。
 
 Internal subagent 只有在 Router **明示** `dispatch_mode: INTERNAL_SUBAGENT`，且該
 task class 的 policy 明示允許時才可使用；它不繼承或滿足任何 Orca worker contract。
 
-每份 Orca worker handoff 必須保存：`ORCA_TERMINAL_HANDLE`、`RUNTIME_ADAPTER`、
-`PROVIDER_FAMILY`、`EXACT_MODEL`、`EFFORT`、`LAUNCH_COMMAND`，以及 lifecycle
-`TERMINAL_STARTED`、`MODEL_LAUNCHED`、`WORKER_ACTIVE`、`COMPLETED`。缺少
-`ORCA_TERMINAL_HANDLE` 時，`ORCA_DISPATCH_VERIFIED = NO`，Router 不得宣稱已
-Orca-dispatched。
+#### Evidence 與 exact-runtime attestation
 
-Exact-runtime attestation 比對 routing decision 與**實際 launch evidence** 的
-runtime adapter、provider family、exact model、effort；requested identity 或
-internal-subagent label 都不能代替 actual evidence。不符時為
-`EXACT_DISPATCH_FAILURE` / `HARD_FAIL`。
+每份 Orca worker handoff 必須保存：`TASK_ID`、`DISPATCH_ID`、`RUNTIME_ADAPTER`、
+`PROVIDER_FAMILY`、`EXACT_MODEL`、`EFFORT`、`DISPATCH_PATH`，以及 lifecycle
+`MODEL_LAUNCHED`、`WORKER_ACTIVE`、`COMPLETED`；`TERMINAL_HANDLE`、`LAUNCH_COMMAND`
+視路徑而定（custom 路徑必須有 `LAUNCH_COMMAND` 與 inject 證據）。
+缺 `TASK_ID` 或 `DISPATCH_ID` → `ORCA_DISPATCH_IDENTITY_MISSING`、
+`ORCA_DISPATCH_VERIFIED = NO`，Router 不得宣稱已 Orca-dispatched。
 
-若 Orca daemon 不可用、terminal creation 失敗、exact model 無法 launch、worker
-health 無法驗證，或 required evidence 不完整，結果為 `DISPATCH_BLOCKED`。**不得
-silently fallback 到 `INTERNAL_SUBAGENT`。**
+- `WORKER_START`：**以 `launch.effective` 為證據**，`launch.requested` 單獨永遠不算。
+  effective 缺 model → `EXACT_RUNTIME_UNVERIFIED`；與 routing decision 不符 →
+  `EXACT_DISPATCH_FAILURE` / `HARD_FAIL`。Registry 標為
+  `launch_model_selection: unsupported` 的 runtime 以 `worker-start` 做 exact
+  routing → `WORKER_START_CANNOT_EXPRESS_EXACT_MODEL`，建議
+  `CUSTOM_DISPATCHED_WORKER`。
+- `CUSTOM_DISPATCHED_WORKER`：inject 未被接受 → `CUSTOM_DISPATCH_NOT_INJECTED`；
+  以實際 launch argv 與 runtime evidence 比對四欄 identity。effort mode `NONE`
+  的 runtime（Antigravity Claude 4.6）以 `provider_default` 比對。
+- `COMPLETED` 由該 Dispatch 自己的有效 `worker_done` 證明（見下方協議），不由 terminal
+  狀態或 `task-update` 推得；不符 → `WORKER_DONE_INVALID`。
+
+Runtime support matrix 記在 [`MODEL_REGISTRY.yaml`](MODEL_REGISTRY.yaml) 的
+`runtime_adapters.<x>.orca_worker_start`。每個能力欄位都標明 provenance
+（`evidence`）：`live_probe`（本機實際回條，必須有 `verified_at`）、`local_help`
+（本機 `--help`）、`version_matched_guide`（`orca skills get orchestration --full`）。
+只有 `live_probe` 可以被描述為「已實測」；provenance 不改變 routing。目前 Codex 與
+Antigravity 為 `live_probe`，Claude 為 `local_help` / `version_matched_guide`。實測
+紀錄見 [`../references/OFFICIAL_COMMANDS.md`](../references/OFFICIAL_COMMANDS.md)。
+
+#### Fail-closed
+
+若 Orca daemon 不可用、`worker-start` / `dispatch` 失敗、exact model 無法 launch 或
+無法 attest、worker health 無法驗證、或 required evidence 不完整，結果為
+`DISPATCH_BLOCKED`。**不得 silently fallback 到 `INTERNAL_SUBAGENT`，也不得降級成
+`LIGHTWEIGHT_TERMINAL_PROMPT`。** `worker-start` 非零結束時**不得重新啟動**：讀回條的
+`failedStage` / `residualResources`，依下方 recovery protocol 處置。
+
+### Orca orchestration 協議（coordinator ↔ worker）
+
+來源優先序（命令行為衝突時，以 installed runtime 對應文件為準）：
+
+```text
+1. installed-version:  orca skills get orchestration --full
+2. local:              orca orchestration <verb> --help
+3. upstream docs:      https://www.onorca.dev/docs/cli/orchestration
+4. skillpack cached docs（本文件、OFFICIAL_COMMANDS.md）
+```
+
+#### Wait protocol（coordinator）
+
+```text
+orca orchestration check --wait --types "worker_done,escalation,question" --timeout-ms 900000 --json
+```
+
+- 這是 supervised worker 的**唯一** completion waiter：原生阻塞，每 15 秒往 stderr
+  送 keepalive，stdout 只有最終結果，符合 `NO_LLM_BUSY_POLLING` 的 native watch。
+- 一個 Delivery 是整批 FIFO，未 ack 前會重送：**每則訊息都處理完**、每個已結算
+  worker 的 terminal 都決定下一個 owner（reuse / retain / release）之後，才
+  `--ack <delivery_id>`。`--types` 只決定何時喚醒，不授權略過較舊的訊息。
+- Timeout 或空結果是 **checkpoint，不是 failure**；連續三次空 wait 後改為
+  `worker-list --run <run_id> --include-remote --json` 列舉，依每列
+  `projection.nextAction` 行事。
+- `terminal wait` **只用於** low-level topology 的 TUI-ready 等待，不再當 worker
+  completion waiter；`terminal read` 輪詢與 Schedule 同樣不行。
+
+#### `worker_done` protocol（worker）
+
+```text
+orca orchestration send --from <handle> --dispatch-capability <cap> --type worker_done \
+  --subject "<short status>" --body "<three sentences: work, findings, remaining>" \
+  --task-id <task_id> --dispatch-id <dispatch_id> --outcome succeeded|failed \
+  [--files-modified "<real paths>"] [--report-path <path>]
+```
+
+- **恰好一次**，由被派工的 terminal 送出；`--task-id` 與 `--dispatch-id` 都必填
+  （防止 stale retry 結算錯的 Dispatch），`--outcome` 必填，失敗不得只寫在 prose。
+- `--body` 為簡短摘要；完整報告（skillpack `TASK_RESULT` / `INTERNAL_COMPACT`）寫入
+  `--report-path`。
+- **只有兩種狀態會結算 Dispatch**。`failed` 會結束該 attempt 並計入三次熔斷，所以
+  只保留給「這個 dispatch 已終止性地無法完成」：
+
+  | TASK_RESULT / blocker kind | 送什麼 | 結算？ |
+  |---|---|---|
+  | `PASS` | `worker_done --outcome succeeded` | 是 |
+  | `TERMINAL_FAIL`（舊寫法 `FAIL`；或 `BLOCKED` + `blocker_kind: TERMINAL_FAIL`） | `worker_done --outcome failed` | 是 |
+  | `HUMAN_DECISION_REQUIRED`（舊寫法 `HUMAN_GATE`） | `orchestration ask` | **否** |
+  | `RECOVERABLE_BLOCKER`（權限、缺輸入、環境——coordinator 可解） | `orchestration send --type escalation` | **否** |
+  | `DEPENDENCY_WAIT` / `COORDINATOR_ACTION` | message 或 escalation | **否** |
+
+  沒標 blocker kind 的 `BLOCKED` 一律視為 recoverable：送 escalation、**不結算**，
+  由 coordinator 分類後再決定。誤送一次 escalation 只多一次 coordinator 檢視；誤結算為
+  `failed` 則要付出一次 retry 與一次熔斷計數。`consumer_fenced` 的規則不變：已被 fence
+  的 worker 停止，不送任何 `worker_done`。
+- 有效的 `worker_done` 會自動結算 Task 與 Dispatch——**不要**再 `task-update
+  --status completed`。coordinator 驗證它屬於預期的 active Dispatch 才接受。
+- 送出後結束該回合並 idle，不輪詢、不關自己的 terminal、不開新工作。
+
+#### Ask protocol（worker 阻塞問題）
+
+- 需要 coordinator 回答時一律 `orca orchestration ask`（附 `--timeout-ms`）；**不得**
+  讓 worker 長時間停在 coordinator 看不到的本地互動式問答 TUI。
+- `ask` 逾時會留下一個 durable pending question：以 `ask --resume <message_id>` 續等，
+  **不得**重新問一次。coordinator 以 `reply --id <message_id>` 回答；不要為了回答
+  worker 的 ask 而建立 gate（gate 只給 coordinator 自己的 Task-DAG 決策）。
+
+#### Mid-flight instruction 與 worker 端 check
+
+- 對被追蹤 worker 的後續指示一律
+  `orca orchestration send --to dispatch:<dispatch_id> --subject ... --body ...`；
+  **不再**用 `terminal send` 做 tracked-worker follow-up（它繞過 durable inbox）。
+- `send` 成功只證明 durable enqueue，不證明對方已讀。worker 在自然檢查點（開新檔前、
+  測試後）與送 `worker_done` 前各跑一次 `check --terminal <handle> --json`。
+- `check` 回 `consumer_fenced`：此 process 已不擁有該 Dispatch——停止，**不送**
+  `worker_done`，不重試。
+- `worker_done`、heartbeat 等 lifecycle 訊息**不得**發給群組地址（`@all`、`@codex`…）。
+
+#### Liveness、recovery、retry、cleanup
+
+- `worker-list --run <run_id> [--include-remote]` 的 `projection.liveness` 是 agent
+  存活的**判定**；`worker-show` 的 `observation.status` 只是 PTY 存活——live terminal
+  也可能掛著死掉的 agent（對應本 pack 的「terminal 存在 ≠ worker 健康」）。
+  `observation.agentWait` 表示卡在只有人能回答的提示，是**健康**狀態，不是失敗。
+- **只有正向證據才能行動**：`exited` liveness、proven failed/stopped、或已接受的結算。
+  `unverifiable`（`missing_status`、`host_unavailable`…）是**缺席**，**絕不**授權
+  stop / abandon / retry / release。
+- Retry 只針對 proven failed/stopped：
+  `worker-start --task <id> --retry-of <dispatch_id> --worktree <明確> --agent <a>`；
+  **placement 不繼承**。同一 Task 連續失敗三次即熔斷，不得用新 Run 繞過。
+- `outcome_unknown`：先 inspect（`worker-list` / `worker-show` / `worker-read --limit`），
+  再**明確**選 `worker-stop` 或 `worker-abandon`。
+- Mutation 回應遺失：先 `request-show --request <id>`——`completed` 讀既有回條不重跑；
+  `pending` 以 `--retry-request <id>` 重放；`absent` 不代表沒發生，先 inspect。
+- 結算後立刻三擇一：同一 agent 立即接下一個 Dispatch（reuse）、`worker-retain`、
+  `worker-release`。`worker-list --run <id> --terminal-state reclaimable` 回傳空之前
+  coordinator 不結束。回條為 `release_pending` / `release_unknown` 時照回條處置，
+  **絕不**以 `terminal close` 代替。`orchestration reset` 是破壞性復原，進行中的
+  協調不得使用。
 
 ### Authorized dispatch is mandatory（confirmation-loop 防治）
 
@@ -750,8 +909,9 @@ total runtime != stall duration
 slow != blocked
 ```
 
-`orca terminal wait --timeout-ms 60000` 這類命令若由 router 用於輪詢，該逾時
-**只表示「醒來重新觀察一次狀態」**，不表示「worker 只有 60 秒可以完成」。
+任何 wait 的逾時——supervised worker 的 `orchestration check --wait --timeout-ms
+900000`，或 custom topology TUI-ready 用的 `terminal wait`——
+**只表示「醒來重新觀察一次狀態」**，是 checkpoint，不表示 worker 的期限。
 把 polling window 當成 task budget 是誤讀，會把正常的長時間工作判成失敗。
 
 模型執行時間長本身**不是** failure、**不是** permission blocker、**不是**
@@ -1557,16 +1717,19 @@ ceiling（見上方 Permission ceiling 的能力分解）與 credential 政策�
 
 ### Runtime capability 邊界
 
-`CLOSE` 這個動作要求「關閉單一 terminal」，但目前已驗證的 Orca 命令集**沒有這個
-能力**：`orca terminal stop` 只接受 `--worktree`，會連 router 自己的 terminal 一起
-停掉，也沒有已驗證的 per-terminal close/list 命令。這是 runtime 的能力缺口，
-不是本節政策設計的缺口——**本節不假造不存在的 runtime 行為**。
+orca 1.4.209 已提供單一 terminal 的收尾與 live inventory（先前記為能力缺口）。
+`CLOSE` 的實際執行路徑依 terminal 歸屬而定，先完成上述分類與 evidence 擷取：
 
-在該缺口補上之前，`CLOSE` 的實際執行路徑是：operational router 先完成上述分類
-與 evidence 擷取，把該 terminal 標記為 `CLOSED`（lifecycle state，記在 inventory
-與 handoff 中），再視情況交由人在 Orca UI 手動關閉該 tab，或等待同一 worktree 內
-其他 terminal 也都可安全停止後，使用 worktree-scope 的 `orca terminal stop`。
-精確的 upstream 需求記在
+- **Supervised worker（`WORKER_START`）**：已接受的結算後以
+  `orca orchestration worker-release --dispatch <id>` 收尾（或 reuse / `worker-retain`）。
+  **不得**以 `terminal close` 代替 release；`release_pending` / `release_unknown` 照回條處置。
+- **Custom dispatched worker 與其他 operator terminal**：
+  `orca terminal close --terminal <handle> [--tab]`（custom lane 的 release 不做 process action）。
+- Inventory：`orchestration worker-list --run <id>` 與 `orca terminal list`；binding
+  fingerprint 仍由 router 記在 inventory 與 handoff。
+
+`orca terminal close --worktree <sel> --all` 會停掉整個 workspace（含 router 自己），
+只在整個 workspace 都該收時使用。命令與實測見
 [`references/OFFICIAL_COMMANDS.md`](../references/OFFICIAL_COMMANDS.md)。
 
 ## Human gates

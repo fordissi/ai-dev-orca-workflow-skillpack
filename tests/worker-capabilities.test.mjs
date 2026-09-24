@@ -227,7 +227,8 @@ test("the policy owns the generalized capability model and never gates the regis
   }
   for (const token of CAPABILITY_DIAGNOSTIC_TOKENS) assert.ok(workflow.includes(token), `token ${token}`);
 
-  assert.match(commands, /orca orchestration worker-read --dispatch <dispatch_id> --limit <bounded_n> --json/);
+  // orca 1.4.209 guide: `--source auto` reads the hook transcript when one exists.
+  assert.match(commands, /orca orchestration worker-read --dispatch <dispatch_id>( --source auto)? --limit <bounded_n> --json/);
 
   assert.match(contract, /required_capabilities:/);
   assert.match(contract, /capability_resolution:/);

@@ -2903,25 +2903,34 @@ test("workflow policy owns continuation freshness and session lifecycle without 
   );
 });
 
-test("the runtime capability gap for terminal cleanup is disclosed, not invented", async () => {
+test("terminal cleanup is documented from the installed runtime, not invented", async () => {
   const commands = await readFile("references/OFFICIAL_COMMANDS.md", "utf8");
+  const workflow = await readFile("policies/WORKFLOW_POLICY.md", "utf8");
 
-  assert.match(commands, /Terminal lifecycle 與 cleanup 的 runtime 邊界/);
-  assert.match(commands, /沒有已驗證的 per-terminal/);
-  assert.match(commands, /不得\*\*假造這些命令的旗標或行為/);
+  // orca 1.4.209 ships per-terminal close and a live inventory; the pack must
+  // stop calling them missing and must record them from the installed CLI.
+  assert.ok(commands.includes("Terminal lifecycle、inventory 與 cleanup（orca 1.4.209）"));
+  assert.ok(commands.includes("orca terminal close --terminal <handle>"));
+  assert.ok(commands.includes("orca terminal list --json"));
+  assert.ok(!commands.includes("沒有已驗證的 per-terminal"), "commands must not call per-terminal close missing");
+  assert.ok(!workflow.includes("沒有已驗證的 per-terminal close/list"), "workflow must not call per-terminal close missing");
 
-  // Any mention of the two missing commands must be marked as hypothetical,
-  // the same convention the pre-existing rate-limits gap already uses -
-  // never presented as something already supported.
+  // Cleanup depends on who owns the terminal. A supervised worker is released,
+  // never closed by hand; an operator-owned terminal is closed explicitly.
+  assert.ok(commands.includes("worker-release --dispatch <id>"));
+  assert.ok(commands.includes("**不得**以 `terminal close` 代替 release"));
+  assert.ok(workflow.includes("**不得**以 `terminal close` 代替 release"));
+
+  // Commands that genuinely do not exist are still only ever named as
+  // hypothetical - the pre-existing rate-limits convention.
   commands.split(/\r?\n/).forEach((line, index) => {
-    if (/orca terminal (stop --terminal|list)/.test(line)) {
+    if (/orca (rate-limits|terminal stop --terminal)/.test(line)) {
       assert.match(line, /尚不存在/, `line ${index + 1} names an unsupported command without marking it hypothetical: ${line}`);
     }
   });
-
-  // The fallback path this gap forces stays documented alongside it.
-  assert.match(commands, /標記 lifecycle state 為 `CLOSED` 並\s*\n?\s*交由人在 UI 關閉該 tab/);
 });
+
+
 
 test("continuation binding and session lifecycle fields stay non-sensitive and reach the templates", async () => {
   const contract = await readFile("templates/ROUTER_EXECUTION_CONTRACT_TEMPLATE.md", "utf8");
@@ -3381,7 +3390,8 @@ test("repository router execution cases all conform to the executable semantics"
   }
 
   assert.ok(cases.cases.length >= 15, "router execution cases must cover at least the required scenarios");
-  assert.deepEqual(validateRouterExecutionCases(cases), []);
+  const registry = parse(await readFile("policies/MODEL_REGISTRY.yaml", "utf8"));
+  assert.deepEqual(validateRouterExecutionCases(cases, registry), []);
 });
 
 test("router execution case validator rejects a case whose expectation drifts", () => {

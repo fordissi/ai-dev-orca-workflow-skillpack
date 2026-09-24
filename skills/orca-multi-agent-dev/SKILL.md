@@ -77,27 +77,46 @@ Router capacity reserve。
 
 ## 3. 六階段路由
 
-### Orca worker dispatch hard invariant
+### Orca worker dispatch hard invariant（supervised-first）
 
 Implementation worker、specialist reviewer、independent / disjoint reviewer、
 architecture / security / database specialist 一律套用
-`ORCA_WORKER_DISPATCH_REQUIRED`。它們必須由 `orca terminal create` 建立 terminal、
-launch contract 指定的 exact runtime/model、驗證 `TERMINAL_STARTED` →
-`MODEL_LAUNCHED` → `WORKER_ACTIVE`，再用 `orca terminal send` 下發 bounded task，
-最後收 structured handoff 並 settle terminal。
+`ORCA_WORKER_DISPATCH_REQUIRED`：以**被追蹤的 Orca worker** 執行。Worker 的身分是
+**`TASK_ID` + `DISPATCH_ID` + launch evidence**；terminal handle 只是選填證據。
+
+- **預設：`orca orchestration worker-start`**。Codex / Claude / Cursor 一律帶
+  `--model <exact> --effort <e>`，並以回條的 **`launch.effective`**（不是 requested）
+  證明 exact model。
+- **`worker-start` 表達不了 exact runtime/model 時**（目前是 Antigravity：`--model`
+  被拒、`effective.model = null`）：operator terminal 以 exact argv 啟動 →
+  `terminal wait --for tui-idle` → `orchestration dispatch --task <id> --to <handle>
+  --inject` = `CUSTOM_DISPATCHED_WORKER`。它有 Task/Dispatch 與 `worker_done`，只是
+  terminal 由 operator 收尾。
+- **`terminal create` + `terminal send` 只是 `LIGHTWEIGHT_TERMINAL_PROMPT`**：沒有
+  Task/Dispatch，永遠不算 Orca worker。
 
 `ORCA_WORKER` 與 `INTERNAL_SUBAGENT` 互斥。Antigravity `invoke_subagent`、
 `Agent(...)`、research/self/nested subagent 不得充當 Orca worker；若這樣替代，
 `INTERNAL_SUBAGENT_AS_ORCA_WORKER = HARD_FAIL`。Internal subagent 只有在 policy
 允許該 task class 且 Router 明示選擇 `INTERNAL_SUBAGENT` 時才合法。
 
-Orca handoff 必須含 terminal handle、runtime adapter、provider family、exact model、
-effort、launch command 與四段 lifecycle evidence；缺 terminal handle 時不得宣稱
-`ORCA_DISPATCH_VERIFIED = YES`。Actual runtime evidence 必須吻合 routing decision，
-不能從 subagent label 推測。Orca/terminal/model/health 無法驗證時回
-`DISPATCH_BLOCKED`，不得 silent fallback。完整 normative 語意見
-[`WORKFLOW_POLICY.md`](../../policies/WORKFLOW_POLICY.md) 的
-`ORCA_WORKER_DISPATCH_REQUIRED`。
+**Session 之間怎麼講話：**
+
+| 誰 | 要做什麼 | 用 |
+|---|---|---|
+| Coordinator | 等 worker 完成 | `check --wait --types "worker_done,escalation,question" --timeout-ms 900000` |
+| Coordinator | 對執行中的 worker 追加指示 | `send --to dispatch:<dispatch_id>`（**不用** `terminal send`） |
+| Coordinator | 回答 worker 的問題 | `reply --id <message_id>`（不要為此開 gate） |
+| Worker | 需要 coordinator 決定 | `ask`；逾時用 `ask --resume <message_id>`，不重問；不開本地問答 TUI |
+| Worker | 收 coordinator 的指示 | 自然檢查點與送 `worker_done` 前跑 `check --terminal <handle>`；`consumer_fenced` → 停，不送 `worker_done` |
+| Worker | 回報完成 | `worker_done` **恰好一次**：`--task-id`、`--dispatch-id`、`--outcome succeeded|failed`、三句摘要，詳細報告用 `--report-path`。`failed` 只給終止性失敗 |
+| Worker | 被卡住但還能繼續 | `send --type escalation`（coordinator 可解）或 `ask`（要人決定）；**不送** `worker_done` |
+
+Orca / `worker-start` / dispatch / exact model / health 無法驗證時回
+`DISPATCH_BLOCKED`，**不得** silent fallback 到 internal subagent 或 lightweight
+prompt；`worker-start` 失敗時不重新啟動，先讀回條的 `failedStage`。完整 normative
+語意見 [`WORKFLOW_POLICY.md`](../../policies/WORKFLOW_POLICY.md) 的
+`ORCA_WORKER_DISPATCH_REQUIRED` 與 *Orca orchestration 協議*。
 
 ```text
 classify -> slot -> overlay -> candidate -> contract -> dispatch
@@ -217,8 +236,13 @@ total runtime != stall duration
 slow != blocked
 ```
 
-`orca terminal wait --timeout-ms 60000` 的逾時只表示「醒來再看一次」，
-不表示 worker 只有 60 秒。用 cursor read 看增量輸出判斷有無進展。
+等 supervised worker 一律用
+`orca orchestration check --wait --types "worker_done,escalation,question" --timeout-ms 900000 --json`：
+原生阻塞，逾時只是 checkpoint。整批訊息都處理完、每個已結算 worker 的 terminal 都
+決定 reuse / retain / release 之後才 `--ack`；連續三次空 wait 改看
+`worker-list --run <id> --include-remote`。`terminal wait` 只用於 custom topology 的
+TUI-ready，不當 completion waiter。`unverifiable` liveness 是缺席，**不授權** stop /
+retry / release。
 
 | 觀察到 | 狀態 | 做什麼 |
 |---|---|---|
@@ -331,8 +355,9 @@ Unknown/未綁定 terminal（缺 fingerprint）一律 `resumable: false`，**不
 title 判斷 task ownership**。
 
 完整語意見 [`WORKFLOW_POLICY.md`](../../policies/WORKFLOW_POLICY.md) 的
-Continuation freshness 與 Session lifecycle and cleanup；目前 Orca 沒有
-per-terminal close/list 的已驗證命令，實際限制見
+Continuation freshness 與 Session lifecycle and cleanup。收尾依 terminal 歸屬：
+supervised worker 用 `worker-release`（不得用 `terminal close` 代替），custom /
+operator terminal 用 `terminal close --terminal <handle>`，命令見
 [`OFFICIAL_COMMANDS.md`](../../references/OFFICIAL_COMMANDS.md)。
 
 ## 9. 停止
@@ -350,6 +375,14 @@ auth/RBAC/RLS、privileged boundary、production deploy、secrets/security confi
 ## 10. 回報（Worker → Operational Router）
 
 Worker / Reviewer 結束時依 `return_profile` 回報（語意見 [`WORKFLOW_POLICY.md`](../../policies/WORKFLOW_POLICY.md) 的 Tiered return and handoff profiles）。收件人是 operational router，不是 strategic router。
+
+**Lifecycle 訊號是 `worker_done`，下面的格式是報告內容。** 被 Orca 派工的 worker 以
+`worker_done` 結算（`--body` 放三句摘要，完整報告寫檔後用 `--report-path` 指過去）。
+**只有 `PASS`（→ `succeeded`）與終止性失敗（`TERMINAL_FAIL` → `failed`）會送
+`worker_done`。** 其餘都**不結算**：需要人決定 → `ask`；coordinator 可解的阻塞 →
+escalation；等相依或等 coordinator 動作 → message / escalation。沒分類的 `BLOCKED`
+當成可恢復、送 escalation，不要直接 `failed`（那會結束 attempt 並吃一次熔斷）。
+有效的 `worker_done` 自動結算 Task，不再 `task-update --status completed`。
 
 **預設（INTERNAL_COMPACT）：** 一般成功之內部執行採用精簡格式：
 

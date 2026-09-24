@@ -12,6 +12,11 @@
 #                                internally consistent.
 # kind: dispatch_compliance  -> executed through evaluateDispatchCompliance();
 #                                verifies Orca-vs-internal dispatch evidence.
+#                                Run with the repository registry (support matrix).
+# kind: orca_worker_done | orca_completion_wait | orca_delivery |
+#       orca_messaging | orca_recovery | orca_task_result
+#                             -> scripts/lib/orca-orchestration.mjs protocol
+#                                checks (supervised-first, orca 1.4.209).
 #
 # The incident this section answers: a long-lived Operational Router
 # (codex/gpt-5.6-luna/max) spent ~25 minutes doing repository discovery, data
@@ -48,70 +53,295 @@ cases:
       workflow_policy_compliance: COMPLIANT
       orca_dispatch_required: false
 
-  - name: exact_orca_terminal_dispatch_passes
+  # ---- Supervised-first orchestration (orca 1.4.209) -------------------- #
+  # Canonical worker identity is TASK_ID + DISPATCH_ID + launch evidence. A
+  # terminal handle is optional: not every worker has a terminal. Launch
+  # evidence below is the real receipt of the 2026-09-24 bounded probe.
+
+  - name: supervised_worker_start_with_effective_launch_passes
     kind: dispatch_compliance
-    why: Complete terminal, lifecycle, and actual identity evidence proves Orca dispatch.
+    why: >-
+      The default path. worker-start created the Task and Dispatch, and
+      launch.effective (not launch.requested) proves the exact model and
+      effort. No terminal handle is needed.
     input:
       task_class: IMPLEMENTATION_WORKER
       dispatch_mode: ORCA_WORKER
-      execution_mechanism: ORCA_TERMINAL
-      requested_identity: &requested_codex
+      execution_mechanism: ORCA_WORKER_START
+      requested_identity: &requested_luna
         runtime_adapter: codex_cli
-        provider_family: codex
-        exact_model: gpt-5.6-terra
-        effort: high
-      evidence: &valid_orca_evidence
-        orca_terminal_handle: terminal-42
-        runtime_adapter: codex_cli
-        provider_family: codex
-        exact_model: gpt-5.6-terra
-        effort: high
-        launch_command: codex exec -m gpt-5.6-terra -c model_reasoning_effort=high -
-        lifecycle: { terminal_started: true, model_launched: true, worker_active: true, completed: true }
+        provider_family: openai
+        exact_model: gpt-5.6-luna
+        effort: low
+      evidence: &supervised_luna
+        task_id: task_23b0611ccc69
+        dispatch_id: ctx_a50dbd1533d4
+        launch:
+          requested: { agent: codex, model: gpt-5.6-luna, effort: low }
+          effective: { agent: codex, model: gpt-5.6-luna, effort: low }
+        lifecycle: { model_launched: true, worker_active: true, completed: true }
+        completion:
+          type: worker_done
+          body: probe ok. no files touched. nothing remains.
+          payload: '{"taskId":"task_23b0611ccc69","dispatchId":"ctx_a50dbd1533d4","outcome":"succeeded"}'
     expect:
       result: PASS
+      dispatch_path: WORKER_START
+      supervision: SUPERVISED
+      release_semantics: WORKER_RELEASE
       orca_dispatch_verified: YES
       exact_runtime_attestation: MATCH
 
-  - name: missing_terminal_handle_cannot_verify_orca
+  - name: missing_dispatch_identity_cannot_verify_orca
     kind: dispatch_compliance
-    why: A launch claim without an Orca terminal handle is not verified dispatch.
+    why: >-
+      Replaces the old terminal-handle rule. A terminal handle proves a pane
+      exists, not that a Dispatch owns it; without TASK_ID and DISPATCH_ID
+      there is no lifecycle authority to verify.
     input:
       task_class: ARCHITECTURE_SPECIALIST
       dispatch_mode: ORCA_WORKER
-      execution_mechanism: ORCA_TERMINAL
-      requested_identity: *requested_codex
+      execution_mechanism: ORCA_WORKER_START
+      requested_identity: *requested_luna
       evidence:
-        runtime_adapter: codex_cli
-        provider_family: codex
-        exact_model: gpt-5.6-terra
-        effort: high
-        launch_command: codex exec -m gpt-5.6-terra -c model_reasoning_effort=high -
-        lifecycle: { terminal_started: true, model_launched: true, worker_active: true, completed: true }
+        task_id: task_23b0611ccc69
+        terminal_handle: term_cb32a090
+        launch:
+          effective: { agent: codex, model: gpt-5.6-luna, effort: low }
+        lifecycle: { model_launched: true, worker_active: true, completed: true }
     expect:
       result: DISPATCH_BLOCKED
-      reason_code: ORCA_TERMINAL_HANDLE_MISSING
+      reason_code: ORCA_DISPATCH_IDENTITY_MISSING
       orca_dispatch_verified: NO
 
-  - name: actual_runtime_mismatch_fails_exact_dispatch
+  - name: terminal_create_plus_send_is_a_lightweight_prompt
     kind: dispatch_compliance
-    why: Requested provider/model labels cannot override different actual runtime evidence.
+    why: >-
+      terminal create + terminal send creates no Task, no Dispatch and no
+      worker_done authority. It is a LIGHTWEIGHT_TERMINAL_PROMPT and can never
+      satisfy ORCA_WORKER_DISPATCH_REQUIRED, however exact its launch argv.
+    input:
+      task_class: SPECIALIST_REVIEWER
+      dispatch_mode: ORCA_WORKER
+      execution_mechanism: ORCA_TERMINAL_PROMPT
+      requested_identity: *requested_luna
+      evidence:
+        terminal_handle: terminal-42
+        launch_command: codex -m gpt-5.6-luna -c model_reasoning_effort="low"
+    expect:
+      result: HARD_FAIL
+      dispatch_path: LIGHTWEIGHT_TERMINAL_PROMPT
+      reason_code: LIGHTWEIGHT_TERMINAL_PROMPT_AS_ORCA_WORKER
+      orca_dispatch_verified: NO
+
+  - name: effective_launch_mismatch_fails_exact_dispatch
+    kind: dispatch_compliance
+    why: >-
+      The routing decision asked for Terra high; launch.effective reports Luna
+      low. Exact routing applies only when the launched runtime matches.
     input:
       task_class: SECURITY_SPECIALIST
       dispatch_mode: ORCA_WORKER
-      execution_mechanism: ORCA_TERMINAL
+      execution_mechanism: ORCA_WORKER_START
       requested_identity:
-        runtime_adapter: claude_cli
-        provider_family: claude
-        exact_model: opus
+        runtime_adapter: codex_cli
+        provider_family: openai
+        exact_model: gpt-5.6-terra
         effort: high
-      evidence: *valid_orca_evidence
+      evidence: *supervised_luna
     expect:
       result: HARD_FAIL
       reason_code: EXACT_DISPATCH_FAILURE
       exact_runtime_attestation: MISMATCH
       workflow_policy_compliance: NON_COMPLIANT
 
+  - name: antigravity_exact_model_is_not_expressible_by_worker_start
+    kind: dispatch_compliance
+    why: >-
+      Live probe 2026-09-24: worker-start --agent antigravity refuses --model
+      and reports launch.effective.model null. The registry support matrix
+      records it, so an exact Antigravity model is steered to custom dispatch
+      instead of being silently accepted at the runtime default.
+    input:
+      task_class: IMPLEMENTATION_WORKER
+      dispatch_mode: ORCA_WORKER
+      execution_mechanism: ORCA_WORKER_START
+      requested_identity:
+        runtime_adapter: antigravity
+        provider_family: gemini
+        exact_model: gemini-3.8-flash-medium
+        effort: medium
+      evidence:
+        task_id: task_a3ee398ff293
+        dispatch_id: ctx_668763af5286
+        launch:
+          requested: { agent: antigravity, model: null, effort: null }
+          effective: { agent: antigravity, model: null, effort: null }
+    expect:
+      result: DISPATCH_BLOCKED
+      reason_code: WORKER_START_CANNOT_EXPRESS_EXACT_MODEL
+      recommended_path: CUSTOM_DISPATCHED_WORKER
+
+  - name: antigravity_custom_dispatched_worker_passes
+    kind: dispatch_compliance
+    why: >-
+      The exact agy argv in an operator terminal, TUI-ready, then dispatch
+      --inject: Task/Dispatch tracked with a worker_done contract. It is
+      CUSTOM_DISPATCHED_WORKER, not untracked; only its terminal lifecycle is
+      operator-owned.
+    input:
+      task_class: IMPLEMENTATION_WORKER
+      dispatch_mode: ORCA_WORKER
+      execution_mechanism: ORCA_CUSTOM_DISPATCH
+      requested_identity:
+        runtime_adapter: antigravity
+        provider_family: gemini
+        exact_model: gemini-3.8-flash-medium
+        effort: medium
+      evidence:
+        task_id: task_agy1
+        dispatch_id: ctx_agy1
+        terminal_handle: term_agy1
+        tui_ready: true
+        injected: true
+        launch_command: agy --model gemini-3.8-flash-medium --effort medium
+        runtime_adapter: antigravity
+        provider_family: gemini
+        exact_model: gemini-3.8-flash-medium
+        effort: medium
+        lifecycle: { model_launched: true, worker_active: true, completed: true }
+        completion:
+          type: worker_done
+          body: Done. Found nothing. Nothing remains.
+          payload: { taskId: task_agy1, dispatchId: ctx_agy1, outcome: succeeded }
+    expect:
+      result: PASS
+      dispatch_path: CUSTOM_DISPATCHED_WORKER
+      supervision: TRACKED_CUSTOM
+      release_semantics: OPERATOR_OWNED_TERMINAL
+      orca_dispatch_verified: YES
+
+  - name: worker_done_validates_against_its_own_dispatch
+    kind: orca_worker_done
+    why: The real probe worker_done carries both lifecycle ids and an explicit outcome; it settles its own Task.
+    message:
+      type: worker_done
+      body: probe ok. no files touched. nothing remains.
+      payload: '{"taskId":"task_23b0611ccc69","dispatchId":"ctx_a50dbd1533d4","outcome":"succeeded"}'
+    expected_dispatch: { task_id: task_23b0611ccc69, dispatch_id: ctx_a50dbd1533d4 }
+    expect: { valid: true, outcome: succeeded, settles_task: true }
+
+  - name: stale_retry_worker_done_is_rejected
+    kind: orca_worker_done
+    why: >-
+      Both ids are required precisely so a stale retry cannot complete the
+      wrong Dispatch.
+    message:
+      type: worker_done
+      body: late report.
+      payload: { taskId: task_23b0611ccc69, dispatchId: ctx_a50dbd1533d4, outcome: succeeded }
+    expected_dispatch: { task_id: task_23b0611ccc69, dispatch_id: ctx_retry_2 }
+    expect: { valid: false, reason_code: STALE_OR_FOREIGN_COMPLETION }
+
+  - name: check_wait_is_the_worker_completion_waiter
+    kind: orca_completion_wait
+    why: orchestration check --wait blocks natively and wakes on worker_done / escalation / question.
+    waiter: { waiter: ORCA_CHECK_WAIT, purpose: WORKER_COMPLETION }
+    expect: { compliant: true }
+
+  - name: terminal_wait_is_not_a_worker_completion_waiter
+    kind: orca_completion_wait
+    why: terminal wait is only for TUI readiness before a low-level inject.
+    waiter: { waiter: TERMINAL_WAIT, purpose: WORKER_COMPLETION }
+    expect: { compliant: false, reason_code: TERMINAL_WAIT_AS_COMPLETION_WAITER }
+
+  - name: terminal_wait_for_tui_ready_is_allowed
+    kind: orca_completion_wait
+    why: Custom topology waits for the TUI before dispatch --inject so injected input is not lost.
+    waiter: { waiter: TERMINAL_WAIT, purpose: TUI_READY }
+    expect: { compliant: true }
+
+  - name: check_wait_timeout_is_a_checkpoint
+    kind: orca_delivery
+    why: A timeout or empty result is a checkpoint, not a failure.
+    delivery: { timed_out: true, consecutive_empty_waits: 1 }
+    expect: { action: CHECKPOINT_CONTINUE_WAITING, ack_allowed: false }
+
+  - name: three_empty_waits_enumerate_the_fleet
+    kind: orca_delivery
+    why: After three consecutive empty waits stop waiting blindly and enumerate worker-list.
+    delivery: { timed_out: true, consecutive_empty_waits: 3 }
+    expect: { action: ENUMERATE_WORKER_LIST }
+
+  - name: delivery_is_acked_only_after_terminal_ownership_is_decided
+    kind: orca_delivery
+    why: >-
+      The Delivery replays until acked. Every message must be processed and
+      every settled terminal given a next owner before the ack.
+    delivery:
+      messages:
+        - id: m1
+          type: worker_done
+          body: a. b. c.
+          payload: { taskId: t1, dispatchId: d1, outcome: succeeded }
+      expected_dispatches: [{ task_id: t1, dispatch_id: d1 }]
+      processed: [m1]
+      terminal_decisions: {}
+    expect: { ack_allowed: false, undecided_terminals: [d1] }
+
+  - name: recoverable_blocker_escalates_without_settling
+    kind: orca_task_result
+    why: >-
+      A blocker the coordinator can clear (access, missing input, environment)
+      must keep the attempt alive. Settling it as failed would end the Dispatch
+      and count a circuit-breaker strike for work that was never impossible.
+    task_result: { status: BLOCKED, blocker_kind: RECOVERABLE_BLOCKER }
+    expect: { use: escalation, settles: false, outcome: null }
+
+  - name: terminal_blocker_settles_as_failed
+    kind: orca_task_result
+    why: Only a blocker that makes this dispatch terminally unable to complete settles with worker_done failed.
+    task_result: { status: BLOCKED, blocker_kind: TERMINAL_FAIL }
+    expect: { use: worker_done, settles: true, outcome: failed }
+
+  - name: unclassified_blocked_is_escalated_not_failed
+    kind: orca_task_result
+    why: >-
+      A bare BLOCKED is escalated for classification rather than failed; a
+      wrong escalation costs one coordinator look, a wrong failure costs a
+      retry and a circuit-breaker strike.
+    task_result: { status: BLOCKED }
+    expect: { use: escalation, settles: false }
+
+  - name: human_decision_uses_ask_without_settling
+    kind: orca_task_result
+    why: A human decision is a blocking question through orchestration ask, not a completion.
+    task_result: { status: HUMAN_DECISION_REQUIRED }
+    expect: { use: ask, settles: false, outcome: null }
+
+  - name: worker_question_uses_orchestration_ask
+    kind: orca_messaging
+    why: A local question TUI is invisible to the coordinator; the worker would sit blocked forever.
+    event: { actor: WORKER, action: LOCAL_QUESTION_TUI }
+    expect: { compliant: false, reason_code: LOCAL_QUESTION_TUI }
+
+  - name: tracked_worker_follow_up_uses_send_to_dispatch
+    kind: orca_messaging
+    why: terminal send bypasses the durable inbox; follow-ups go to dispatch:<id>.
+    event: { actor: COORDINATOR, action: TERMINAL_SEND, tracked_worker: true }
+    expect: { compliant: false, reason_code: TERMINAL_SEND_TO_TRACKED_WORKER }
+
+  - name: unverifiable_liveness_authorizes_nothing
+    kind: orca_recovery
+    why: unverifiable is absence; absence never authorizes stop, abandon, retry or release.
+    state: { liveness: unverifiable, liveness_reason: missing_status }
+    expect: { action: KEEP_WAITING_OR_INSPECT }
+
+  - name: lost_mutation_response_goes_through_request_show
+    kind: orca_recovery
+    why: Replaying blind can start a duplicate worker; request-show says whether it already took effect.
+    state: { mutation_response_lost: true, request_status: completed }
+    expect: { action: READ_RECORDED_RECEIPT }
 
   - name: git_status_and_handoff_read_is_control_plane
     kind: router_execution

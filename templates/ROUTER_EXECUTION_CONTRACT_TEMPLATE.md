@@ -209,28 +209,47 @@ attestation:                  # dispatch 後比對；語意見 WORKFLOW_POLICY.m
                               # DISPATCH_IDENTITY_UNVERIFIED | DISPATCH_CONTRACT_MISMATCH
 
 # Orca worker 與 internal subagent 是互斥模式。任一 worker / specialist / reviewer
-# task 若選 ORCA_WORKER，以下 evidence 必須來自實際 terminal/runtime，不得由 label 推測。
+# task 若選 ORCA_WORKER，以下 evidence 必須來自實際 Orca 回條 / runtime，不得由 label 推測。
+# Canonical identity = task_id + dispatch_id + launch evidence；terminal_handle 選填。
 dispatch_compliance:
   dispatch_mode:              # unresolved — ORCA_WORKER | INTERNAL_SUBAGENT
   orca_worker_dispatch_required: # unresolved — true | false
-  orca_terminal_handle:       # unresolved；缺少時 ORCA_DISPATCH_VERIFIED = NO
+  dispatch_path:              # unresolved — WORKER_START | CUSTOM_DISPATCHED_WORKER
+                              # （LIGHTWEIGHT_TERMINAL_PROMPT 不得作為 Orca worker）
+  run_id:                     # unresolved
+  task_id:                    # unresolved；缺少時 ORCA_DISPATCH_VERIFIED = NO
+  dispatch_id:                # unresolved；缺少時 ORCA_DISPATCH_VERIFIED = NO
+  terminal_handle:            # optional — 不是每個 worker 都有 terminal
   runtime_adapter:            # unresolved
   provider_family:            # unresolved
   exact_model:                # unresolved
-  effort:                     # unresolved
-  launch_command:             # unresolved — exact command，需遵守 secret/redaction 規則
+  effort:                     # unresolved（effort mode NONE → provider_default）
+  launch_evidence:
+    worker_start_effective:   # WORKER_START：回條 launch.effective {agent, model, effort}
+                              # launch.requested 單獨不算 evidence
+    launch_command:           # CUSTOM_DISPATCHED_WORKER：exact argv（遵守 redaction 規則）
+    injected:                 # CUSTOM_DISPATCHED_WORKER：dispatch --inject 被接受 true | false
   lifecycle:
-    terminal_started:         # unresolved — true | false
     model_launched:           # unresolved — true | false
     worker_active:            # unresolved — true | false
-    completed:                # unresolved — true | false
+    completed:                # unresolved — 由本 Dispatch 的有效 worker_done 證明
+  worker_done:
+    outcome:                  # unresolved — succeeded | failed（failed 只給 TERMINAL_FAIL）
+    blocker_kind:             # 非 PASS 時必填 — TERMINAL_FAIL | HUMAN_DECISION_REQUIRED |
+                              # RECOVERABLE_BLOCKER | DEPENDENCY_WAIT | COORDINATOR_ACTION
+                              # 只有 TERMINAL_FAIL 結算；其餘走 ask / escalation / message
+    report_path:              # optional — 完整 TASK_RESULT
+  terminal_next_owner:        # unresolved — REUSE | RETAIN | RELEASE | OPERATOR_CLOSE
   exact_runtime_attestation:  # unresolved — MATCH | MISMATCH | UNVERIFIED
   orca_dispatch_verified:     # unresolved — YES | NO
   workflow_policy_compliance: # unresolved — COMPLIANT | NON_COMPLIANT
   dispatch_result:            # unresolved — PASS | HARD_FAIL | DISPATCH_BLOCKED
   reason_code:                # unresolved — INTERNAL_SUBAGENT_AS_ORCA_WORKER |
-                              # EXACT_DISPATCH_FAILURE | ORCA_TERMINAL_HANDLE_MISSING |
-                              # ORCA_DISPATCH_EVIDENCE_INCOMPLETE | EXACT_RUNTIME_UNVERIFIED
+                              # LIGHTWEIGHT_TERMINAL_PROMPT_AS_ORCA_WORKER |
+                              # ORCA_DISPATCH_IDENTITY_MISSING | EXACT_DISPATCH_FAILURE |
+                              # EXACT_RUNTIME_UNVERIFIED | WORKER_START_CANNOT_EXPRESS_EXACT_MODEL |
+                              # CUSTOM_DISPATCH_NOT_INJECTED | ORCA_DISPATCH_EVIDENCE_INCOMPLETE |
+                              # WORKER_DONE_INVALID
 
 # 僅在 selected_stage 為 STAGE_3_FLAGSHIP 時必填（由 operational router 從
 # strategic contract 的 flagship_admission 複製 + 補實際判定）。
