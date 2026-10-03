@@ -56,6 +56,18 @@
 # model changes. Only this file changes when mapping changes.
 #
 # --------------------------------------------------------------------------
+# 0.7 (2026-10-03) MODEL GENERATION UPDATE
+#
+# Codex: gpt-5.6-luna -> gpt-6-luna, gpt-5.6-sol -> gpt-6-sol (model_family
+# gpt-6). Terra is REMOVED by human decision; every former Terra slot
+# (STRONG_IMPLEMENTER, DEEP_REASONER, INDEPENDENT_REVIEWER) now uses
+# gpt-6-sol at Stage 2 / STRONG with reasoning LOW (human decision: Sol
+# needs less effort than Terra did; Terra ran at high). Sol in
+# ESCALATION_MODEL is unchanged in role (Stage 3, DEEP, medium).
+# Claude: aliases unchanged; `sonnet` now resolves to Sonnet 5.5 and `opus`
+# to Opus 5.5. Live-probed 2026-10-03 (codex-cli 0.156.1, Claude Code
+# 2.1.288). See policies/registry-decisions/2026-10-03-gpt-6-and-claude-5-5.md.
+#
 # 0.6 (2026-09-02) REGISTRY AUTHORITY CORRECTION
 #
 # Registry authority changed from evidence-gated AI eligibility to
@@ -72,8 +84,8 @@
 # (policies/registry-decisions/2026-09-02-rebalance-implementer-tiers.md).
 # --------------------------------------------------------------------------
 
-version: "0.6"
-verified_at: "2026-09-02"
+version: "0.7"
+verified_at: "2026-10-03"
 
 capability_tier_order: [CHEAP, DEFAULT, STRONG, DEEP]
 
@@ -144,23 +156,25 @@ resolvers:
       it is not global ineligibility.
   claude_models:
     command: "claude --model <alias>"
-    verified_at: "2026-09-18"
+    verified_at: "2026-10-03"
     # CLI catalog aliases. The `model:` value of every claude candidate MUST
     # be one of these keys (or a reviewed `model_overrides` key). The value is
     # the exact `--model` argument dispatched. Routing intent is informational
     # guidance for the human editing slots; it does not add slot candidates.
     catalog_aliases:
-      sonnet: { cli_model: sonnet, display: "Sonnet 5", routing_intent: routine_default }
-      opus: { cli_model: opus, display: "Opus 5", routing_intent: complex_high_quality }
+      sonnet: { cli_model: sonnet, display: "Sonnet 5.5", routing_intent: routine_default }
+      opus: { cli_model: opus, display: "Opus 5.5", routing_intent: complex_high_quality }
       haiku: { cli_model: haiku, display: "Haiku 4.5", routing_intent: quick_cheap }
     # Reviewed explicit mappings (behavesAs / modelOverrides equivalent) for
     # any non-catalog id. Empty by design: a key here is a human decision,
     # never something an AI derives from a display name.
     model_overrides: {}
     note: >-
-      Verified 2026-09-18 in the interactive picker and `claude --model sonnet`:
-      Sonnet -> Sonnet 5, Opus -> Opus 5, Haiku -> Haiku 4.5. A versioned id
-      built from a display name (e.g. `sonnet-5`) is NOT in this CLI's catalog
+      Re-verified 2026-10-03 (Claude Code 2.1.288): `claude -p --model sonnet`
+      reported claude-sonnet-5-5 and `--model opus` reported claude-opus-5-5
+      in modelUsage. Sonnet -> Sonnet 5.5, Opus -> Opus 5.5, Haiku -> Haiku 4.5
+      (Haiku not re-probed). A versioned id built from a display name (e.g.
+      `sonnet-5`) is NOT in this CLI's catalog
       and fails with "isn't described by this version's model catalog". That
       is MODEL_UNKNOWN for that one model - never PROVIDER_UNAVAILABLE for
       Claude. Do not invent versioned model ids from display names.
@@ -185,6 +199,8 @@ runtime_adapters:
     # Orca supervised-worker support (orca 1.4.209, live-probed 2026-09-24):
     # `worker-start --agent codex --model gpt-5.6-luna --effort low` returned
     # launch.requested == launch.effective == {codex, gpt-5.6-luna, low}.
+    # gpt-6-luna / gpt-6-sol were live-probed 2026-10-03 via `codex exec -m`
+    # (codex-cli 0.156.1); not yet re-probed through worker-start.
     orca_worker_start:
       agent: codex
       launch_model_selection: supported
@@ -266,8 +282,8 @@ capability_slots:
     candidates:
       - provider: codex
         resource_state_key: codex
-        model: gpt-5.6-luna
-        model_family: gpt-5.6
+        model: gpt-6-luna
+        model_family: gpt-6
         reasoning: max
         capability_tier: DEFAULT
         stage: STAGE_1_DEFAULT
@@ -303,8 +319,8 @@ capability_slots:
     candidates:
       - provider: codex
         resource_state_key: codex
-        model: gpt-5.6-luna
-        model_family: gpt-5.6
+        model: gpt-6-luna
+        model_family: gpt-6
         reasoning: low
         capability_tier: DEFAULT
         stage: STAGE_1_DEFAULT
@@ -344,8 +360,8 @@ capability_slots:
       # "better".
       - provider: codex
         resource_state_key: codex
-        model: gpt-5.6-luna
-        model_family: gpt-5.6
+        model: gpt-6-luna
+        model_family: gpt-6
         reasoning: max
         capability_tier: DEFAULT
         stage: STAGE_1_DEFAULT
@@ -379,14 +395,15 @@ capability_slots:
     minimum_tier: STRONG
     max_repair_attempts: 2
     candidates:
-      # STAGE 2 advanced. Terra and Sonnet 5 are peers; the resource overlay
+      # STAGE 2 advanced. Sol (at Stage 2 / low, replacing Terra) and
+      # Sonnet 5.5 are peers; the resource overlay
       # chooses between them by long-horizon quota health. Gemini high is the
       # quota-pressure relief candidate. All three are user-enabled.
       - provider: codex
         resource_state_key: codex
-        model: gpt-5.6-terra
-        model_family: gpt-5.6
-        reasoning: high
+        model: gpt-6-sol
+        model_family: gpt-6
+        reasoning: low
         capability_tier: STRONG
         stage: STAGE_2_ADVANCED
         enabled: true
@@ -394,7 +411,7 @@ capability_slots:
         evidence_status: provisional
         evidence_scope: structural_implementation
         confidence: low
-        source: "user-approved Stage 2 candidate; zero local smoke cases (informational limitation, not a gate); rollback condition in the 0.5 decision note"
+        source: "gpt-6-sol replaces Terra at Stage 2 per human decision 2026-10-03; live launch probe codex-cli 0.156.1"
         verified_at: "2026-09-02"
         expires_at: "2026-12-01"
       - provider: claude
@@ -455,9 +472,9 @@ capability_slots:
         expires_at: "2026-12-01"
       - provider: codex
         resource_state_key: codex
-        model: gpt-5.6-terra
-        model_family: gpt-5.6
-        reasoning: high
+        model: gpt-6-sol
+        model_family: gpt-6
+        reasoning: low
         capability_tier: STRONG
         stage: STAGE_2_ADVANCED
         enabled: true
@@ -465,7 +482,7 @@ capability_slots:
         evidence_status: provisional
         evidence_scope: structural_implementation
         confidence: low
-        source: "user-approved Stage 2 candidate; zero local smoke cases (informational)"
+        source: "gpt-6-sol replaces Terra at Stage 2 per human decision 2026-10-03; live launch probe codex-cli 0.156.1"
         verified_at: "2026-09-02"
         expires_at: "2026-12-01"
       - provider: antigravity
@@ -535,7 +552,8 @@ capability_slots:
       # provider OR model family before resource optimization - this is a hard
       # filter that quota and evidence_status cannot override. The list spans
       # three providers so a disjoint reviewer exists for any single
-      # implementer. Sol/Opus appear nowhere here.
+      # implementer. Opus appears nowhere here; Sol appears only at Stage 2 /
+      # STRONG (the former Terra slot), never as a flagship reviewer.
       - provider: antigravity
         resource_state_key: antigravity.gemini
         model: AUTO_GEMINI
@@ -553,8 +571,8 @@ capability_slots:
         expires_at: null
       - provider: codex
         resource_state_key: codex
-        model: gpt-5.6-luna
-        model_family: gpt-5.6
+        model: gpt-6-luna
+        model_family: gpt-6
         reasoning: medium
         capability_tier: DEFAULT
         stage: STAGE_1_DEFAULT
@@ -583,9 +601,9 @@ capability_slots:
         expires_at: "2026-12-01"
       - provider: codex
         resource_state_key: codex
-        model: gpt-5.6-terra
-        model_family: gpt-5.6
-        reasoning: high
+        model: gpt-6-sol
+        model_family: gpt-6
+        reasoning: low
         capability_tier: STRONG
         stage: STAGE_2_ADVANCED
         enabled: true
@@ -593,7 +611,7 @@ capability_slots:
         evidence_status: provisional
         evidence_scope: structural_implementation
         confidence: low
-        source: "Stage 2 structural review where disjoint from a Claude implementer; zero local smoke cases (informational)"
+        source: "gpt-6-sol replaces Terra as Stage 2 structural reviewer (disjoint from a Claude implementer) per human decision 2026-10-03"
         verified_at: "2026-09-02"
         expires_at: "2026-12-01"
 
@@ -622,8 +640,8 @@ capability_slots:
         expires_at: null
       - provider: codex
         resource_state_key: codex
-        model: gpt-5.6-luna
-        model_family: gpt-5.6
+        model: gpt-6-luna
+        model_family: gpt-6
         reasoning: medium
         capability_tier: DEFAULT
         stage: STAGE_1_DEFAULT
@@ -642,15 +660,15 @@ capability_slots:
     minimum_tier: DEEP
     max_repair_attempts: 1
     candidates:
-      # STAGE 3 flagship. Rare. Sol and Opus 5 are peers; task-role preference
+      # STAGE 3 flagship. Rare. Sol and Opus 5.5 are peers; task-role preference
       # (terminal-heavy/agentic -> Sol, architecture/reasoning/review -> Opus)
       # is a tie-break AFTER eligibility/disjointness/resource. Both default to
       # `medium`; neither is ever defaulted to max. A Stage 3 selection MUST
       # record a flagship admission reason (see MODEL_ROUTING_POLICY.md).
       - provider: codex
         resource_state_key: codex
-        model: gpt-5.6-sol
-        model_family: gpt-5.6
+        model: gpt-6-sol
+        model_family: gpt-6
         reasoning: medium
         capability_tier: DEEP
         stage: STAGE_3_FLAGSHIP

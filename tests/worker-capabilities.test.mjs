@@ -163,9 +163,9 @@ test("16. old and new capability fields disagreeing fails closed", () => {
 });
 
 test("17. a command-line secret injection is rejected by policy", () => {
-  assert.equal(dispatchInjectsSecret(`codex exec -m gpt-5.6-luna --db-url ${CONNSTR} -o out -`), true);
-  assert.equal(dispatchInjectsSecret("codex exec -m gpt-5.6-luna --db-dsn db://a/b -o out -"), true);
-  assert.equal(dispatchInjectsSecret("codex exec -m gpt-5.6-luna -c 'model_reasoning_effort=\"max\"' -o out -"), false);
+  assert.equal(dispatchInjectsSecret(`codex exec -m gpt-6-luna --db-url ${CONNSTR} -o out -`), true);
+  assert.equal(dispatchInjectsSecret("codex exec -m gpt-6-luna --db-dsn db://a/b -o out -"), true);
+  assert.equal(dispatchInjectsSecret("codex exec -m gpt-6-luna -c 'model_reasoning_effort=\"max\"' -o out -"), false);
 });
 
 test("18. capability fulfilment does not alter model stage selection", () => {

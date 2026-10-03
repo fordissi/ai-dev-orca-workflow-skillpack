@@ -351,7 +351,7 @@ Dispatch target 是 **`runtime_adapter + provider_family + exact_model + effort`
 | runtime_adapter | registry `provider:` | provider families | model 解析 | effort |
 |---|---|---|---|---|
 | `codex_cli` | `codex` | openai | pass-through（`-m`） | `-c model_reasoning_effort=` |
-| `claude_cli` | `claude` | claude（Sonnet 5 / Opus 5 / Haiku 4.5） | catalog alias | `--effort low…max` |
+| `claude_cli` | `claude` | claude（Sonnet 5.5 / Opus 5.5 / Haiku 4.5） | catalog alias | `--effort low…max` |
 | `antigravity` | `antigravity` | gemini、claude（Sonnet 4.6 / Opus 4.6 Thinking）、gpt-oss | **live `agy models`** | id 後綴或 `--effort low\|medium\|high` |
 
 - **Antigravity 是多模型 runtime，不是 Gemini provider。** 同一 family 可有多條 runtime
@@ -1125,7 +1125,7 @@ owner。這是 **resource routing 政策**，不改變 [`MODEL_REGISTRY.yaml`](M
 Router 是 control-plane capacity：task classification、slot selection、resource
 acquisition、model dispatch、continuation decision、reviewer routing、human gate、
 recovery / handoff synthesis 全部依賴它持續可用。若它所在 provider 的長期
-（BUDGET）quota 被 Terra / Sol / 一般 Luna worker 派工積極消耗，workflow 可能在
+（BUDGET）quota 被 Sol / 一般 Luna worker 派工積極消耗，workflow 可能在
 還沒做完 routing、驗證、恢復與 handoff 之前，就先把 Router 自己的額度用完。
 
 ### Active Router identity
@@ -1137,7 +1137,7 @@ active_router_resource = MODEL_REGISTRY.capability_slots.ROUTER 目前選中的
 
 這個身分**由 ROUTER slot 目前實際選中的候選決定**，不得在 stable policy 文字或程式
 中寫死成任何特定 provider/model。author host 目前的 registry 把它解析為
-Codex / `gpt-5.6-luna`（`reasoning: max`），但 reserve 語意必須與 provider/model
+Codex / `gpt-6-luna`（`reasoning: max`），但 reserve 語意必須與 provider/model
 無關：human 若日後把 Router 換成別的 provider，reserve 保護的對象自動跟著換，
 不需要改這份文件或驗證程式。
 
@@ -1197,7 +1197,7 @@ window，但語意不同、產生的效果也不同——一個排序，一個�
 ### Human override
 
 `current` human instruction 仍可明確要求使用被 reserve 排除的 provider/model
-（例如「用 Terra」），即使 reserve 目前生效中。這是既有 human explicit model
+（例如「用 Sol」），即使 reserve 目前生效中。這是既有 human explicit model
 selection 機制（見 `MODEL_ROUTING_POLICY.md` 的 *Human explicit model selection*）
 的直接延伸，**不是**另一個新的 override 通道：human pin 本來就排在整條 routing
 precedence 的最上層，Router capacity reserve 排在它之後，pin 自然生效。
@@ -1223,7 +1223,7 @@ override 帶到後續 task 上，是既有的 `HUMAN_OVERRIDE_STALE` 情況，�
 worker task itself.`**
 
 Reserve 排除的是「自主非 Router 派工對同一 pool 的消耗」，不是「這份工作」——如果
-Router 排除了 Terra / Sol / 一般 Luna worker，卻自己（同一個 Luna-max Router
+Router 排除了 Sol / 一般 Luna worker，卻自己（同一個 Luna-max Router
 session）接手執行同一份 worker-shaped 工作，額度仍然從同一個被保護的 pool 扣掉，
 只是換了名字繼續消耗，reserve 形同虛設。這個繞過模式的名稱是
 `ROUTER_RESERVE_SELF_CONSUMPTION`。

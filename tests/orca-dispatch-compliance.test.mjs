@@ -12,25 +12,25 @@ import * as policy from "../scripts/validate-policy-pack.mjs";
 
 const registry = parse(await readFile("policies/MODEL_REGISTRY.yaml", "utf8"));
 
-const requestedTerra = {
+const requestedSol = {
   runtime_adapter: "codex_cli",
   provider_family: "openai",
-  exact_model: "gpt-5.6-terra",
+  exact_model: "gpt-6-sol",
   effort: "high",
 };
 
 const supervisedEvidence = (overrides = {}) => ({
-  task_id: "task_terra1",
-  dispatch_id: "ctx_terra1",
+  task_id: "task_sol1",
+  dispatch_id: "ctx_sol1",
   launch: {
-    requested: { agent: "codex", model: "gpt-5.6-terra", effort: "high" },
-    effective: { agent: "codex", model: "gpt-5.6-terra", effort: "high" },
+    requested: { agent: "codex", model: "gpt-6-sol", effort: "high" },
+    effective: { agent: "codex", model: "gpt-6-sol", effort: "high" },
   },
   lifecycle: { model_launched: true, worker_active: true, completed: true },
   completion: {
     type: "worker_done",
     body: "Implemented the change. Tests pass. Nothing remains.",
-    payload: { taskId: "task_terra1", dispatchId: "ctx_terra1", outcome: "succeeded" },
+    payload: { taskId: "task_sol1", dispatchId: "ctx_sol1", outcome: "succeeded" },
   },
   ...overrides,
 });
@@ -69,7 +69,7 @@ test("3. supervised worker-start with matching launch.effective is compliant", (
     task_class: "IMPLEMENTATION_WORKER",
     dispatch_mode: "ORCA_WORKER",
     execution_mechanism: "ORCA_WORKER_START",
-    requested_identity: requestedTerra,
+    requested_identity: requestedSol,
     evidence: supervisedEvidence(),
   });
   assert.equal(result.workflow_policy_compliance, "COMPLIANT");
@@ -84,7 +84,7 @@ test("4. missing Dispatch identity cannot verify Orca dispatch, terminal or not"
     task_class: "ARCHITECTURE_SPECIALIST",
     dispatch_mode: "ORCA_WORKER",
     execution_mechanism: "ORCA_WORKER_START",
-    requested_identity: requestedTerra,
+    requested_identity: requestedSol,
     evidence: supervisedEvidence({ dispatch_id: undefined, terminal_handle: "term_present" }),
   });
   assert.equal(result.orca_dispatch_verified, "NO");
@@ -97,8 +97,8 @@ test("4b. a bare terminal handle (terminal create + send) is a lightweight promp
     task_class: "ARCHITECTURE_SPECIALIST",
     dispatch_mode: "ORCA_WORKER",
     execution_mechanism: "ORCA_TERMINAL_PROMPT",
-    requested_identity: requestedTerra,
-    evidence: { terminal_handle: "terminal-42", launch_command: "codex -m gpt-5.6-terra" },
+    requested_identity: requestedSol,
+    evidence: { terminal_handle: "terminal-42", launch_command: "codex -m gpt-6-sol" },
   });
   assert.equal(result.orca_dispatch_verified, "NO");
   assert.equal(result.result, "HARD_FAIL");
@@ -110,10 +110,10 @@ test("5. requested exact model differing from launch.effective fails exact dispa
     task_class: "SECURITY_SPECIALIST",
     dispatch_mode: "ORCA_WORKER",
     execution_mechanism: "ORCA_WORKER_START",
-    requested_identity: requestedTerra,
+    requested_identity: requestedSol,
     evidence: supervisedEvidence({
       launch: {
-        requested: { agent: "codex", model: "gpt-5.6-terra", effort: "high" },
+        requested: { agent: "codex", model: "gpt-6-sol", effort: "high" },
         effective: { agent: "codex", model: "gpt-5.5", effort: "high" },
       },
     }),

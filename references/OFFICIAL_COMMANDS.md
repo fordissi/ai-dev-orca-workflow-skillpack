@@ -365,15 +365,15 @@ Registry 目前使用的 effort 值：`low`、`medium`、`high`、`max`。`max` 
 
 ```bash
 # Luna max（Stage 1 workhorse）
-codex exec -m gpt-5.6-luna -c 'model_reasoning_effort="max"' \
+codex exec -m gpt-6-luna -c 'model_reasoning_effort="max"' \
   -s workspace-write --ask-for-approval on-request --color never -o <last-message-file> -
 
-# Terra high（Stage 2 advanced）
-codex exec -m gpt-5.6-terra -c 'model_reasoning_effort="high"' \
+# Sol low（Stage 2 advanced；0.7 起取代 Terra）
+codex exec -m gpt-6-sol -c 'model_reasoning_effort="low"' \
   -s workspace-write --ask-for-approval on-request --color never -o <last-message-file> -
 
 # Sol medium（Stage 3 flagship — 絕不預設 max）
-codex exec -m gpt-5.6-sol -c 'model_reasoning_effort="medium"' \
+codex exec -m gpt-6-sol -c 'model_reasoning_effort="medium"' \
   -s read-only --ask-for-approval on-request --color never -o <last-message-file> -
 ```
 
@@ -415,7 +415,9 @@ PROHIBITED: 不要使用 `--dangerously-bypass-approvals-and-sandbox`，除非�
 
 ### Model ID
 
-`gpt-5.6-luna`、`gpt-5.6-sol`、`gpt-5.6-terra` 出現在已安裝 CLI 的本機 global state 中。
+2026-10-03（codex-cli 0.156.1）：`gpt-6-luna`、`gpt-6-sol` 出現在本機 `~/.codex/models_cache.json`，
+且 `codex exec -m gpt-6-luna` / `-m gpt-6-sol` 實際啟動成功（banner 回報同一 model）。
+Terra 依 human decision 自 registry 0.7 移除（catalog 仍有 `gpt-5.6-terra`，但不再路由）。
 這是 **provisional-local** 佐證，不是權威的 model discovery endpoint——Codex CLI 未提供
 等同 `agy models` 的列表命令。維持 `evidence_status: provisional`，見
 `references/MODEL_EVIDENCE.md`。
@@ -437,8 +439,9 @@ claude -p --max-turns 3 "query"
 
 ### Model aliases（Claude Code）
 
-2026-09-18 本機（Claude Code 2.1.276）互動 model picker：`Sonnet → Sonnet 5`、
-`Opus → Opus 5`、`Haiku → Haiku 4.5`。`--model` **只傳 catalog alias**：
+2026-10-03 本機（Claude Code 2.1.288）：`claude -p --model sonnet` 的 `modelUsage` 回報
+`claude-sonnet-5-5`、`--model opus` 回報 `claude-opus-5-5`，即 `Sonnet → Sonnet 5.5`、
+`Opus → Opus 5.5`、`Haiku → Haiku 4.5`（Haiku 未重測）。`--model` **只傳 catalog alias**：
 
 | Routing intent | `--model` |
 |---|---|

@@ -17,8 +17,8 @@ const registry = parse(await readFile("policies/MODEL_REGISTRY.yaml", "utf8"));
 
 // Real receipts / messages from the 2026-09-24 bounded probe on orca 1.4.209.
 const CODEX_LAUNCH = {
-  requested: { agent: "codex", model: "gpt-5.6-luna", effort: "low" },
-  effective: { agent: "codex", model: "gpt-5.6-luna", effort: "low" },
+  requested: { agent: "codex", model: "gpt-6-luna", effort: "low" },
+  effective: { agent: "codex", model: "gpt-6-luna", effort: "low" },
 };
 const CODEX_WORKER_DONE = {
   id: "msg_704b1f6e74e3",
@@ -32,7 +32,7 @@ const AGY_LAUNCH = {
   effective: { agent: "antigravity", model: null, effort: null },
 };
 
-const codexRequest = { runtime_adapter: "codex_cli", provider_family: "openai", exact_model: "gpt-5.6-luna", effort: "low" };
+const codexRequest = { runtime_adapter: "codex_cli", provider_family: "openai", exact_model: "gpt-6-luna", effort: "low" };
 const lifecycle = { model_launched: true, worker_active: true, completed: true };
 
 const workerStartEvidence = (overrides = {}) => ({
@@ -123,7 +123,7 @@ test("launch.effective differing from the routing decision is an exact dispatch 
     task_class: "SECURITY_SPECIALIST",
     dispatch_mode: "ORCA_WORKER",
     execution_mechanism: "ORCA_WORKER_START",
-    requested_identity: { ...codexRequest, exact_model: "gpt-5.6-terra", effort: "high" },
+    requested_identity: { ...codexRequest, exact_model: "gpt-6-sol", effort: "high" },
     evidence: workerStartEvidence(),
   });
   assert.equal(r.result, "HARD_FAIL");
@@ -218,10 +218,10 @@ test("custom dispatch for a worker-start-capable runtime passes but is advised b
     execution_mechanism: "ORCA_CUSTOM_DISPATCH",
     requested_identity: codexRequest,
     evidence: agyCustomEvidence({
-      launch_command: "codex -m gpt-5.6-luna -c model_reasoning_effort=\"low\"",
+      launch_command: "codex -m gpt-6-luna -c model_reasoning_effort=\"low\"",
       runtime_adapter: "codex_cli",
       provider_family: "openai",
-      exact_model: "gpt-5.6-luna",
+      exact_model: "gpt-6-luna",
       effort: "low",
     }),
   });
@@ -237,7 +237,7 @@ test("terminal create + terminal send is a lightweight prompt, never an Orca wor
     dispatch_mode: "ORCA_WORKER",
     execution_mechanism: "ORCA_TERMINAL_PROMPT",
     requested_identity: codexRequest,
-    evidence: { terminal_handle: "term_1", launch_command: "codex -m gpt-5.6-luna", lifecycle },
+    evidence: { terminal_handle: "term_1", launch_command: "codex -m gpt-6-luna", lifecycle },
   });
   assert.equal(r.result, "HARD_FAIL");
   assert.equal(r.dispatch_path, "LIGHTWEIGHT_TERMINAL_PROMPT");
@@ -251,7 +251,7 @@ test("the legacy ORCA_TERMINAL mechanism with only a terminal handle is a lightw
     dispatch_mode: "ORCA_WORKER",
     execution_mechanism: "ORCA_TERMINAL",
     requested_identity: codexRequest,
-    evidence: { orca_terminal_handle: "terminal-42", launch_command: "codex exec -m gpt-5.6-luna -", lifecycle },
+    evidence: { orca_terminal_handle: "terminal-42", launch_command: "codex exec -m gpt-6-luna -", lifecycle },
   });
   assert.equal(r.dispatch_path, "LIGHTWEIGHT_TERMINAL_PROMPT");
   assert.equal(r.result, "HARD_FAIL");

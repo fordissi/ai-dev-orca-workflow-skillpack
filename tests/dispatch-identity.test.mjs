@@ -11,13 +11,13 @@ import {
 
 const identity = (overrides = {}) => ({
   provider: "codex",
-  model: "gpt-5.6-luna",
-  model_family: "gpt-5.6",
+  model: "gpt-6-luna",
+  model_family: "gpt-6",
   reasoning_effort: "medium",
   ...overrides,
 });
 
-const codexCommand = (model = "gpt-5.6-luna", effort = "medium") =>
+const codexCommand = (model = "gpt-6-luna", effort = "medium") =>
   `codex exec -m ${model} -c 'model_reasoning_effort="${effort}"' -s read-only --color never -o out -`;
 
 const currentInstruction = {
@@ -36,10 +36,10 @@ test("registry-selected Luna medium preserves exact model and effort", () => {
   assert.equal(result.result, "DISPATCH_IDENTITY_MATCH");
 });
 
-test("Terra high executed as gpt-5.5 high is a contract mismatch", () => {
+test("Sol high executed as gpt-5.5 high is a contract mismatch", () => {
   const result = checkReasoningDispatch({
     provider: "codex",
-    expected: identity({ model: "gpt-5.6-terra", reasoning_effort: "high" }),
+    expected: identity({ model: "gpt-6-sol", reasoning_effort: "high" }),
     actual: identity({ model: "gpt-5.5", model_family: "gpt-5.5", reasoning_effort: "high" }),
     command: codexCommand("gpt-5.5", "high"),
   });
@@ -49,7 +49,7 @@ test("Terra high executed as gpt-5.5 high is a contract mismatch", () => {
 test("omitted model argument followed by a runtime default is detected", () => {
   const result = checkReasoningDispatch({
     provider: "codex",
-    expected: identity({ model: "gpt-5.6-terra", reasoning_effort: "high" }),
+    expected: identity({ model: "gpt-6-sol", reasoning_effort: "high" }),
     actual: identity({ model: "gpt-5.5", model_family: "gpt-5.5", reasoning_effort: "high" }),
     command: `codex exec -c 'model_reasoning_effort="high"' -s read-only --color never -o out -`,
   });
@@ -61,7 +61,7 @@ test("omitted reasoning argument overridden by local config is detected", () => 
     provider: "codex",
     expected: identity(),
     actual: identity({ reasoning_effort: "max" }),
-    command: "codex exec -m gpt-5.6-luna -s read-only --color never -o out -",
+    command: "codex exec -m gpt-6-luna -s read-only --color never -o out -",
   });
   assert.equal(result.result, "DISPATCH_CONTRACT_MISMATCH");
 });
@@ -134,7 +134,7 @@ test("a stale previous human override cannot apply to a new task", async () => {
 });
 
 test("a terminal with the right provider but wrong model is not reusable", () => {
-  const result = canReuseTerminal(identity(), identity({ model: "gpt-5.6-terra" }));
+  const result = canReuseTerminal(identity(), identity({ model: "gpt-6-sol" }));
   assert.equal(result.reusable, false);
   assert.equal(result.attestation_result, "DISPATCH_CONTRACT_MISMATCH");
 });

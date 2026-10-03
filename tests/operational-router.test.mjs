@@ -360,7 +360,7 @@ test("36 Codex soft-pressured by multi-snapshot PACE, healthy Gemini peer ranks 
 
   if (codexExplain.resource_pressure_rank === "SOFT_PRESSURED" && geminiExplain.resource_pressure_rank === "CLEAR") {
     assert.equal(result.candidate.provider, "antigravity"); // gemini ranked ahead
-    assert.equal(result.pace_demotion.over, "codex/gpt-5.6-luna");
+    assert.equal(result.pace_demotion.over, "codex/gpt-6-luna");
   }
   // Invariants that hold regardless of the exact fixture pressure:
   assert.equal(DEFAULT_IMPLEMENTER.minimum_tier, "DEFAULT"); // unchanged
@@ -378,7 +378,7 @@ test("37 a Codex pin under PACE pressure is not silently switched to Gemini", as
   const rs = a.getCurrentResourceState({ now: NOW });
   const result = selectCandidate(DEFAULT_IMPLEMENTER, rs, TIER_ORDER, {
     now: NOW,
-    pinnedCandidate: { provider: "codex", model: "gpt-5.6-luna" },
+    pinnedCandidate: { provider: "codex", model: "gpt-6-luna" },
   });
   assert.equal(result.status, "SELECTED");
   assert.equal(result.candidate.provider, "codex");

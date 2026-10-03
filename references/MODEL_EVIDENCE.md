@@ -311,6 +311,16 @@ conclusion: >-
   與 references/OFFICIAL_COMMANDS.md 的對應更新（皆為本次一併記錄）。
 ```
 
+## 2026-10-03：registry 0.7 模型世代更新
+
+- `codex / gpt-5.6-luna` → `gpt-6-luna`；`codex / gpt-5.6-sol` → `gpt-6-sol`（`model_family: gpt-6`）。
+  兩者以 `codex exec -m` 實際啟動驗證（codex-cli 0.156.1）；Orca `worker-start` 尚未以新 id 重測。
+- `codex / gpt-5.6-terra` → **移除**（human decision）。原 Terra 的 Stage 2 位置
+  （`STRONG_IMPLEMENTER` / `DEEP_REASONER` / `INDEPENDENT_REVIEWER`）改由 `gpt-6-sol`
+  以 `STRONG` / `low` 擔任（Terra 原為 `high`）；`ESCALATION_MODEL` 的 Sol 維持 Stage 3 / `medium`。
+- `claude / sonnet`、`claude / opus`：alias 不變，現解析為 Sonnet 5.5 / Opus 5.5（Claude Code 2.1.288 實測）。
+- 以下 2026-09-02 段落為歷史紀錄，描述的是 0.5/0.6 的 GPT-5.6 / Claude 5 狀態。
+
 ## 2026-09-02：三階段重構後的 status 狀態
 
 `MODEL_REGISTRY.yaml` 0.5 的實際 `status`：

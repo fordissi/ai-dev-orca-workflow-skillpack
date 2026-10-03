@@ -41,7 +41,7 @@
 - **重要差異**：本機 `~/.codex/config.toml` 的 `model`、`sandbox_mode`、
   `approval_policy` 會在命令列未明示時生效，可能使實際權限高於 contract 意圖。
   因此 `WORKFLOW_POLICY.md` 要求 permission ceiling 以逐字 `dispatch_command` 表達。
-- Codex CLI **沒有**等同 `agy models` 的 model 列表命令。`gpt-5.6-*` 的 ID 只有
+- Codex CLI **沒有**等同 `agy models` 的 model 列表命令。`gpt-6-*`（先前為 `gpt-5.6-*`）的 ID 只有
   本機 global state 佐證，維持 provisional。
 
 ### Claude Code 2.1.252

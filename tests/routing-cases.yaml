@@ -29,7 +29,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-luna
+      model: gpt-6-luna
 
   - name: yellow_primary_unknown_fallback
     kind: selection
@@ -44,7 +44,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-terra
+      model: gpt-6-sol
 
   - name: unknown_primary_yellow_fallback
     kind: selection
@@ -59,7 +59,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-terra
+      model: gpt-6-sol
 
   - name: green_fallback_over_red_primary
     kind: selection
@@ -80,7 +80,7 @@ cases:
     kind: selection
     why: >-
       The reviewer must differ from the implementer in BOTH provider and model
-      family. The implementer is codex/gpt-5.6, so every codex candidate is
+      family. The implementer is codex/gpt-6, so every codex candidate is
       removed. The user-enabled antigravity Gemini reviewer is disjoint and
       GREEN, so it is the pick - its `status: experimental` label is
       informational and does not block it.
@@ -93,14 +93,14 @@ cases:
       allowExperimental: false
       taskRisk: high
       excludeProvider: codex
-      excludeModelFamily: gpt-5.6
+      excludeModelFamily: gpt-6
     expect:
       status: SELECTED
       provider: antigravity
       model: AUTO_GEMINI
       disjoint_from:
         provider: codex
-        model_family: gpt-5.6
+        model_family: gpt-6
 
   - name: experimental_label_does_not_block_enabled_candidate
     kind: selection
@@ -119,7 +119,7 @@ cases:
       allowExperimental: false
       taskRisk: high
       excludeProvider: codex
-      excludeModelFamily: gpt-5.6
+      excludeModelFamily: gpt-6
     expect:
       status: SELECTED
       provider: antigravity
@@ -130,7 +130,7 @@ cases:
     why: >-
       No qualified candidate must return BLOCKED rather than crossing the
       capability floor. All three user-enabled Stage 2 candidates
-      (claude/sonnet, codex/gpt-5.6-terra, antigravity/AUTO_GEMINI) are
+      (claude/sonnet, codex/gpt-6-sol, antigravity/AUTO_GEMINI) are
       unavailable at runtime. Because a candidate would qualify the moment its
       provider returns, the honest code is ROUTING_UNAVAILABLE, not
       POLICY_BLOCKED.
@@ -310,7 +310,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-terra
+      model: gpt-6-sol
 
   - name: explicit_allow_experimental_selects
     kind: selection
@@ -362,7 +362,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-terra
+      model: gpt-6-sol
       stranded_capacity_risk: HIGH
 
   - name: stranded_capacity_promotes_over_registry_order
@@ -464,13 +464,13 @@ cases:
       allowExperimental: false
       taskRisk: high
       excludeProvider: codex
-      excludeModelFamily: gpt-5.6
+      excludeModelFamily: gpt-6
       now: "2026-09-01T12:01:00Z"
     expect:
       status: SELECTED
       provider: claude
       model: sonnet
-      disjoint_from: { provider: codex, model_family: gpt-5.6 }
+      disjoint_from: { provider: codex, model_family: gpt-6 }
 
   - name: stranded_capacity_never_reorders_yellow_against_unknown
     kind: selection
@@ -496,7 +496,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-terra
+      model: gpt-6-sol
       stranded_capacity_risk: UNKNOWN
 
   - name: stranded_capacity_never_promotes_across_bands
@@ -549,7 +549,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-terra
+      model: gpt-6-sol
       stranded_capacity_risk: UNKNOWN
 
   - name: untrusted_source_confers_no_opportunity_signal
@@ -576,7 +576,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-terra
+      model: gpt-6-sol
 
   # ------------------------------------------------------------------- #
   # Hierarchical quota windows.
@@ -644,7 +644,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-terra
+      model: gpt-6-sol
       stranded_capacity_risk: HIGH
       conservation_pressure: LOW
       conservation_demotion: false
@@ -675,7 +675,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-terra
+      model: gpt-6-sol
       conservation_pressure: LOW
       conservation_demotion: false
 
@@ -732,7 +732,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-terra
+      model: gpt-6-sol
       stranded_promotion: false
       conservation_demotion: false
 
@@ -760,7 +760,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-terra
+      model: gpt-6-sol
       stranded_capacity_risk: UNKNOWN
       stranded_promotion: false
 
@@ -911,7 +911,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-terra
+      model: gpt-6-sol
       conservation_pressure: UNKNOWN
       conservation_demotion: false
 
@@ -940,7 +940,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-terra
+      model: gpt-6-sol
       conservation_pressure: CRITICAL
       conservation_demotion: false
 
@@ -1186,7 +1186,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-luna
+      model: gpt-6-luna
 
   - name: codex_budget_constrained_stage_1_falls_to_gemini_low
     kind: selection
@@ -1218,7 +1218,7 @@ cases:
 
   - name: stage_2_healthy_peers_take_registry_head
     kind: selection
-    why: With Terra and Sonnet both healthy the registry head (Terra) is selected.
+    why: With Sol and Sonnet both healthy the registry head (Sol) is selected.
     slot: STRONG_IMPLEMENTER
     resource_states:
       codex: { state: GREEN, available: true, source: ORCA_RUNTIME }
@@ -1227,11 +1227,11 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-terra
+      model: gpt-6-sol
 
-  - name: stage_2_terra_constrained_selects_sonnet
+  - name: stage_2_sol_constrained_selects_sonnet
     kind: selection
-    why: Terra's weekly budget is critical and distant; the healthy Sonnet takes it.
+    why: Sol's weekly budget is critical and distant; the healthy Sonnet takes it.
     slot: STRONG_IMPLEMENTER
     resource_states:
       codex:
@@ -1253,10 +1253,10 @@ cases:
       model: sonnet
       conservation_demotion: true
 
-  - name: stage_2_sonnet_constrained_keeps_terra
+  - name: stage_2_sonnet_constrained_keeps_sol
     kind: selection
     why: >-
-      Sonnet is the conserved one now; the registry head Terra is healthy and
+      Sonnet is the conserved one now; the registry head Sol is healthy and
       keeps the work, with no demotion of the head.
     slot: STRONG_IMPLEMENTER
     resource_states:
@@ -1276,13 +1276,13 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-terra
+      model: gpt-6-sol
       conservation_demotion: false
 
   - name: stage_2_both_peers_constrained_falls_to_gemini_high
     kind: selection
     why: >-
-      Both Terra and Sonnet are under critical, distant budget pressure and a
+      Both Sol and Sonnet are under critical, distant budget pressure and a
       qualified healthy Gemini Flash high is the quota-relief fallback.
     slot: STRONG_IMPLEMENTER
     resource_states:
@@ -1325,7 +1325,7 @@ cases:
     options:
       allowExperimental: false
       taskRisk: critical
-      rolePreference: [gpt-5.6-sol]
+      rolePreference: [gpt-6-sol]
     flagship_reason:
       escalation_reason: exceptional multi-stage agentic execution
       why_stage_2_insufficient: >-
@@ -1334,7 +1334,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-sol
+      model: gpt-6-sol
 
   - name: stage_3_architecture_reasoning_prefers_opus
     kind: selection
@@ -1441,7 +1441,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-luna
+      model: gpt-6-luna
 
   - name: stage_1_abundant_burst_still_loses_to_scarce_budget
     kind: selection
@@ -1478,7 +1478,7 @@ cases:
   - name: reviewer_excludes_the_codex_implementer_family
     kind: selection
     why: >-
-      Implementer is codex/gpt-5.6, so every codex reviewer candidate is
+      Implementer is codex/gpt-6, so every codex reviewer candidate is
       removed. The user-enabled Gemini reviewer is disjoint and GREEN, so it is
       the pick; its experimental label does not block it.
     slot: INDEPENDENT_REVIEWER
@@ -1490,12 +1490,12 @@ cases:
       allowExperimental: false
       taskRisk: high
       excludeProvider: codex
-      excludeModelFamily: gpt-5.6
+      excludeModelFamily: gpt-6
     expect:
       status: SELECTED
       provider: antigravity
       model: AUTO_GEMINI
-      disjoint_from: { provider: codex, model_family: gpt-5.6 }
+      disjoint_from: { provider: codex, model_family: gpt-6 }
 
   - name: reviewer_excludes_the_claude_implementer_family
     kind: selection
@@ -1537,7 +1537,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-luna
+      model: gpt-6-luna
       disjoint_from: { provider: cursor, model_family: gemini }
 
   - name: reviewer_disjointness_survives_a_stranded_quota_pull
@@ -1564,13 +1564,13 @@ cases:
       allowExperimental: false
       taskRisk: high
       excludeProvider: codex
-      excludeModelFamily: gpt-5.6
+      excludeModelFamily: gpt-6
       now: "2026-09-01T12:01:00Z"
     expect:
       status: SELECTED
       provider: claude
       model: sonnet
-      disjoint_from: { provider: codex, model_family: gpt-5.6 }
+      disjoint_from: { provider: codex, model_family: gpt-6 }
 
   # ---- Reasoning propagation ------------------------------------- #
 
@@ -1582,8 +1582,8 @@ cases:
       dispatch itself is invalid before it runs.
     dispatch:
       provider: codex
-      expected: { model: gpt-5.6-luna, model_family: gpt-5.6, reasoning_effort: max }
-      command: "codex exec -m gpt-5.6-luna -s workspace-write --color never -o out -"
+      expected: { model: gpt-6-luna, model_family: gpt-6, reasoning_effort: max }
+      command: "codex exec -m gpt-6-luna -s workspace-write --color never -o out -"
     expect: { result: DISPATCH_IDENTITY_UNVERIFIED }
 
   - name: codex_sol_medium_run_as_sol_max_is_a_contract_mismatch
@@ -1591,21 +1591,21 @@ cases:
     why: The incident from Company Platform. Model id matches, reasoning effort does not.
     dispatch:
       provider: codex
-      expected: { model: gpt-5.6-sol, model_family: gpt-5.6, reasoning_effort: medium }
+      expected: { model: gpt-6-sol, model_family: gpt-6, reasoning_effort: medium }
       command: >-
-        codex exec -m gpt-5.6-sol -c 'model_reasoning_effort="medium"' -s read-only --color never -o out -
-      actual: { model: gpt-5.6-sol, model_family: gpt-5.6, reasoning_effort: max }
+        codex exec -m gpt-6-sol -c 'model_reasoning_effort="medium"' -s read-only --color never -o out -
+      actual: { model: gpt-6-sol, model_family: gpt-6, reasoning_effort: max }
     expect: { result: DISPATCH_CONTRACT_MISMATCH }
 
-  - name: codex_terra_high_run_as_terra_high_passes
+  - name: codex_sol_high_run_as_sol_high_passes
     kind: reasoning_dispatch
     why: Explicit model and reasoning on the command line, and the runtime agrees.
     dispatch:
       provider: codex
-      expected: { model: gpt-5.6-terra, model_family: gpt-5.6, reasoning_effort: high }
+      expected: { model: gpt-6-sol, model_family: gpt-6, reasoning_effort: high }
       command: >-
-        codex exec -m gpt-5.6-terra -c 'model_reasoning_effort="high"' -s workspace-write --color never -o out -
-      actual: { model: gpt-5.6-terra, model_family: gpt-5.6, reasoning_effort: high }
+        codex exec -m gpt-6-sol -c 'model_reasoning_effort="high"' -s workspace-write --color never -o out -
+      actual: { model: gpt-6-sol, model_family: gpt-6, reasoning_effort: high }
     expect: { result: DISPATCH_IDENTITY_MATCH }
 
   - name: explicit_dispatch_effort_wins_over_local_config
@@ -1616,10 +1616,10 @@ cases:
       counts.
     dispatch:
       provider: codex
-      expected: { model: gpt-5.6-sol, model_family: gpt-5.6, reasoning_effort: medium }
+      expected: { model: gpt-6-sol, model_family: gpt-6, reasoning_effort: medium }
       command: >-
-        codex exec -m gpt-5.6-sol -c 'model_reasoning_effort="medium"' -s read-only --color never -o out -
-      actual: { model: gpt-5.6-sol, model_family: gpt-5.6, reasoning_effort: medium }
+        codex exec -m gpt-6-sol -c 'model_reasoning_effort="medium"' -s read-only --color never -o out -
+      actual: { model: gpt-6-sol, model_family: gpt-6, reasoning_effort: medium }
     expect: { result: DISPATCH_IDENTITY_MATCH }
 
   - name: matching_model_id_does_not_excuse_a_reasoning_mismatch
@@ -1627,10 +1627,10 @@ cases:
     why: A right model at the wrong effort is still the wrong execution identity.
     dispatch:
       provider: codex
-      expected: { model: gpt-5.6-luna, model_family: gpt-5.6, reasoning_effort: high }
+      expected: { model: gpt-6-luna, model_family: gpt-6, reasoning_effort: high }
       command: >-
-        codex exec -m gpt-5.6-luna -c 'model_reasoning_effort="high"' -s workspace-write --color never -o out -
-      actual: { model: gpt-5.6-luna, model_family: gpt-5.6, reasoning_effort: max }
+        codex exec -m gpt-6-luna -c 'model_reasoning_effort="high"' -s workspace-write --color never -o out -
+      actual: { model: gpt-6-luna, model_family: gpt-6, reasoning_effort: max }
     expect: { result: DISPATCH_CONTRACT_MISMATCH }
 
   # =================================================================== #
@@ -1661,10 +1661,10 @@ cases:
       provider: antigravity
       model: AUTO_GEMINI
 
-  - name: human_pins_terra_ai_cannot_swap_to_sonnet
+  - name: human_pins_sol_ai_cannot_swap_to_sonnet
     kind: selection
     why: >-
-      The human said "use Terra high". Terra's weekly budget is under pressure
+      The human said "use Sol high". Sol's weekly budget is under pressure
       and Sonnet is healthier, so autonomous quota routing would pick Sonnet -
       but a pinned model is not swapped for quota, benchmark or evidence.
     slot: STRONG_IMPLEMENTER
@@ -1685,11 +1685,11 @@ cases:
       allowExperimental: false
       taskRisk: medium
       now: "2026-09-01T12:01:00Z"
-      pinnedCandidate: { provider: codex, model: gpt-5.6-terra }
+      pinnedCandidate: { provider: codex, model: gpt-6-sol }
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-terra
+      model: gpt-6-sol
 
   - name: enabled_gemini_provisional_is_eligible_for_quota_routing
     kind: selection
@@ -1729,11 +1729,11 @@ cases:
   - name: disabled_candidate_is_excluded_from_autonomous_selection
     kind: selection
     why: >-
-      The operator set `enabled: false` on Terra. Even with Terra's provider
+      The operator set `enabled: false` on Sol. Even with Sol's provider
       healthy and first in registry order, the AI cannot autonomously select
       it; Sonnet takes the Stage 2 work.
     slot: STRONG_IMPLEMENTER
-    disable_models: [gpt-5.6-terra]
+    disable_models: [gpt-6-sol]
     resource_states:
       codex: { state: GREEN, available: true, source: ORCA_RUNTIME }
       claude: { state: GREEN, available: true, source: ORCA_RUNTIME }
@@ -1835,7 +1835,7 @@ cases:
     why: >-
       Two enabled Stage 2 peers, no pin. Claude's weekly budget is scarce and
       distant, Codex's is healthy, so quota - not model quality - keeps the
-      work on the registry head Terra.
+      work on the registry head Sol.
     slot: STRONG_IMPLEMENTER
     resource_states:
       codex:
@@ -1854,15 +1854,15 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-terra
+      model: gpt-6-sol
       conservation_demotion: false
 
   - name: evidence_status_difference_does_not_influence_ranking
     kind: selection
     why: >-
       All Stage 2 peers healthy, no pin, no pressure. Sonnet's candidate entry
-      carries higher `confidence` than Terra's, but candidate order is
-      human-authoritative: the registry head Terra is selected.
+      carries higher `confidence` than Sol's, but candidate order is
+      human-authoritative: the registry head Sol is selected.
     slot: STRONG_IMPLEMENTER
     resource_states:
       codex: { state: GREEN, available: true, source: ORCA_RUNTIME }
@@ -1871,14 +1871,14 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-terra
+      model: gpt-6-sol
 
   - name: benchmark_preference_does_not_influence_ranking
     kind: selection
     why: >-
       External comparison articles (MODEL_EVIDENCE E7/E8) are not in the
       selection chain. With peers healthy, the registry candidate order decides
-      and Terra - first in the slot - is selected.
+      and Sol - first in the slot - is selected.
     slot: STRONG_IMPLEMENTER
     resource_states:
       codex: { state: GREEN, available: true, source: ORCA_RUNTIME }
@@ -1887,7 +1887,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-terra
+      model: gpt-6-sol
 
   - name: incomplete_smoke_case_does_not_disable_gemini
     kind: selection
@@ -1929,8 +1929,8 @@ cases:
     kind: selection
     why: >-
       Codex weekly budget is critical and five days from reset - autonomous
-      routing would conserve it and pick Sonnet. The human pinned Terra, so
-      Terra runs.
+      routing would conserve it and pick Sonnet. The human pinned Sol, so
+      Sol runs.
     slot: STRONG_IMPLEMENTER
     resource_states:
       codex:
@@ -1949,11 +1949,11 @@ cases:
       allowExperimental: false
       taskRisk: medium
       now: "2026-09-01T12:01:00Z"
-      pinnedCandidate: { provider: codex, model: gpt-5.6-terra }
+      pinnedCandidate: { provider: codex, model: gpt-6-sol }
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-terra
+      model: gpt-6-sol
 
   - name: pinned_model_not_a_slot_candidate_is_config_invalid
     kind: selection
@@ -1976,17 +1976,17 @@ cases:
   - name: pin_cannot_route_to_a_disabled_candidate
     kind: selection
     why: >-
-      The operator disabled Terra. A human pin cannot resurrect a disabled
+      The operator disabled Sol. A human pin cannot resurrect a disabled
       candidate - `enabled: false` is authoritative. The block names policy,
       and the human is told to re-enable it or choose another model.
     slot: STRONG_IMPLEMENTER
-    disable_models: [gpt-5.6-terra]
+    disable_models: [gpt-6-sol]
     resource_states:
       codex: { state: GREEN, available: true, source: ORCA_RUNTIME }
     options:
       allowExperimental: false
       taskRisk: medium
-      pinnedCandidate: { provider: codex, model: gpt-5.6-terra }
+      pinnedCandidate: { provider: codex, model: gpt-6-sol }
     expect:
       status: BLOCKED
       code: POLICY_BLOCKED
@@ -2055,7 +2055,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-terra
+      model: gpt-6-sol
       budget_expiry_opportunity: LOW
       expiry_promotion: false
 
@@ -2084,7 +2084,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-terra
+      model: gpt-6-sol
       expiry_promotion: false
 
   - name: budget_scarcity_overrides_budget_expiry
@@ -2114,7 +2114,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-terra
+      model: gpt-6-sol
       conservation_pressure: LOW
       expiry_promotion: false
 
@@ -2184,7 +2184,7 @@ cases:
     kind: selection
     why: >-
       The codex reviewer candidates have a HIGH budget_expiry_opportunity, but
-      the implementer is codex/gpt-5.6, so disjointness removes them before any
+      the implementer is codex/gpt-6, so disjointness removes them before any
       resource signal. The disjoint enabled Gemini reviewer is selected.
     slot: INDEPENDENT_REVIEWER
     resource_states:
@@ -2200,13 +2200,13 @@ cases:
       allowExperimental: false
       taskRisk: high
       excludeProvider: codex
-      excludeModelFamily: gpt-5.6
+      excludeModelFamily: gpt-6
       now: "2026-09-01T12:00:00Z"
     expect:
       status: SELECTED
       provider: antigravity
       model: AUTO_GEMINI
-      disjoint_from: { provider: codex, model_family: gpt-5.6 }
+      disjoint_from: { provider: codex, model_family: gpt-6 }
 
   - name: unknown_reset_yields_unknown_expiry_opportunity
     kind: selection
@@ -2232,7 +2232,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-terra
+      model: gpt-6-sol
       budget_expiry_opportunity: UNKNOWN
       expiry_promotion: false
 
@@ -2264,7 +2264,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-terra
+      model: gpt-6-sol
       conservation_pressure: LOW
       expiry_promotion: false
 
@@ -2346,7 +2346,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-terra
+      model: gpt-6-sol
 
   - name: quota_failure_event_invalidates_state_before_the_next_dispatch
     kind: selection
@@ -2369,7 +2369,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-terra
+      model: gpt-6-sol
 
   - name: reset_expired_reviewer_candidate_is_refreshed_before_selection
     kind: selection
@@ -2398,7 +2398,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-luna
+      model: gpt-6-luna
       disjoint_from: { provider: antigravity, model_family: gemini }
 
   - name: reset_expired_budget_window_grants_no_expiry_promotion
@@ -2426,7 +2426,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-terra
+      model: gpt-6-sol
       budget_expiry_opportunity: LOW
       expiry_promotion: false
 
@@ -2652,7 +2652,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-terra
+      model: gpt-6-sol
 
   - name: unknown_quota_reviewer_still_dispatches
     kind: selection
@@ -2668,12 +2668,12 @@ cases:
       allowExperimental: false
       taskRisk: high
       excludeProvider: codex
-      excludeModelFamily: gpt-5.6
+      excludeModelFamily: gpt-6
     expect:
       status: SELECTED
       provider: antigravity
       model: AUTO_GEMINI
-      disjoint_from: { provider: codex, model_family: gpt-5.6 }
+      disjoint_from: { provider: codex, model_family: gpt-6 }
 
   # ------------------------------------------------------------------- #
   # ROUTER CAPACITY RESERVE
@@ -2693,7 +2693,7 @@ cases:
   # runs on a different provider, proving the mechanism itself is generic).
   # ------------------------------------------------------------------- #
 
-  - name: router_reserve_normal_band_leaves_terra_eligible
+  - name: router_reserve_normal_band_leaves_sol_eligible
     kind: selection
     why: >-
       Required case 1. Thirty percent of the Router's own weekly budget left
@@ -2721,13 +2721,13 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-terra
+      model: gpt-6-sol
 
-  - name: router_reserve_at_exactly_fifteen_percent_excludes_terra
+  - name: router_reserve_at_exactly_fifteen_percent_excludes_sol
     kind: selection
     why: >-
       Required case 2. remaining_ratio == 0.15 is the reserve boundary
-      (<= 0.15), inclusive. Terra sits on the Router's own pool and is
+      (<= 0.15), inclusive. Sol sits on the Router's own pool and is
       excluded; the healthier disjoint alternative takes the work instead of
       Codex being downgraded in capability to stay put.
     slot: STRONG_IMPLEMENTER
@@ -2813,7 +2813,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-luna
+      model: gpt-6-luna
 
   - name: router_reserve_at_twelve_percent_excludes_ordinary_luna_implementer
     kind: selection
@@ -2930,7 +2930,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-luna
+      model: gpt-6-luna
 
   - name: router_reserve_never_triggers_from_unknown_budget
     kind: selection
@@ -2938,7 +2938,7 @@ cases:
       Required case 8. The Router's pool is GREEN (so it competes fairly on
       resource-state band with Claude, also GREEN) but carries no BUDGET
       window at all - genuinely unread, not guessed. Reserve must not invent
-      a band from that silence; Terra keeps the registry-order head exactly
+      a band from that silence; Sol keeps the registry-order head exactly
       as it would if this mechanism did not exist.
     slot: STRONG_IMPLEMENTER
     resource_states:
@@ -2961,7 +2961,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-terra
+      model: gpt-6-sol
 
   - name: router_reserve_ignores_a_near_exhausted_burst_window
     kind: selection
@@ -2993,13 +2993,13 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-terra
+      model: gpt-6-sol
 
   - name: human_pin_during_reserve_records_the_override
     kind: selection
     why: >-
       Required case 10. Reserve is active on the Router's pool at nine
-      percent, but the current human instruction explicitly names Terra. The
+      percent, but the current human instruction explicitly names Sol. The
       pin is honoured - overriding reserve is a human decision, not something
       the router grants itself - and the override actually spent reserved
       capacity, so router_reserve_override records true.
@@ -3022,11 +3022,11 @@ cases:
       taskRisk: medium
       now: "2026-09-01T12:01:00Z"
       activeRouterResourceKey: codex
-      pinnedCandidate: { provider: codex, model: gpt-5.6-terra }
+      pinnedCandidate: { provider: codex, model: gpt-6-sol }
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-terra
+      model: gpt-6-sol
       router_reserve_band: ROUTER_CRITICAL_RESERVE
       router_reserve_override: true
 
@@ -3120,12 +3120,12 @@ cases:
       now: "2026-09-01T12:01:00Z"
       activeRouterResourceKey: codex
       excludeProvider: codex
-      excludeModelFamily: gpt-5.6
+      excludeModelFamily: gpt-6
     expect:
       status: SELECTED
       provider: claude
       model: sonnet
-      disjoint_from: { provider: codex, model_family: gpt-5.6 }
+      disjoint_from: { provider: codex, model_family: gpt-6 }
 
   # =================================================================== #
   # BURST DEPLETION + UNIFIED DEFENSIVE COMPOSITION + PACE (0.8)
@@ -3164,7 +3164,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-terra
+      model: gpt-6-sol
       resource_pressure_rank: CLEAR
       burst_depletion_pressure: NONE
       pace_pressure: UNKNOWN
@@ -3227,7 +3227,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-terra
+      model: gpt-6-sol
       burst_depletion_pressure: LOW
       burst_depletion_demotion: false
       resource_pressure_rank: CLEAR
@@ -3252,7 +3252,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-luna
+      model: gpt-6-luna
       resource_pressure_rank: SOFT_PRESSURED
 
   - name: burst_depletion_is_inert_for_the_router_slot
@@ -3280,7 +3280,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-luna
+      model: gpt-6-luna
       burst_depletion_pressure: UNKNOWN
       pace_pressure: UNKNOWN
       resource_pressure_rank: CLEAR
@@ -3342,7 +3342,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-terra
+      model: gpt-6-sol
       pace_pressure: UNKNOWN
       pace_confidence: UNKNOWN
       pace_demotion: false
@@ -3412,7 +3412,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-terra
+      model: gpt-6-sol
       pace_pressure: UNKNOWN
       pace_demotion: false
 
@@ -3420,7 +3420,7 @@ cases:
     kind: selection
     why: >-
       Codex trajectory is acutely pressured, but the human pinned
-      codex/gpt-5.6-terra in the current instruction. Exact dispatch wins:
+      codex/gpt-6-sol in the current instruction. Exact dispatch wins:
       Codex is selected, pace is reported as a label, and pace_demotion is
       false because a pin does not reorder.
     slot: STRONG_IMPLEMENTER
@@ -3445,11 +3445,11 @@ cases:
       allowExperimental: false
       taskRisk: medium
       now: "2026-09-09T12:00:00Z"
-      pinnedCandidate: { provider: codex, model: gpt-5.6-terra }
+      pinnedCandidate: { provider: codex, model: gpt-6-sol }
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-terra
+      model: gpt-6-sol
       pace_demotion: false
 
   - name: pace_inert_for_the_router_slot
@@ -3479,7 +3479,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-luna
+      model: gpt-6-luna
       pace_pressure: UNKNOWN
       pace_demotion: false
       resource_pressure_rank: CLEAR
@@ -3508,5 +3508,5 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-5.6-luna
+      model: gpt-6-luna
       resource_pressure_rank: SOFT_PRESSURED

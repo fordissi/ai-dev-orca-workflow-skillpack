@@ -225,7 +225,7 @@ reserve 的關係見下方一節。
 
 Router capacity reserve（[`RESOURCE_AWARE_ROUTING.md`](RESOURCE_AWARE_ROUTING.md)）
 保護的是 quota；本節保護的是執行邊界。兩者必須一起看，否則 reserve 可以被繞過：
-排除了 Terra / Sol / 一般 Luna worker 卻讓 Luna-max Router 自己吃下同一份工作，
+排除了 Sol / 一般 Luna worker 卻讓 Luna-max Router 自己吃下同一份工作，
 額度依然被同一個 pool 消耗掉，只是換了個名字。這個繞過模式的名稱與完整語意
 （`ROUTER_RESERVE_SELF_CONSUMPTION`）由 `RESOURCE_AWARE_ROUTING.md` 定義，
 此處只重申：**Router capacity reserve 不得被「Router 自己做被排除的工作」這種

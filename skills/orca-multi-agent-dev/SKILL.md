@@ -62,8 +62,8 @@ route——這些是輔助稽核訊號，會被記錄，但不是唯一判準。
 
 找不到合格 worker（reserve 排除、無 eligible provider、identity 建立不了、
 permission 擋下）時，回既有的 `ROUTING_UNAVAILABLE` / `RESOURCE_BLOCKED` /
-`PERMISSION_BLOCKED` / human gate——**不是 Router 自己做**。Reserve 排除 Terra
-/Sol/一般 Luna worker 後，Router 自己接手同一份工作，額度照樣從同一個 pool
+`PERMISSION_BLOCKED` / human gate——**不是 Router 自己做**。Reserve 排除
+Sol/一般 Luna worker 後，Router 自己接手同一份工作，額度照樣從同一個 pool
 扣掉，這是 `ROUTER_RESERVE_SELF_CONSUMPTION`，同樣禁止。
 
 Human 可以明確要求「這次直接做，不要派工」：記

@@ -127,7 +127,7 @@ AI 可以且必須檢查、且**只有這些**能讓 AI 拒絕一個 user-enable
 
 ## Human explicit model selection
 
-若 human 在 **current instruction** 明確指定 provider / model（可含 reasoning），例如「Use Gemini 3.7 Flash low」或「Use Terra high」，operational router **必須**使用該模型（precedence 第 1 層），**除非 hard execution eligibility 失敗**。
+若 human 在 **current instruction** 明確指定 provider / model（可含 reasoning），例如「Use Gemini 3.7 Flash low」或「Use Sol high」，operational router **必須**使用該模型（precedence 第 1 層），**除非 hard execution eligibility 失敗**。
 
 **不得**因為 quota 不理想、benchmark、`evidence_status`、smoke-case 不足、AI preference 或 registry ranking 而換成其他模型。
 
@@ -293,12 +293,11 @@ regression/test execution、domain reasoning 等 worker-shaped 訊號對應到�
 |---|---|
 | Luna | Router、routine implementation、bounded repair、一般 repo 工作、tests/docs、disjoint 時的 ordinary review |
 | Gemini Flash | quota relief、long-context discovery、broad repo inspection、regression hunting、qualified 時的 independent review、Stage 1 low-effort 替代、Stage 2 high-effort 的緊急替代（Codex/Claude budget 吃緊時） |
-| Terra | advanced implementation、difficult code reasoning、跨模組技術工作、difficult structured review |
-| Sonnet 5 | architecture、contracts、security reasoning、difficult independent review、semantic ambiguity |
-| Sol | 極重 terminal 的實作、長多步 agentic execution、difficult structural repair、flagship-level execution |
-| Opus 5 | novel reasoning、architecture disputes、deep design review、difficult semantic/security adjudication、flagship-level review/reasoning |
+| Sonnet 5.5 | architecture、contracts、security reasoning、difficult independent review、semantic ambiguity |
+| Sol | Stage 2（low）：advanced implementation、difficult code reasoning、跨模組技術工作、difficult structured review（0.7 起接手原 Terra 的工作）；Stage 3（flagship）：極重 terminal 的實作、長多步 agentic execution、difficult structural repair、flagship-level execution |
+| Opus 5.5 | novel reasoning、architecture disputes、deep design review、difficult semantic/security adjudication、flagship-level review/reasoning |
 
-**不得**把 Gemini Flash 當成自動具備 flagship 能力。**不得**因為 implementer 是 Claude 就自動把 reviewer 升成 Sol。若唯一剩下的 disjoint stable candidate 相對 task 需求過強，優先設法讓另一個合適的 provider/model 具備資格，而不是預設用 flagship。
+**不得**把 Gemini Flash 當成自動具備 flagship 能力。**不得**因為 implementer 是 Claude 就自動把 reviewer 升成 Stage 3 flagship（Sol medium / Opus）；Sol 在 Stage 2 以 `low` 擔任 reviewer 仍須 Stage 2 admission signal。若唯一剩下的 disjoint stable candidate 相對 task 需求過強，優先設法讓另一個合適的 provider/model 具備資格，而不是預設用 flagship。
 
 ## Candidate 選擇演算法
 
@@ -364,7 +363,7 @@ flagship_admission:
   human_authorization:          # required_and_provided | not_required | MISSING
 ```
 
-**沒有 flagship admission 的 Stage 3 選擇不合法**，conformance checker 會將其標為 finding。這是對「Sol and Opus are flagship escalation resources, not routine workers」的機械保障。不設全域百分比上限，但**每一次 flagship 使用的理由都必須可稽核**。
+**沒有 flagship admission 的 Stage 3 選擇不合法**，conformance checker 會將其標為 finding。這是對「Stage 3 的 Sol and Opus are flagship escalation resources, not routine workers」（0.7 起 Sol 另有 Stage 2 位置，受 Stage 2 admission 約束）的機械保障。不設全域百分比上限，但**每一次 flagship 使用的理由都必須可稽核**。
 
 ## Reasoning effort is part of execution identity
 

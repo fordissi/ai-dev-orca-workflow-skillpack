@@ -19,7 +19,7 @@
 #                                checks (supervised-first, orca 1.4.209).
 #
 # The incident this section answers: a long-lived Operational Router
-# (codex/gpt-5.6-luna/max) spent ~25 minutes doing repository discovery, data
+# (codex/gpt-6-luna/max) spent ~25 minutes doing repository discovery, data
 # reconciliation and a 154-test regression suite directly, with no worker
 # dispatch and no dispatch identity attestation. Every "worker-shaped"
 # case below is drawn from that shape of work.
@@ -71,14 +71,14 @@ cases:
       requested_identity: &requested_luna
         runtime_adapter: codex_cli
         provider_family: openai
-        exact_model: gpt-5.6-luna
+        exact_model: gpt-6-luna
         effort: low
       evidence: &supervised_luna
         task_id: task_23b0611ccc69
         dispatch_id: ctx_a50dbd1533d4
         launch:
-          requested: { agent: codex, model: gpt-5.6-luna, effort: low }
-          effective: { agent: codex, model: gpt-5.6-luna, effort: low }
+          requested: { agent: codex, model: gpt-6-luna, effort: low }
+          effective: { agent: codex, model: gpt-6-luna, effort: low }
         lifecycle: { model_launched: true, worker_active: true, completed: true }
         completion:
           type: worker_done
@@ -107,7 +107,7 @@ cases:
         task_id: task_23b0611ccc69
         terminal_handle: term_cb32a090
         launch:
-          effective: { agent: codex, model: gpt-5.6-luna, effort: low }
+          effective: { agent: codex, model: gpt-6-luna, effort: low }
         lifecycle: { model_launched: true, worker_active: true, completed: true }
     expect:
       result: DISPATCH_BLOCKED
@@ -127,7 +127,7 @@ cases:
       requested_identity: *requested_luna
       evidence:
         terminal_handle: terminal-42
-        launch_command: codex -m gpt-5.6-luna -c model_reasoning_effort="low"
+        launch_command: codex -m gpt-6-luna -c model_reasoning_effort="low"
     expect:
       result: HARD_FAIL
       dispatch_path: LIGHTWEIGHT_TERMINAL_PROMPT
@@ -137,7 +137,7 @@ cases:
   - name: effective_launch_mismatch_fails_exact_dispatch
     kind: dispatch_compliance
     why: >-
-      The routing decision asked for Terra high; launch.effective reports Luna
+      The routing decision asked for Sol high; launch.effective reports Luna
       low. Exact routing applies only when the launched runtime matches.
     input:
       task_class: SECURITY_SPECIALIST
@@ -146,7 +146,7 @@ cases:
       requested_identity:
         runtime_adapter: codex_cli
         provider_family: openai
-        exact_model: gpt-5.6-terra
+        exact_model: gpt-6-sol
         effort: high
       evidence: *supervised_luna
     expect:

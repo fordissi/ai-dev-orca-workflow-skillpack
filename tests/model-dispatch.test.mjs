@@ -64,8 +64,8 @@ test("the shipped registry passes the alias-catalog conformance check", () => {
 });
 
 test("non-catalog providers pass through unchanged", () => {
-  const r = resolveCliModelArgument(registry, "codex", "gpt-5.6-terra");
-  assert.equal(r.cli_model, "gpt-5.6-terra");
+  const r = resolveCliModelArgument(registry, "codex", "gpt-6-sol");
+  assert.equal(r.cli_model, "gpt-6-sol");
   assert.equal(r.source, "PASS_THROUGH");
 });
 

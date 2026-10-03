@@ -20,8 +20,8 @@ capability_slots:
     candidates:
       - provider: codex
         resource_state_key: codex
-        model: gpt-5.6-luna
-        model_family: gpt-5.6
+        model: gpt-6-luna
+        model_family: gpt-6
         reasoning: medium
         capability_tier: DEFAULT
         status: stable

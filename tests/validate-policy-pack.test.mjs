@@ -68,7 +68,7 @@ const registry = {
       minimum_tier: "DEFAULT",
       max_repair_attempts: 2,
       candidates: [
-        { provider: "codex", resource_state_key: "codex", model: "luna", model_family: "gpt-5.6", reasoning: "medium", capability_tier: "DEFAULT", status: "stable" },
+        { provider: "codex", resource_state_key: "codex", model: "luna", model_family: "gpt-6", reasoning: "medium", capability_tier: "DEFAULT", status: "stable" },
         { provider: "claude", resource_state_key: "claude", model: "sonnet", model_family: "claude-sonnet", reasoning: "high", capability_tier: "STRONG", status: "stable" },
       ],
     },
@@ -143,7 +143,7 @@ test("independent review excludes the implementer provider and model family", ()
   const selected = selectCandidate(registry.capability_slots.DEFAULT_IMPLEMENTER, {
     codex: { state: "GREEN", available: true, source: "ORCA_RUNTIME" },
     claude: { state: "UNKNOWN", available: true, source: "ORCA_RUNTIME" },
-  }, registry.capability_tier_order, { allowExperimental: false, taskRisk: "high", excludeProvider: "codex", excludeModelFamily: "gpt-5.6" });
+  }, registry.capability_tier_order, { allowExperimental: false, taskRisk: "high", excludeProvider: "codex", excludeModelFamily: "gpt-6" });
   assert.equal(selected.candidate.provider, "claude");
 });
 
@@ -605,7 +605,7 @@ test("an explicit human model pin outranks quota but not hard eligibility", () =
 
   // A pin to a model the slot does not list is impossible, not a substitution.
   const bad = selectCandidate(slot, { codex: codexScarce, claude: claudeHealthy }, tierOrder, {
-    allowExperimental: false, taskRisk: "low", now: NOW, pinnedCandidate: { provider: "codex", model: "gpt-5.6-sol" },
+    allowExperimental: false, taskRisk: "low", now: NOW, pinnedCandidate: { provider: "codex", model: "gpt-6-sol" },
   });
   assert.equal(bad.status, "BLOCKED");
   assert.equal(bad.code, "CONFIG_INVALID");
@@ -1683,7 +1683,7 @@ test("stranded capacity cannot reach eligibility, tier, disjointness or gates", 
     registry.capability_slots.DEFAULT_IMPLEMENTER,
     { codex: urgent, claude: dull },
     tierOrder,
-    { allowExperimental: false, taskRisk: "high", excludeProvider: "codex", excludeModelFamily: "gpt-5.6", now: NOW },
+    { allowExperimental: false, taskRisk: "high", excludeProvider: "codex", excludeModelFamily: "gpt-6", now: NOW },
   );
   assert.equal(reviewer.candidate.provider, "claude");
 
@@ -2450,11 +2450,11 @@ test("resource economics never reach slot membership", async () => {
     real.capability_slots.INDEPENDENT_REVIEWER,
     states,
     real.capability_tier_order,
-    { allowExperimental: false, taskRisk: "high", excludeProvider: "codex", excludeModelFamily: "gpt-5.6", now: NOW },
+    { allowExperimental: false, taskRisk: "high", excludeProvider: "codex", excludeModelFamily: "gpt-6", now: NOW },
   );
   assert.equal(reviewer.status, "SELECTED");
   assert.notEqual(reviewer.candidate.provider, "codex");
-  assert.notEqual(reviewer.candidate.model_family, "gpt-5.6");
+  assert.notEqual(reviewer.candidate.model_family, "gpt-6");
 });
 
 test("the snapshot schema types windows and the example declares roles", async () => {
@@ -3137,8 +3137,8 @@ test("a stale human override is rejected independent of router reserve", () => {
       task_id: "task-1",
       instruction_revision: "rev-1",
       provider: "codex",
-      model: "gpt-5.6-terra",
-      model_family: "gpt-5.6",
+      model: "gpt-6-sol",
+      model_family: "gpt-6",
       reasoning_effort: "high",
     },
   });
@@ -3153,8 +3153,8 @@ test("a stale human override is rejected independent of router reserve", () => {
       task_id: "task-2",
       instruction_revision: "rev-2",
       provider: "codex",
-      model: "gpt-5.6-terra",
-      model_family: "gpt-5.6",
+      model: "gpt-6-sol",
+      model_family: "gpt-6",
       reasoning_effort: "high",
     },
   });
@@ -3238,7 +3238,7 @@ test("router capacity reserve is documented in exactly one place and referenced,
  * Operational Router execution boundary
  *
  * The incident this hardening answers: a long-lived Operational Router
- * (codex/gpt-5.6-luna/max) spent roughly 25 minutes performing repository
+ * (codex/gpt-6-luna/max) spent roughly 25 minutes performing repository
  * discovery, data reconciliation, and a 154-test regression run directly, in
  * a live Company Platform session, with zero worker dispatch and zero
  * dispatch identity attestation. classifyRouterExecution() is the pure
@@ -3325,22 +3325,22 @@ test("exact dispatch identity and reasoning-dispatch rules are unchanged by this
   // Required case 15. This hardening adds a pre-dispatch classification gate;
   // it must not touch how a dispatch, once decided, is verified.
   const attestation = attestDispatchIdentity(
-    { provider: "codex", model: "gpt-5.6-luna", model_family: "gpt-5.6", reasoning_effort: "max" },
-    { provider: "codex", model: "gpt-5.6-luna", model_family: "gpt-5.6", reasoning_effort: "max" },
+    { provider: "codex", model: "gpt-6-luna", model_family: "gpt-6", reasoning_effort: "max" },
+    { provider: "codex", model: "gpt-6-luna", model_family: "gpt-6", reasoning_effort: "max" },
   );
   assert.equal(attestation.attestation_result, "DISPATCH_IDENTITY_MATCH");
 
   const mismatch = attestDispatchIdentity(
-    { provider: "codex", model: "gpt-5.6-terra", model_family: "gpt-5.6", reasoning_effort: "high" },
-    { provider: "codex", model: "gpt-5.6-terra", model_family: "gpt-5.6", reasoning_effort: "max" },
+    { provider: "codex", model: "gpt-6-sol", model_family: "gpt-6", reasoning_effort: "high" },
+    { provider: "codex", model: "gpt-6-sol", model_family: "gpt-6", reasoning_effort: "max" },
   );
   assert.equal(mismatch.attestation_result, "DISPATCH_CONTRACT_MISMATCH");
 
   const dispatch = checkReasoningDispatch({
     provider: "codex",
-    expected: { model: "gpt-5.6-luna", model_family: "gpt-5.6", reasoning_effort: "max" },
-    command: "codex exec -m gpt-5.6-luna -c 'model_reasoning_effort=\"max\"' -s workspace-write --color never -o out -",
-    actual: { model: "gpt-5.6-luna", model_family: "gpt-5.6", reasoning_effort: "max" },
+    expected: { model: "gpt-6-luna", model_family: "gpt-6", reasoning_effort: "max" },
+    command: "codex exec -m gpt-6-luna -c 'model_reasoning_effort=\"max\"' -s workspace-write --color never -o out -",
+    actual: { model: "gpt-6-luna", model_family: "gpt-6", reasoning_effort: "max" },
   });
   assert.equal(dispatch.result, "DISPATCH_IDENTITY_MATCH");
 });
