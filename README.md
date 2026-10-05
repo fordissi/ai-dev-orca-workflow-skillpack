@@ -111,7 +111,7 @@ classify -> slot -> overlay -> candidate -> contract -> dispatch
 
 能力分成三個 stage（`0.5` 起），在 `capability_tier` 之上、向後相容：
 `STAGE_1_DEFAULT`（Luna / Gemini Flash low，大多數日常工作）、
-`STAGE_2_ADVANCED`（Sol low / Sonnet 5.5，正常的 escalation tier）、
+`STAGE_2_ADVANCED`（Luna max 優先，再來 Sol low / Sonnet 5.5，正常的 escalation tier）、
 `STAGE_3_FLAGSHIP`（Sol / Opus 5.5，罕見）。**risk、production 相關性、測試數量
 都不會提高 stage**——只有 capability difficulty 會。
 

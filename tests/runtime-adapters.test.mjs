@@ -187,7 +187,7 @@ test("registry conformance rejects a provider=gemini candidate and a family the 
   bad.capability_slots.LONG_CONTEXT_DISCOVERY.candidates[0].provider = "gemini";
   assert.ok(validateRegistry(bad).some((f) => f.includes("no verified runtime adapter")));
   const wrongFamily = structuredClone(registry);
-  wrongFamily.capability_slots.STRONG_IMPLEMENTER.candidates[1].model_family = "gemini";
+  wrongFamily.capability_slots.STRONG_IMPLEMENTER.candidates.find((c) => c.model === "sonnet").model_family = "gemini";
   assert.ok(validateRegistry(wrongFamily).some((f) => f.includes("claude_cli does not serve provider family gemini")));
 });
 

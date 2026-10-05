@@ -44,7 +44,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-6-sol
+      model: gpt-6-luna
 
   - name: unknown_primary_yellow_fallback
     kind: selection
@@ -59,7 +59,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-6-sol
+      model: gpt-6-luna
 
   - name: green_fallback_over_red_primary
     kind: selection
@@ -310,7 +310,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-6-sol
+      model: gpt-6-luna
 
   - name: explicit_allow_experimental_selects
     kind: selection
@@ -362,7 +362,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-6-sol
+      model: gpt-6-luna
       stranded_capacity_risk: HIGH
 
   - name: stranded_capacity_promotes_over_registry_order
@@ -496,7 +496,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-6-sol
+      model: gpt-6-luna
       stranded_capacity_risk: UNKNOWN
 
   - name: stranded_capacity_never_promotes_across_bands
@@ -549,7 +549,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-6-sol
+      model: gpt-6-luna
       stranded_capacity_risk: UNKNOWN
 
   - name: untrusted_source_confers_no_opportunity_signal
@@ -576,7 +576,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-6-sol
+      model: gpt-6-luna
 
   # ------------------------------------------------------------------- #
   # Hierarchical quota windows.
@@ -644,7 +644,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-6-sol
+      model: gpt-6-luna
       stranded_capacity_risk: HIGH
       conservation_pressure: LOW
       conservation_demotion: false
@@ -675,7 +675,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-6-sol
+      model: gpt-6-luna
       conservation_pressure: LOW
       conservation_demotion: false
 
@@ -732,7 +732,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-6-sol
+      model: gpt-6-luna
       stranded_promotion: false
       conservation_demotion: false
 
@@ -760,7 +760,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-6-sol
+      model: gpt-6-luna
       stranded_capacity_risk: UNKNOWN
       stranded_promotion: false
 
@@ -911,7 +911,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-6-sol
+      model: gpt-6-luna
       conservation_pressure: UNKNOWN
       conservation_demotion: false
 
@@ -940,7 +940,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-6-sol
+      model: gpt-6-luna
       conservation_pressure: CRITICAL
       conservation_demotion: false
 
@@ -1216,9 +1216,42 @@ cases:
       model: AUTO_GEMINI
       conservation_demotion: true
 
+  - name: stage_2_after_luna_stage_1_failure_skips_luna
+    kind: selection
+    why: >-
+      Stage 2 was admitted because Luna's Stage 1 attempt failed. Luna max is
+      the STRONG_IMPLEMENTER head, but re-running the model that just failed
+      is pointless, so excludeFailedModels removes exactly codex/gpt-6-luna
+      and the next codex candidate (Sol) is selected on the same pool.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex: { state: GREEN, available: true, source: ORCA_RUNTIME }
+      claude: { state: GREEN, available: true, source: ORCA_RUNTIME }
+    options: { allowExperimental: false, taskRisk: medium, excludeFailedModels: [codex/gpt-6-luna] }
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-6-sol
+
+  - name: stage_2_failed_model_exclusion_is_exact_not_provider
+    kind: selection
+    why: >-
+      Excluding the failed Luna and the failed Sol leaves the provider itself
+      untouched in the resource layer; the next eligible candidate (Sonnet) is
+      selected rather than a provider-wide block.
+    slot: STRONG_IMPLEMENTER
+    resource_states:
+      codex: { state: GREEN, available: true, source: ORCA_RUNTIME }
+      claude: { state: GREEN, available: true, source: ORCA_RUNTIME }
+    options: { allowExperimental: false, taskRisk: medium, excludeFailedModels: [codex/gpt-6-luna, codex/gpt-6-sol] }
+    expect:
+      status: SELECTED
+      provider: claude
+      model: sonnet
+
   - name: stage_2_healthy_peers_take_registry_head
     kind: selection
-    why: With Sol and Sonnet both healthy the registry head (Sol) is selected.
+    why: With Luna and Sonnet both healthy the registry head (Luna) is selected.
     slot: STRONG_IMPLEMENTER
     resource_states:
       codex: { state: GREEN, available: true, source: ORCA_RUNTIME }
@@ -1227,7 +1260,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-6-sol
+      model: gpt-6-luna
 
   - name: stage_2_sol_constrained_selects_sonnet
     kind: selection
@@ -1256,7 +1289,7 @@ cases:
   - name: stage_2_sonnet_constrained_keeps_sol
     kind: selection
     why: >-
-      Sonnet is the conserved one now; the registry head Sol is healthy and
+      Sonnet is the conserved one now; the registry head Luna is healthy and
       keeps the work, with no demotion of the head.
     slot: STRONG_IMPLEMENTER
     resource_states:
@@ -1276,7 +1309,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-6-sol
+      model: gpt-6-luna
       conservation_demotion: false
 
   - name: stage_2_both_peers_constrained_falls_to_gemini_high
@@ -1729,11 +1762,11 @@ cases:
   - name: disabled_candidate_is_excluded_from_autonomous_selection
     kind: selection
     why: >-
-      The operator set `enabled: false` on Sol. Even with Sol's provider
-      healthy and first in registry order, the AI cannot autonomously select
-      it; Sonnet takes the Stage 2 work.
+      The operator set `enabled: false` on both Codex candidates (Luna, Sol).
+      Even with their provider healthy and first in registry order, the AI
+      cannot autonomously select them; Sonnet takes the Stage 2 work.
     slot: STRONG_IMPLEMENTER
-    disable_models: [gpt-6-sol]
+    disable_models: [gpt-6-luna, gpt-6-sol]
     resource_states:
       codex: { state: GREEN, available: true, source: ORCA_RUNTIME }
       claude: { state: GREEN, available: true, source: ORCA_RUNTIME }
@@ -1835,7 +1868,7 @@ cases:
     why: >-
       Two enabled Stage 2 peers, no pin. Claude's weekly budget is scarce and
       distant, Codex's is healthy, so quota - not model quality - keeps the
-      work on the registry head Sol.
+      work on the registry head Luna.
     slot: STRONG_IMPLEMENTER
     resource_states:
       codex:
@@ -1854,15 +1887,15 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-6-sol
+      model: gpt-6-luna
       conservation_demotion: false
 
   - name: evidence_status_difference_does_not_influence_ranking
     kind: selection
     why: >-
       All Stage 2 peers healthy, no pin, no pressure. Sonnet's candidate entry
-      carries higher `confidence` than Sol's, but candidate order is
-      human-authoritative: the registry head Sol is selected.
+      carries higher `confidence` than Luna's, but candidate order is
+      human-authoritative: the registry head Luna is selected.
     slot: STRONG_IMPLEMENTER
     resource_states:
       codex: { state: GREEN, available: true, source: ORCA_RUNTIME }
@@ -1871,14 +1904,14 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-6-sol
+      model: gpt-6-luna
 
   - name: benchmark_preference_does_not_influence_ranking
     kind: selection
     why: >-
       External comparison articles (MODEL_EVIDENCE E7/E8) are not in the
       selection chain. With peers healthy, the registry candidate order decides
-      and Sol - first in the slot - is selected.
+      and Luna - first in the slot - is selected.
     slot: STRONG_IMPLEMENTER
     resource_states:
       codex: { state: GREEN, available: true, source: ORCA_RUNTIME }
@@ -1887,7 +1920,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-6-sol
+      model: gpt-6-luna
 
   - name: incomplete_smoke_case_does_not_disable_gemini
     kind: selection
@@ -2055,7 +2088,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-6-sol
+      model: gpt-6-luna
       budget_expiry_opportunity: LOW
       expiry_promotion: false
 
@@ -2084,7 +2117,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-6-sol
+      model: gpt-6-luna
       expiry_promotion: false
 
   - name: budget_scarcity_overrides_budget_expiry
@@ -2114,7 +2147,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-6-sol
+      model: gpt-6-luna
       conservation_pressure: LOW
       expiry_promotion: false
 
@@ -2232,7 +2265,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-6-sol
+      model: gpt-6-luna
       budget_expiry_opportunity: UNKNOWN
       expiry_promotion: false
 
@@ -2264,7 +2297,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-6-sol
+      model: gpt-6-luna
       conservation_pressure: LOW
       expiry_promotion: false
 
@@ -2346,7 +2379,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-6-sol
+      model: gpt-6-luna
 
   - name: quota_failure_event_invalidates_state_before_the_next_dispatch
     kind: selection
@@ -2369,7 +2402,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-6-sol
+      model: gpt-6-luna
 
   - name: reset_expired_reviewer_candidate_is_refreshed_before_selection
     kind: selection
@@ -2426,7 +2459,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-6-sol
+      model: gpt-6-luna
       budget_expiry_opportunity: LOW
       expiry_promotion: false
 
@@ -2652,7 +2685,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-6-sol
+      model: gpt-6-luna
 
   - name: unknown_quota_reviewer_still_dispatches
     kind: selection
@@ -2721,7 +2754,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-6-sol
+      model: gpt-6-luna
 
   - name: router_reserve_at_exactly_fifteen_percent_excludes_sol
     kind: selection
@@ -2938,7 +2971,7 @@ cases:
       Required case 8. The Router's pool is GREEN (so it competes fairly on
       resource-state band with Claude, also GREEN) but carries no BUDGET
       window at all - genuinely unread, not guessed. Reserve must not invent
-      a band from that silence; Sol keeps the registry-order head exactly
+      a band from that silence; Luna keeps the registry-order head exactly
       as it would if this mechanism did not exist.
     slot: STRONG_IMPLEMENTER
     resource_states:
@@ -2961,7 +2994,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-6-sol
+      model: gpt-6-luna
 
   - name: router_reserve_ignores_a_near_exhausted_burst_window
     kind: selection
@@ -2993,7 +3026,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-6-sol
+      model: gpt-6-luna
 
   - name: human_pin_during_reserve_records_the_override
     kind: selection
@@ -3164,7 +3197,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-6-sol
+      model: gpt-6-luna
       resource_pressure_rank: CLEAR
       burst_depletion_pressure: NONE
       pace_pressure: UNKNOWN
@@ -3227,7 +3260,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-6-sol
+      model: gpt-6-luna
       burst_depletion_pressure: LOW
       burst_depletion_demotion: false
       resource_pressure_rank: CLEAR
@@ -3342,7 +3375,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-6-sol
+      model: gpt-6-luna
       pace_pressure: UNKNOWN
       pace_confidence: UNKNOWN
       pace_demotion: false
@@ -3412,7 +3445,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-6-sol
+      model: gpt-6-luna
       pace_pressure: UNKNOWN
       pace_demotion: false
 

@@ -59,7 +59,7 @@ test("sonnet-5 resolves only through a reviewed model_override", () => {
 test("the shipped registry passes the alias-catalog conformance check", () => {
   assert.deepEqual(validateRegistry(registry), []);
   const bad = structuredClone(registry);
-  bad.capability_slots.STRONG_IMPLEMENTER.candidates[1].model = "sonnet-5";
+  bad.capability_slots.STRONG_IMPLEMENTER.candidates.find((c) => c.model === "sonnet").model = "sonnet-5";
   assert.ok(validateRegistry(bad).some((f) => f.includes("STRONG_IMPLEMENTER") && f.includes("sonnet-5")));
 });
 

@@ -222,6 +222,8 @@ Legacy 只寫 `minimum_tier` 的 contract 依下表 deterministic 對應，**不
 
 `risk` 單獨不足以進 Stage 2。
 
+**因 Stage 1 失敗而進 Stage 2 時，不得再選剛失敗的同一個 exact model。** Luna（`max`）同時是 Stage 1 主力與 `STRONG_IMPLEMENTER` 的第一順位；若 Stage 2 admission 的理由是 Luna 的 Stage 1 attempt 失敗，dispatch 必須把 `codex/gpt-6-luna` 放進 `excludeFailedModels`，改由 slot 內下一個 eligible candidate 接手。排除的只是那個 exact model，provider 與 model family 仍 eligible；其他 advanced signal（例如 `complexity == high`）直接進 Stage 2 時，Luna 照常是第一順位。
+
 ### Stage 3 admission
 
 需要**例外證據**，其中之一：
@@ -291,7 +293,7 @@ regression/test execution、domain reasoning 等 worker-shaped 訊號對應到�
 
 | 模型家族語意 | 偏好於 |
 |---|---|
-| Luna | Router、routine implementation、bounded repair、一般 repo 工作、tests/docs、disjoint 時的 ordinary review |
+| Luna | Router、routine implementation、bounded repair、一般 repo 工作、tests/docs、disjoint 時的 ordinary review；0.7 起也是 Stage 2 advanced implementation 的第一順位（便宜，一律 `max`） |
 | Gemini Flash | quota relief、long-context discovery、broad repo inspection、regression hunting、qualified 時的 independent review、Stage 1 low-effort 替代、Stage 2 high-effort 的緊急替代（Codex/Claude budget 吃緊時） |
 | Sonnet 5.5 | architecture、contracts、security reasoning、difficult independent review、semantic ambiguity |
 | Sol | Stage 2（low）：advanced implementation、difficult code reasoning、跨模組技術工作、difficult structured review（0.7 起接手原 Terra 的工作）；Stage 3（flagship）：極重 terminal 的實作、長多步 agentic execution、difficult structural repair、flagship-level execution |
@@ -371,7 +373,7 @@ flagship_admission:
 provider + model + model_family + reasoning_effort is the execution identity.
 ```
 
-`reasoning_effort` 與 provider、model、model family 同等，是 dispatch 必須明確傳遞的欄位，不是可省略的細節。Registry 的 `reasoning:` 是該候選的**預設** effort；只有在 task evidence 支持時才可調高（例如 Stage 3 從 `medium` 調到 `high`），且**不得**把任何模型預設為 `max`（Luna 例外，由 registry 明確指定）。
+`reasoning_effort` 與 provider、model、model family 同等，是 dispatch 必須明確傳遞的欄位，不是可省略的細節。Registry 的 `reasoning:` 是該候選的**預設** effort；只有在 task evidence 支持時才可調高（例如 Stage 3 從 `medium` 調到 `high`），且**不得**把任何模型預設為 `max`（Luna 例外：因成本低，registry 0.7 起所有 Luna candidate 一律 `max`）。
 
 **唯一例外：runtime 不接受 effort 的 model。** Runtime adapter 由 live catalog 宣告某 model 的 effort mode 為 `NONE`（目前僅 Antigravity 上的 Claude Sonnet / Opus 4.6；agy 1.2.6 live probe 拒絕 `--effort low|medium|high`）時，該 model 的 exact launch 是 `reasoning_effort: provider_default`＋**不帶** `--effort`；明確要求 low / medium / high 為 `EFFORT_UNSUPPORTED`。此例外只適用於 adapter 宣告的 `NONE`；其他 model 省略 effort 仍不是 exact dispatch。
 

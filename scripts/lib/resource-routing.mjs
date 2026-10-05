@@ -1290,6 +1290,11 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
     // Anything but AUTH_OK / AUTH_UNKNOWN excludes that provider's candidates
     // for this selection only; resource state is untouched.
     providerAuth = null,
+    // Exact models ("provider/model") whose attempt on THIS task already
+    // failed. When Stage 2 is admitted because a Stage 1 attempt failed, the
+    // model that failed is not re-selected at Stage 2. Only that exact model
+    // is excluded; its provider and family stay eligible.
+    excludeFailedModels = [],
   } = options;
 
   const wbConfig = isPlainObject(weeklyBalanceConfig)
@@ -1416,6 +1421,10 @@ export function selectCandidate(slot, resourceStates, tierOrder, options = {}) {
 
     if (excludeModelFamily !== null && candidate?.model_family === excludeModelFamily) {
       failures.push({ kind: "policy", why: `${label}: shares the implementer model family` });
+    }
+
+    if (Array.isArray(excludeFailedModels) && excludeFailedModels.includes(label)) {
+      failures.push({ kind: "policy", why: `${label}: this exact model already failed this task at a lower stage` });
     }
 
     // Router capacity reserve. The Router is control-plane capacity: it must

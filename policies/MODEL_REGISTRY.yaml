@@ -64,6 +64,8 @@
 # gpt-6-sol at Stage 2 / STRONG with reasoning LOW (human decision: Sol
 # needs less effort than Terra did; Terra ran at high). Sol in
 # ESCALATION_MODEL is unchanged in role (Stage 3, DEEP, medium).
+# Luna: every Luna candidate runs at reasoning max (human decision: Luna is
+# cheap), and Luna max is the HEAD of STRONG_IMPLEMENTER (Stage 2).
 # Claude: aliases unchanged; `sonnet` now resolves to Sonnet 5.5 and `opus`
 # to Opus 5.5. Live-probed 2026-10-03 (codex-cli 0.156.1, Claude Code
 # 2.1.288). See policies/registry-decisions/2026-10-03-gpt-6-and-claude-5-5.md.
@@ -321,7 +323,7 @@ capability_slots:
         resource_state_key: codex
         model: gpt-6-luna
         model_family: gpt-6
-        reasoning: low
+        reasoning: max
         capability_tier: DEFAULT
         stage: STAGE_1_DEFAULT
         enabled: true
@@ -395,10 +397,28 @@ capability_slots:
     minimum_tier: STRONG
     max_repair_attempts: 2
     candidates:
-      # STAGE 2 advanced. Sol (at Stage 2 / low, replacing Terra) and
-      # Sonnet 5.5 are peers; the resource overlay
+      # STAGE 2 advanced. Luna max is the head (human decision 2026-10-03:
+      # Luna is strong and cheap, so Stage 2 implementation goes to it first).
+      # A Stage 1 failure by Luna does NOT re-route here to Luna: the failed
+      # model is excluded (excludeFailedModels, MODEL_ROUTING_POLICY.md).
+      # Sol (at Stage 2 / low, replacing Terra) and Sonnet 5.5 are peers; the resource overlay
       # chooses between them by long-horizon quota health. Gemini high is the
       # quota-pressure relief candidate. All three are user-enabled.
+      - provider: codex
+        resource_state_key: codex
+        model: gpt-6-luna
+        model_family: gpt-6
+        reasoning: max
+        capability_tier: STRONG
+        stage: STAGE_2_ADVANCED
+        enabled: true
+        status: stable
+        evidence_status: provisional
+        evidence_scope: structural_implementation
+        confidence: medium
+        source: "human decision 2026-10-03: Luna max as Stage 2 implementation head; live launch probe codex-cli 0.156.1"
+        verified_at: "2026-10-03"
+        expires_at: "2027-01-01"
       - provider: codex
         resource_state_key: codex
         model: gpt-6-sol
@@ -573,7 +593,7 @@ capability_slots:
         resource_state_key: codex
         model: gpt-6-luna
         model_family: gpt-6
-        reasoning: medium
+        reasoning: max
         capability_tier: DEFAULT
         stage: STAGE_1_DEFAULT
         enabled: true
@@ -642,7 +662,7 @@ capability_slots:
         resource_state_key: codex
         model: gpt-6-luna
         model_family: gpt-6
-        reasoning: medium
+        reasoning: max
         capability_tier: DEFAULT
         stage: STAGE_1_DEFAULT
         enabled: true
