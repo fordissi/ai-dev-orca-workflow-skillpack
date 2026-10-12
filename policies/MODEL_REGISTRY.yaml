@@ -56,6 +56,17 @@
 # model changes. Only this file changes when mapping changes.
 #
 # --------------------------------------------------------------------------
+# 0.8 (2026-10-12) HAIKU 5.5 AS STAGE 1 QUOTA RELIEF
+#
+# Human decision: `claude / haiku / medium` (Haiku 5.5, live-probed Claude
+# Code 2.1.296) is added as a Stage 1 / DEFAULT candidate in
+# CHEAP_GENERALIST, DEFAULT_IMPLEMENTER, LONG_CONTEXT_DISCOVERY,
+# INDEPENDENT_REVIEWER and REGRESSION_HUNTER, always AFTER Gemini, so it
+# takes Stage 1 work when Codex (and Gemini) are short. Not in ROUTER,
+# Stage 2 or Stage 3. Effort is medium, not max (Haiku max burns many more
+# tokens). It shares the `claude` pool with Sonnet / Opus.
+# See policies/registry-decisions/2026-10-12-claude-haiku-5-5.md.
+#
 # 0.7 (2026-10-03) MODEL GENERATION UPDATE
 #
 # Codex: gpt-5.6-luna -> gpt-6-luna, gpt-5.6-sol -> gpt-6-sol (model_family
@@ -86,8 +97,8 @@
 # (policies/registry-decisions/2026-09-02-rebalance-implementer-tiers.md).
 # --------------------------------------------------------------------------
 
-version: "0.7"
-verified_at: "2026-10-03"
+version: "0.8"
+verified_at: "2026-10-12"
 
 capability_tier_order: [CHEAP, DEFAULT, STRONG, DEEP]
 
@@ -182,7 +193,8 @@ resolvers:
       grep-and-report, browser/computer-use steps); keep per-request input
       under 100k tokens (API price is 5x above 100k); do not use it for
       long autonomous coding loops (Terminal-Bench 4.0: 39.2% vs Sonnet
-      5.5 70.6%). Guidance only - Haiku is still in no slot. See
+      5.5 70.6%). Registry 0.8 places Haiku as a Stage 1 candidate after
+      Gemini in five slots (not ROUTER, not Stage 2/3). See
       policies/registry-decisions/2026-10-12-claude-haiku-5-5.md.
       A versioned id built from a display name (e.g.
       `sonnet-5`) is NOT in this CLI's catalog
@@ -358,6 +370,21 @@ capability_slots:
         source: "user-enabled quota-relief alternative; agy resolver verified 2026-09-02"
         verified_at: null
         expires_at: null
+      - provider: claude
+        resource_state_key: claude
+        model: haiku
+        model_family: claude-haiku
+        reasoning: medium
+        capability_tier: DEFAULT
+        stage: STAGE_1_DEFAULT
+        enabled: true
+        status: stable
+        evidence_status: provisional
+        evidence_scope: bounded_repo_implementation
+        confidence: low
+        source: "human decision 2026-10-12: Haiku 5.5 as Stage 1 quota-relief candidate after Gemini (summaries, classification, grep-and-report); live probe Claude Code 2.1.296 reported claude-haiku-5-5"
+        verified_at: "2026-10-12"
+        expires_at: "2027-01-12"
 
   DEFAULT_IMPLEMENTER:
     role: IMPLEMENTATION
@@ -399,6 +426,21 @@ capability_slots:
         source: "user-enabled Stage 1 quota-balancing alternative; agy resolver verified 2026-09-02; E6 qualification incomplete (informational)"
         verified_at: null
         expires_at: null
+      - provider: claude
+        resource_state_key: claude
+        model: haiku
+        model_family: claude-haiku
+        reasoning: medium
+        capability_tier: DEFAULT
+        stage: STAGE_1_DEFAULT
+        enabled: true
+        status: stable
+        evidence_status: provisional
+        evidence_scope: bounded_repo_implementation
+        confidence: low
+        source: "human decision 2026-10-12: Haiku 5.5 as Stage 1 quota-relief candidate after Gemini (last-resort implementer; weak on long autonomous coding); live probe Claude Code 2.1.296 reported claude-haiku-5-5"
+        verified_at: "2026-10-12"
+        expires_at: "2027-01-12"
 
   STRONG_IMPLEMENTER:
     role: IMPLEMENTATION
@@ -556,6 +598,21 @@ capability_slots:
         expires_at: null
       - provider: claude
         resource_state_key: claude
+        model: haiku
+        model_family: claude-haiku
+        reasoning: medium
+        capability_tier: DEFAULT
+        stage: STAGE_1_DEFAULT
+        enabled: true
+        status: stable
+        evidence_status: provisional
+        evidence_scope: long_context_reasoning
+        confidence: low
+        source: "human decision 2026-10-12: Haiku 5.5 as Stage 1 quota-relief candidate after Gemini (keep each request under 100k input); live probe Claude Code 2.1.296 reported claude-haiku-5-5"
+        verified_at: "2026-10-12"
+        expires_at: "2027-01-12"
+      - provider: claude
+        resource_state_key: claude
         model: sonnet
         model_family: claude-sonnet
         reasoning: provider_default
@@ -613,6 +670,21 @@ capability_slots:
         source: "local smoke case T2S1 2026-09-01; Stage 1 reviewer where disjoint"
         verified_at: "2026-09-01"
         expires_at: "2026-12-01"
+      - provider: claude
+        resource_state_key: claude
+        model: haiku
+        model_family: claude-haiku
+        reasoning: medium
+        capability_tier: DEFAULT
+        stage: STAGE_1_DEFAULT
+        enabled: true
+        status: stable
+        evidence_status: provisional
+        evidence_scope: independent_review
+        confidence: low
+        source: "human decision 2026-10-12: Haiku 5.5 as Stage 1 quota-relief candidate after Gemini (disjoint Stage 1 reviewer for Codex or Gemini implementers); live probe Claude Code 2.1.296 reported claude-haiku-5-5"
+        verified_at: "2026-10-12"
+        expires_at: "2027-01-12"
       - provider: claude
         resource_state_key: claude
         model: sonnet
@@ -682,6 +754,21 @@ capability_slots:
         source: "local smoke case T2S1 2026-09-01"
         verified_at: "2026-09-01"
         expires_at: "2026-12-01"
+      - provider: claude
+        resource_state_key: claude
+        model: haiku
+        model_family: claude-haiku
+        reasoning: medium
+        capability_tier: DEFAULT
+        stage: STAGE_1_DEFAULT
+        enabled: true
+        status: stable
+        evidence_status: provisional
+        evidence_scope: bounded_repo_implementation
+        confidence: low
+        source: "human decision 2026-10-12: Haiku 5.5 as Stage 1 quota-relief candidate after Gemini (bounded read-and-compare work); live probe Claude Code 2.1.296 reported claude-haiku-5-5"
+        verified_at: "2026-10-12"
+        expires_at: "2027-01-12"
 
   ESCALATION_MODEL:
     role: ESCALATION

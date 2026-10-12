@@ -468,8 +468,9 @@ Haiku 5.5 於 2026-10-07 發布（API id `claude-haiku-5-5`）。它是第一個
   100k 以內。訂閱制的 Claude Code 主要差在用量額度，但這個原則一樣適用。
 - **行為差異**：API 端 `temperature: 0` 與 assistant prefill 會直接回錯誤；早期評測回報
   有過度拒答的情況。
-- Haiku 目前**不在任何 registry slot**；`routing_intent` 只是給人類編輯 slot 時的參考。
-  是否把它放進 slot 由人類決定，見
+- Registry 0.8 起，Haiku 以 Stage 1 / `medium` 擔任 quota relief，排在 Gemini 之後，放在
+  `CHEAP_GENERALIST`、`DEFAULT_IMPLEMENTER`（最後備援）、`LONG_CONTEXT_DISCOVERY`、
+  `INDEPENDENT_REVIEWER`、`REGRESSION_HUNTER`；不放在 `ROUTER` 與 Stage 2/3。見
   `policies/registry-decisions/2026-10-12-claude-haiku-5-5.md`。
 
 `claude --model sonnet-5` 會被當成 custom model 並回

@@ -295,6 +295,7 @@ regression/test execution、domain reasoning 等 worker-shaped 訊號對應到�
 |---|---|
 | Luna | Router、routine implementation、bounded repair、一般 repo 工作、tests/docs、disjoint 時的 ordinary review；0.7 起也是 Stage 2 advanced implementation 的第一順位（便宜，一律 `max`） |
 | Gemini Flash | quota relief、long-context discovery、broad repo inspection、regression hunting、qualified 時的 independent review、Stage 1 low-effort 替代、Stage 2 high-effort 的緊急替代（Codex/Claude budget 吃緊時） |
+| Haiku 5.5 | 0.8 起：Stage 1 的 quota relief，排在 Gemini 之後（`medium`）。適合範圍明確的雜事、摘要／分類、regression hunting、讀長資料（每次輸入 <100k）、Codex 或 Gemini 實作時的 disjoint Stage 1 review；一般實作只當最後備援。不擔任 Router，也不進 Stage 2/3。與 Sonnet / Opus 共用 `claude` pool |
 | Sonnet 5.5 | architecture、contracts、security reasoning、difficult independent review、semantic ambiguity |
 | Sol | Stage 2（low）：advanced implementation、difficult code reasoning、跨模組技術工作、difficult structured review（0.7 起接手原 Terra 的工作）；Stage 3（flagship）：極重 terminal 的實作、長多步 agentic execution、difficult structural repair、flagship-level execution |
 | Opus 5.5 | novel reasoning、architecture disputes、deep design review、difficult semantic/security adjudication、flagship-level review/reasoning |

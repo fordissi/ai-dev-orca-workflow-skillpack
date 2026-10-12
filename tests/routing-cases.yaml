@@ -1602,7 +1602,7 @@ cases:
     expect:
       status: SELECTED
       provider: claude
-      model: sonnet
+      model: haiku
       disjoint_from: { provider: codex, model_family: gpt-6 }
 
   # ---- Reasoning propagation ------------------------------------- #
@@ -3104,7 +3104,7 @@ cases:
       exactly the "no valid alternative exists" case named for
       ROUTER_CRITICAL_RESERVE.
     slot: DEFAULT_IMPLEMENTER
-    disable_models: [AUTO_GEMINI]
+    disable_models: [AUTO_GEMINI, haiku]
     resource_states:
       codex:
         state: GREEN
@@ -3121,6 +3121,74 @@ cases:
       status: BLOCKED
       code: POLICY_BLOCKED
 
+  - name: router_reserve_on_codex_hands_stage1_work_to_haiku
+    kind: selection
+    why: >-
+      Human decision 2026-10-12: Haiku 5.5 is the Stage 1 quota-relief
+      candidate after Gemini. Codex is down to the Router's reserve and
+      Gemini is unavailable, so Stage 1 implementation goes to Haiku instead
+      of burning the reserve or blocking.
+    slot: DEFAULT_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.09, reset_at: "2026-09-08T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.80, reset_at: "2026-09-08T12:00:00Z" }
+      antigravity:
+        pools:
+          gemini: { available: false, source: ORCA_RUNTIME }
+    options:
+      allowExperimental: false
+      taskRisk: low
+      now: "2026-09-01T12:01:00Z"
+      activeRouterResourceKey: codex
+    expect:
+      status: SELECTED
+      provider: claude
+      model: haiku
+
+  - name: router_reserve_on_codex_prefers_gemini_before_haiku
+    kind: selection
+    why: >-
+      Human decision 2026-10-12: Haiku sits AFTER Gemini. With Codex down to
+      the Router's reserve and both Gemini and Claude healthy, Stage 1
+      implementation goes to Gemini, so the shared Claude pool (Sonnet /
+      Opus) is only spent on Haiku when Gemini cannot take the work.
+    slot: DEFAULT_IMPLEMENTER
+    resource_states:
+      codex:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.09, reset_at: "2026-09-08T12:00:00Z" }
+      claude:
+        state: GREEN
+        available: true
+        source: ORCA_RUNTIME
+        checked_at: "2026-09-01T12:00:00Z"
+        weekly_window: { remaining_ratio: 0.80, reset_at: "2026-09-08T12:00:00Z" }
+      antigravity:
+        pools:
+          gemini: { state: GREEN, available: true, source: ORCA_RUNTIME, checked_at: "2026-09-01T12:00:00Z" }
+    options:
+      allowExperimental: true
+      taskRisk: low
+      now: "2026-09-01T12:01:00Z"
+      activeRouterResourceKey: codex
+    expect:
+      status: SELECTED
+      provider: antigravity
+      model: AUTO_GEMINI
+
   - name: router_reserve_never_weakens_reviewer_disjointness
     kind: selection
     why: >-
@@ -3128,8 +3196,9 @@ cases:
       backdoor that lets a non-disjoint reviewer back in. Both codex
       candidates are already excluded by disjointness regardless of reserve;
       antigravity is independently unavailable here, so Claude is the only
-      candidate left standing - reserve had nothing left to touch, and
-      disjointness was not weakened to make room for it.
+      provider left standing - reserve had nothing left to touch, and
+      disjointness was not weakened to make room for it. Within Claude the
+      Stage 1 Haiku reviewer wins over Stage 2 Sonnet (registry 2026-10-12).
     slot: INDEPENDENT_REVIEWER
     resource_states:
       codex:
@@ -3157,7 +3226,7 @@ cases:
     expect:
       status: SELECTED
       provider: claude
-      model: sonnet
+      model: haiku
       disjoint_from: { provider: codex, model_family: gpt-6 }
 
   # =================================================================== #

@@ -311,6 +311,15 @@ conclusion: >-
   與 references/OFFICIAL_COMMANDS.md 的對應更新（皆為本次一併記錄）。
 ```
 
+## 2026-10-12：registry 0.8 加入 Haiku 5.5
+
+- `claude / haiku`：alias 現解析為 `claude-haiku-5-5`（Claude Code 2.1.296 實測，1M context）。
+- Human decision：以 `STAGE_1_DEFAULT` / `DEFAULT` / `medium` 加入 `CHEAP_GENERALIST`、
+  `DEFAULT_IMPLEMENTER`、`LONG_CONTEXT_DISCOVERY`、`INDEPENDENT_REVIEWER`、`REGRESSION_HUNTER`，
+  每個 slot 都排在 Gemini 之後。外部 benchmark 與評測摘要見
+  [`policies/registry-decisions/2026-10-12-claude-haiku-5-5.md`](../policies/registry-decisions/2026-10-12-claude-haiku-5-5.md)。
+- 本機尚無 Haiku 5.5 的 smoke case（evidence limitation，不是 routing gate）。
+
 ## 2026-10-03：registry 0.7 模型世代更新
 
 - `codex / gpt-5.6-luna` → `gpt-6-luna`；`codex / gpt-5.6-sol` → `gpt-6-sol`（`model_family: gpt-6`）。
