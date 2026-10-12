@@ -351,7 +351,7 @@ Dispatch target 是 **`runtime_adapter + provider_family + exact_model + effort`
 | runtime_adapter | registry `provider:` | provider families | model 解析 | effort |
 |---|---|---|---|---|
 | `codex_cli` | `codex` | openai | pass-through（`-m`） | `-c model_reasoning_effort=` |
-| `claude_cli` | `claude` | claude（Sonnet 5.5 / Opus 5.5 / Haiku 4.5） | catalog alias | `--effort low…max` |
+| `claude_cli` | `claude` | claude（Sonnet 5.5 / Opus 5.5 / Haiku 5.5） | catalog alias | `--effort low…max` |
 | `antigravity` | `antigravity` | gemini、claude（Sonnet 4.6 / Opus 4.6 Thinking）、gpt-oss | **live `agy models`** | id 後綴或 `--effort low\|medium\|high` |
 
 - **Antigravity 是多模型 runtime，不是 Gemini provider。** 同一 family 可有多條 runtime

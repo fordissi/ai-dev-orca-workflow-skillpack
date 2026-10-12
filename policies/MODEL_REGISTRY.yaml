@@ -158,7 +158,7 @@ resolvers:
       it is not global ineligibility.
   claude_models:
     command: "claude --model <alias>"
-    verified_at: "2026-10-03"
+    verified_at: "2026-10-12"
     # CLI catalog aliases. The `model:` value of every claude candidate MUST
     # be one of these keys (or a reviewed `model_overrides` key). The value is
     # the exact `--model` argument dispatched. Routing intent is informational
@@ -166,7 +166,7 @@ resolvers:
     catalog_aliases:
       sonnet: { cli_model: sonnet, display: "Sonnet 5.5", routing_intent: routine_default }
       opus: { cli_model: opus, display: "Opus 5.5", routing_intent: complex_high_quality }
-      haiku: { cli_model: haiku, display: "Haiku 4.5", routing_intent: quick_cheap }
+      haiku: { cli_model: haiku, display: "Haiku 5.5", routing_intent: quick_cheap }
     # Reviewed explicit mappings (behavesAs / modelOverrides equivalent) for
     # any non-catalog id. Empty by design: a key here is a human decision,
     # never something an AI derives from a display name.
@@ -174,8 +174,17 @@ resolvers:
     note: >-
       Re-verified 2026-10-03 (Claude Code 2.1.288): `claude -p --model sonnet`
       reported claude-sonnet-5-5 and `--model opus` reported claude-opus-5-5
-      in modelUsage. Sonnet -> Sonnet 5.5, Opus -> Opus 5.5, Haiku -> Haiku 4.5
-      (Haiku not re-probed). A versioned id built from a display name (e.g.
+      in modelUsage. Re-verified 2026-10-12 (Claude Code 2.1.296):
+      `--model haiku` reported claude-haiku-5-5 (contextWindow 1000000,
+      maxOutputTokens 128000). Sonnet -> Sonnet 5.5, Opus -> Opus 5.5,
+      Haiku -> Haiku 5.5. quick_cheap guidance for Haiku 5.5: short,
+      bounded, high-volume work (read/summarize subagents, classification,
+      grep-and-report, browser/computer-use steps); keep per-request input
+      under 100k tokens (API price is 5x above 100k); do not use it for
+      long autonomous coding loops (Terminal-Bench 4.0: 39.2% vs Sonnet
+      5.5 70.6%). Guidance only - Haiku is still in no slot. See
+      policies/registry-decisions/2026-10-12-claude-haiku-5-5.md.
+      A versioned id built from a display name (e.g.
       `sonnet-5`) is NOT in this CLI's catalog
       and fails with "isn't described by this version's model catalog". That
       is MODEL_UNKNOWN for that one model - never PROVIDER_UNAVAILABLE for

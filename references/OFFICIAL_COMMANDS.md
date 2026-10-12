@@ -441,13 +441,36 @@ claude -p --max-turns 3 "query"
 
 2026-10-03 本機（Claude Code 2.1.288）：`claude -p --model sonnet` 的 `modelUsage` 回報
 `claude-sonnet-5-5`、`--model opus` 回報 `claude-opus-5-5`，即 `Sonnet → Sonnet 5.5`、
-`Opus → Opus 5.5`、`Haiku → Haiku 4.5`（Haiku 未重測）。`--model` **只傳 catalog alias**：
+`Opus → Opus 5.5`。2026-10-12（Claude Code 2.1.296）：`--model haiku` 回報
+`claude-haiku-5-5`（contextWindow 1M、maxOutputTokens 128k），即 `Haiku → Haiku 5.5`。
+`--model` **只傳 catalog alias**：
 
-| Routing intent | `--model` |
-|---|---|
-| routine / default | `sonnet` |
-| complex / high-quality | `opus` |
-| quick / cheap | `haiku` |
+| Routing intent | `--model` | 建議用途 |
+|---|---|---|
+| routine / default | `sonnet` | 一般實作、多步驟 agentic coding、超過 100k token 的長 loop |
+| complex / high-quality | `opus` | 架構決策、難題、Stage 3 escalation |
+| quick / cheap | `haiku` | 見下方 Haiku 5.5 說明 |
+
+#### Haiku 5.5 使用建議（2026-10-12）
+
+Haiku 5.5 於 2026-10-07 發布（API id `claude-haiku-5-5`）。它是第一個支援
+`--effort`（low…max）的 Haiku，adaptive thinking 預設開啟。
+
+- **適合**：用 Sonnet / Opus 主導、Haiku 當 subagent 做閱讀、摘要、搜尋後回報；分類、
+  標記、compaction；有明確範圍的小修正與 script；browser / computer-use 的單步操作。
+  官方 benchmark：OSWorld 2.1 72.4%（Haiku 4.5 是 15.7%）；第三方評測指出它在知識型
+  工作與 computer use 上約有 Sonnet 5.5 的 86–88% 水準。
+- **不適合**：長時間自主 coding、需要跨很多步驟規劃的工作。Terminal-Bench 4.0 只有
+  39.2%，Sonnet 5.5 是 70.6%。這類工作仍交給 `sonnet`。
+- **成本陷阱**：API 價格 $0.10 / $0.50 per 1M（input / output）只適用於 ≤100k input；
+  超過 100k 時**每一項費率都變 5 倍**。新 tokenizer 同樣文字約多算 25–30% token，effort
+  `max` 的 output token 也多很多。批次工作用 `low`／`medium`，每次 request 盡量控制在
+  100k 以內。訂閱制的 Claude Code 主要差在用量額度，但這個原則一樣適用。
+- **行為差異**：API 端 `temperature: 0` 與 assistant prefill 會直接回錯誤；早期評測回報
+  有過度拒答的情況。
+- Haiku 目前**不在任何 registry slot**；`routing_intent` 只是給人類編輯 slot 時的參考。
+  是否把它放進 slot 由人類決定，見
+  `policies/registry-decisions/2026-10-12-claude-haiku-5-5.md`。
 
 `claude --model sonnet-5` 會被當成 custom model 並回
 `"sonnet-5" isn't described by this version's model catalog`——這是
