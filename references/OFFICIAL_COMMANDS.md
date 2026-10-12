@@ -368,12 +368,12 @@ Registry 目前使用的 effort 值：`low`、`medium`、`high`、`max`。`max` 
 codex exec -m gpt-6-luna -c 'model_reasoning_effort="max"' \
   -s workspace-write --ask-for-approval on-request --color never -o <last-message-file> -
 
-# Sol low（Stage 2 advanced；0.7 起取代 Terra）
-codex exec -m gpt-6-sol -c 'model_reasoning_effort="low"' \
+# Sol low（Stage 2 advanced；0.7 起取代 Terra，0.9 起為 gpt-6.1-sol）
+codex exec -m gpt-6.1-sol -c 'model_reasoning_effort="low"' \
   -s workspace-write --ask-for-approval on-request --color never -o <last-message-file> -
 
 # Sol medium（Stage 3 flagship — 絕不預設 max）
-codex exec -m gpt-6-sol -c 'model_reasoning_effort="medium"' \
+codex exec -m gpt-6.1-sol -c 'model_reasoning_effort="medium"' \
   -s read-only --ask-for-approval on-request --color never -o <last-message-file> -
 ```
 
@@ -418,6 +418,10 @@ PROHIBITED: 不要使用 `--dangerously-bypass-approvals-and-sandbox`，除非�
 2026-10-03（codex-cli 0.156.1）：`gpt-6-luna`、`gpt-6-sol` 出現在本機 `~/.codex/models_cache.json`，
 且 `codex exec -m gpt-6-luna` / `-m gpt-6-sol` 實際啟動成功（banner 回報同一 model）。
 Terra 依 human decision 自 registry 0.7 移除（catalog 仍有 `gpt-5.6-terra`，但不再路由）。
+2026-10-12（codex-cli 0.162.1）：model cache 新增 `gpt-6.1-sol`（effort low…max，另有
+`ultra`），registry 0.9 以它取代 `gpt-6-sol`。同日 12:37 實測：`codex exec -m gpt-6.1-sol` 以
+`low` 與 `medium` 各跑一次，banner 皆回報 `model: gpt-6.1-sol` 與所要求的 effort，回覆 OK。**不得**派 `ultra`：它會讓 Codex 自行分派 subagent，脫離 Orca 監督。
+Cache 也列出 `gpt-6-astra`（未採用）。
 這是 **provisional-local** 佐證，不是權威的 model discovery endpoint——Codex CLI 未提供
 等同 `agy models` 的列表命令。維持 `evidence_status: provisional`，見
 `references/MODEL_EVIDENCE.md`。
@@ -596,7 +600,7 @@ agy --print "/usage" --output-format json --print-timeout <duration>   # quota p
 - registry 中 `AUTO_GEMINI` 的 resolver 必須解析到 Gemini 家族的 ID，
   解析結果若不屬於宣告的 `model_family`，該候選即為 `CONFIG_INVALID`。
 
-### Runtime model catalog（實測 2026-09-18）
+### Runtime model catalog（實測 2026-09-18；2026-10-12 有變動，見下方）
 
 `agy models` 每行 `<id>\t<display>`，與互動 `/model` picker 一致：
 
@@ -618,6 +622,13 @@ Claude entry effort 由 runtime 固定，dispatch 不得傳 `--effort`，registr
 process **exit code 仍為 0**，JSON `status` 為 `ERROR`——launch probe 必須讀
 `status`，不得只看 exit code。`claude-opus-4-6-thinking` 同形但未 probe。
 `agy --help` 沒有 login / auth 子命令。
+
+**Catalog 變動（2026-10-12，`agy 1.3.3` 的 `agy models`）**：Claude 4.6 的兩個單一 id
+（`claude-sonnet-4-6`、`claude-opus-4-6-thinking`）**已不在清單上**，改為
+`claude-sonnet-5-5-{low,medium,high}` 與 `claude-opus-5-5-{low,medium,high}`，也就是和
+Gemini 一樣以 id 後綴表示 effort。上面 4.6 的 `--effort` 拒絕紀錄因此只剩歷史意義；
+adapter 的 effort mode `NONE` 例外目前沒有任何 live model 適用。Claude 5.5 經 agy 的
+launch 尚未 probe。Gemini 與 GPT-OSS 的 id 不變。
 
 **Live probe（2026-09-18，`agy 1.2.6`，Router 目標 Gemini 3.8 Flash / medium）**：
 `agy -p "<prompt>" --model gemini-3.8-flash-medium --effort medium --output-format json`

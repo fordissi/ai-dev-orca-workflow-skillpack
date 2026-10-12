@@ -297,7 +297,7 @@ regression/test execution、domain reasoning 等 worker-shaped 訊號對應到�
 | Gemini Flash | quota relief、long-context discovery、broad repo inspection、regression hunting、qualified 時的 independent review、Stage 1 low-effort 替代、Stage 2 high-effort 的緊急替代（Codex/Claude budget 吃緊時） |
 | Haiku 5.5 | 0.8 起：Stage 1 的 quota relief，排在 Gemini 之後（`medium`）。適合範圍明確的雜事、摘要／分類、regression hunting、讀長資料（每次輸入 <100k）、Codex 或 Gemini 實作時的 disjoint Stage 1 review；一般實作只當最後備援。不擔任 Router，也不進 Stage 2/3。與 Sonnet / Opus 共用 `claude` pool |
 | Sonnet 5.5 | architecture、contracts、security reasoning、difficult independent review、semantic ambiguity |
-| Sol | Stage 2（low）：advanced implementation、difficult code reasoning、跨模組技術工作、difficult structured review（0.7 起接手原 Terra 的工作）；Stage 3（flagship）：極重 terminal 的實作、長多步 agentic execution、difficult structural repair、flagship-level execution |
+| Sol（0.9 起為 GPT-6.1 Sol） | Stage 2（low）：advanced implementation、difficult code reasoning、跨模組技術工作、difficult structured review（0.7 起接手原 Terra 的工作）；Stage 3（flagship）：極重 terminal 的實作、長多步 agentic execution、difficult structural repair、flagship-level execution |
 | Opus 5.5 | novel reasoning、architecture disputes、deep design review、difficult semantic/security adjudication、flagship-level review/reasoning |
 
 **不得**把 Gemini Flash 當成自動具備 flagship 能力。**不得**因為 implementer 是 Claude 就自動把 reviewer 升成 Stage 3 flagship（Sol medium / Opus）；Sol 在 Stage 2 以 `low` 擔任 reviewer 仍須 Stage 2 admission signal。若唯一剩下的 disjoint stable candidate 相對 task 需求過強，優先設法讓另一個合適的 provider/model 具備資格，而不是預設用 flagship。

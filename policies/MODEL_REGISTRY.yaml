@@ -56,6 +56,19 @@
 # model changes. Only this file changes when mapping changes.
 #
 # --------------------------------------------------------------------------
+# 0.9 (2026-10-12) GPT-6.1 SOL REPLACES GPT-6 SOL
+#
+# Human decision: every `codex / gpt-6-sol` candidate becomes
+# `codex / gpt-6.1-sol` with the SAME stage, tier and reasoning (Stage 2
+# positions stay `low`, ESCALATION_MODEL stays `medium`). model_family stays
+# `gpt-6`, so reviewer disjointness is unchanged. Never dispatch Codex
+# `ultra` effort (it delegates to its own subagents, outside Orca
+# supervision). gpt-6.1-sol is listed in the codex-cli 0.162.1 model cache;
+# Live-probed 2026-10-12 12:37 (codex-cli 0.162.1): `codex exec -m gpt-6.1-sol`
+# at low and at medium both reported model gpt-6.1-sol with the requested
+# effort and replied OK.
+# See policies/registry-decisions/2026-10-12-gpt-6-1-sol.md.
+#
 # 0.8 (2026-10-12) HAIKU 5.5 AS STAGE 1 QUOTA RELIEF
 #
 # Human decision: `claude / haiku / medium` (Haiku 5.5, live-probed Claude
@@ -97,7 +110,7 @@
 # (policies/registry-decisions/2026-09-02-rebalance-implementer-tiers.md).
 # --------------------------------------------------------------------------
 
-version: "0.8"
+version: "0.9"
 verified_at: "2026-10-12"
 
 capability_tier_order: [CHEAP, DEFAULT, STRONG, DEEP]
@@ -224,6 +237,9 @@ runtime_adapters:
     # launch.requested == launch.effective == {codex, gpt-5.6-luna, low}.
     # gpt-6-luna / gpt-6-sol were live-probed 2026-10-03 via `codex exec -m`
     # (codex-cli 0.156.1); not yet re-probed through worker-start.
+    # gpt-6.1-sol (registry 0.9) was live-probed 2026-10-12 via `codex exec -m`
+    # at low and medium (codex-cli 0.162.1); not yet re-probed through
+    # worker-start.
     orca_worker_start:
       agent: codex
       launch_model_selection: supported
@@ -472,7 +488,7 @@ capability_slots:
         expires_at: "2027-01-01"
       - provider: codex
         resource_state_key: codex
-        model: gpt-6-sol
+        model: gpt-6.1-sol
         model_family: gpt-6
         reasoning: low
         capability_tier: STRONG
@@ -482,8 +498,8 @@ capability_slots:
         evidence_status: provisional
         evidence_scope: structural_implementation
         confidence: low
-        source: "gpt-6-sol replaces Terra at Stage 2 per human decision 2026-10-03; live launch probe codex-cli 0.156.1"
-        verified_at: "2026-09-02"
+        source: "Stage 2 Sol (former Terra slot, human decision 2026-10-03); gpt-6.1-sol replaces gpt-6-sol per human decision 2026-10-12; live launch probe 2026-10-12 codex-cli 0.162.1 (low, medium)"
+        verified_at: "2026-10-12"
         expires_at: "2026-12-01"
       - provider: claude
         resource_state_key: claude
@@ -543,7 +559,7 @@ capability_slots:
         expires_at: "2026-12-01"
       - provider: codex
         resource_state_key: codex
-        model: gpt-6-sol
+        model: gpt-6.1-sol
         model_family: gpt-6
         reasoning: low
         capability_tier: STRONG
@@ -553,8 +569,8 @@ capability_slots:
         evidence_status: provisional
         evidence_scope: structural_implementation
         confidence: low
-        source: "gpt-6-sol replaces Terra at Stage 2 per human decision 2026-10-03; live launch probe codex-cli 0.156.1"
-        verified_at: "2026-09-02"
+        source: "Stage 2 Sol (former Terra slot, human decision 2026-10-03); gpt-6.1-sol replaces gpt-6-sol per human decision 2026-10-12; live launch probe 2026-10-12 codex-cli 0.162.1 (low, medium)"
+        verified_at: "2026-10-12"
         expires_at: "2026-12-01"
       - provider: antigravity
         resource_state_key: antigravity.gemini
@@ -702,7 +718,7 @@ capability_slots:
         expires_at: "2026-12-01"
       - provider: codex
         resource_state_key: codex
-        model: gpt-6-sol
+        model: gpt-6.1-sol
         model_family: gpt-6
         reasoning: low
         capability_tier: STRONG
@@ -712,8 +728,8 @@ capability_slots:
         evidence_status: provisional
         evidence_scope: structural_implementation
         confidence: low
-        source: "gpt-6-sol replaces Terra as Stage 2 structural reviewer (disjoint from a Claude implementer) per human decision 2026-10-03"
-        verified_at: "2026-09-02"
+        source: "Stage 2 structural reviewer (disjoint from a Claude implementer); gpt-6.1-sol replaces gpt-6-sol per human decision 2026-10-12; live launch probe 2026-10-12 codex-cli 0.162.1 (low, medium)"
+        verified_at: "2026-10-12"
         expires_at: "2026-12-01"
 
   REGRESSION_HUNTER:
@@ -783,7 +799,7 @@ capability_slots:
       # record a flagship admission reason (see MODEL_ROUTING_POLICY.md).
       - provider: codex
         resource_state_key: codex
-        model: gpt-6-sol
+        model: gpt-6.1-sol
         model_family: gpt-6
         reasoning: medium
         capability_tier: DEEP
@@ -793,8 +809,8 @@ capability_slots:
         evidence_status: provisional
         evidence_scope: structural_implementation
         confidence: medium
-        source: "user-approved flagship candidate; external evidence E3 + E7 (informational); default reasoning medium, raise to high only on task evidence; local smoke cases pending"
-        verified_at: "2026-09-02"
+        source: "user-approved flagship candidate; gpt-6.1-sol replaces gpt-6-sol per human decision 2026-10-12 (vendor + third-party evidence in the decision note, informational); default reasoning medium, raise to high only on task evidence; live launch probe 2026-10-12 codex-cli 0.162.1 (low, medium)"
+        verified_at: "2026-10-12"
         expires_at: "2026-12-01"
       - provider: claude
         resource_state_key: claude

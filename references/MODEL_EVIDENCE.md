@@ -311,6 +311,13 @@ conclusion: >-
   與 references/OFFICIAL_COMMANDS.md 的對應更新（皆為本次一併記錄）。
 ```
 
+## 2026-10-12：registry 0.9 以 GPT-6.1 Sol 取代 GPT-6 Sol
+
+- `codex / gpt-6-sol` → `gpt-6.1-sol`（四個位置，stage / tier / reasoning 不變，`model_family` 仍為 `gpt-6`）。
+- 證據：codex-cli 0.162.1 的 model cache 列出 `gpt-6.1-sol`；2026-10-12 12:37 `codex exec -m gpt-6.1-sol` 以 `low` / `medium` 實測，banner 皆回報 `gpt-6.1-sol` 與正確 effort。Orca `worker-start` 尚未以新 id 重測。
+  外部 benchmark 摘要見
+  [`policies/registry-decisions/2026-10-12-gpt-6-1-sol.md`](../policies/registry-decisions/2026-10-12-gpt-6-1-sol.md)。
+
 ## 2026-10-12：registry 0.8 加入 Haiku 5.5
 
 - `claude / haiku`：alias 現解析為 `claude-haiku-5-5`（Claude Code 2.1.296 實測，1M context）。

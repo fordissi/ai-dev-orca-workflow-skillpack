@@ -130,7 +130,7 @@ cases:
     why: >-
       No qualified candidate must return BLOCKED rather than crossing the
       capability floor. All three user-enabled Stage 2 candidates
-      (claude/sonnet, codex/gpt-6-sol, antigravity/AUTO_GEMINI) are
+      (claude/sonnet, codex/gpt-6.1-sol, antigravity/AUTO_GEMINI) are
       unavailable at runtime. Because a candidate would qualify the moment its
       provider returns, the honest code is ROUTING_UNAVAILABLE, not
       POLICY_BLOCKED.
@@ -1231,7 +1231,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-6-sol
+      model: gpt-6.1-sol
 
   - name: stage_2_failed_model_exclusion_is_exact_not_provider
     kind: selection
@@ -1243,7 +1243,7 @@ cases:
     resource_states:
       codex: { state: GREEN, available: true, source: ORCA_RUNTIME }
       claude: { state: GREEN, available: true, source: ORCA_RUNTIME }
-    options: { allowExperimental: false, taskRisk: medium, excludeFailedModels: [codex/gpt-6-luna, codex/gpt-6-sol] }
+    options: { allowExperimental: false, taskRisk: medium, excludeFailedModels: [codex/gpt-6-luna, codex/gpt-6.1-sol] }
     expect:
       status: SELECTED
       provider: claude
@@ -1358,7 +1358,7 @@ cases:
     options:
       allowExperimental: false
       taskRisk: critical
-      rolePreference: [gpt-6-sol]
+      rolePreference: [gpt-6.1-sol]
     flagship_reason:
       escalation_reason: exceptional multi-stage agentic execution
       why_stage_2_insufficient: >-
@@ -1367,7 +1367,7 @@ cases:
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-6-sol
+      model: gpt-6.1-sol
 
   - name: stage_3_architecture_reasoning_prefers_opus
     kind: selection
@@ -1624,10 +1624,10 @@ cases:
     why: The incident from Company Platform. Model id matches, reasoning effort does not.
     dispatch:
       provider: codex
-      expected: { model: gpt-6-sol, model_family: gpt-6, reasoning_effort: medium }
+      expected: { model: gpt-6.1-sol, model_family: gpt-6, reasoning_effort: medium }
       command: >-
-        codex exec -m gpt-6-sol -c 'model_reasoning_effort="medium"' -s read-only --color never -o out -
-      actual: { model: gpt-6-sol, model_family: gpt-6, reasoning_effort: max }
+        codex exec -m gpt-6.1-sol -c 'model_reasoning_effort="medium"' -s read-only --color never -o out -
+      actual: { model: gpt-6.1-sol, model_family: gpt-6, reasoning_effort: max }
     expect: { result: DISPATCH_CONTRACT_MISMATCH }
 
   - name: codex_sol_high_run_as_sol_high_passes
@@ -1635,10 +1635,10 @@ cases:
     why: Explicit model and reasoning on the command line, and the runtime agrees.
     dispatch:
       provider: codex
-      expected: { model: gpt-6-sol, model_family: gpt-6, reasoning_effort: high }
+      expected: { model: gpt-6.1-sol, model_family: gpt-6, reasoning_effort: high }
       command: >-
-        codex exec -m gpt-6-sol -c 'model_reasoning_effort="high"' -s workspace-write --color never -o out -
-      actual: { model: gpt-6-sol, model_family: gpt-6, reasoning_effort: high }
+        codex exec -m gpt-6.1-sol -c 'model_reasoning_effort="high"' -s workspace-write --color never -o out -
+      actual: { model: gpt-6.1-sol, model_family: gpt-6, reasoning_effort: high }
     expect: { result: DISPATCH_IDENTITY_MATCH }
 
   - name: explicit_dispatch_effort_wins_over_local_config
@@ -1649,10 +1649,10 @@ cases:
       counts.
     dispatch:
       provider: codex
-      expected: { model: gpt-6-sol, model_family: gpt-6, reasoning_effort: medium }
+      expected: { model: gpt-6.1-sol, model_family: gpt-6, reasoning_effort: medium }
       command: >-
-        codex exec -m gpt-6-sol -c 'model_reasoning_effort="medium"' -s read-only --color never -o out -
-      actual: { model: gpt-6-sol, model_family: gpt-6, reasoning_effort: medium }
+        codex exec -m gpt-6.1-sol -c 'model_reasoning_effort="medium"' -s read-only --color never -o out -
+      actual: { model: gpt-6.1-sol, model_family: gpt-6, reasoning_effort: medium }
     expect: { result: DISPATCH_IDENTITY_MATCH }
 
   - name: matching_model_id_does_not_excuse_a_reasoning_mismatch
@@ -1718,11 +1718,11 @@ cases:
       allowExperimental: false
       taskRisk: medium
       now: "2026-09-01T12:01:00Z"
-      pinnedCandidate: { provider: codex, model: gpt-6-sol }
+      pinnedCandidate: { provider: codex, model: gpt-6.1-sol }
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-6-sol
+      model: gpt-6.1-sol
 
   - name: enabled_gemini_provisional_is_eligible_for_quota_routing
     kind: selection
@@ -1766,7 +1766,7 @@ cases:
       Even with their provider healthy and first in registry order, the AI
       cannot autonomously select them; Sonnet takes the Stage 2 work.
     slot: STRONG_IMPLEMENTER
-    disable_models: [gpt-6-luna, gpt-6-sol]
+    disable_models: [gpt-6-luna, gpt-6.1-sol]
     resource_states:
       codex: { state: GREEN, available: true, source: ORCA_RUNTIME }
       claude: { state: GREEN, available: true, source: ORCA_RUNTIME }
@@ -1982,11 +1982,11 @@ cases:
       allowExperimental: false
       taskRisk: medium
       now: "2026-09-01T12:01:00Z"
-      pinnedCandidate: { provider: codex, model: gpt-6-sol }
+      pinnedCandidate: { provider: codex, model: gpt-6.1-sol }
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-6-sol
+      model: gpt-6.1-sol
 
   - name: pinned_model_not_a_slot_candidate_is_config_invalid
     kind: selection
@@ -2013,13 +2013,13 @@ cases:
       candidate - `enabled: false` is authoritative. The block names policy,
       and the human is told to re-enable it or choose another model.
     slot: STRONG_IMPLEMENTER
-    disable_models: [gpt-6-sol]
+    disable_models: [gpt-6.1-sol]
     resource_states:
       codex: { state: GREEN, available: true, source: ORCA_RUNTIME }
     options:
       allowExperimental: false
       taskRisk: medium
-      pinnedCandidate: { provider: codex, model: gpt-6-sol }
+      pinnedCandidate: { provider: codex, model: gpt-6.1-sol }
     expect:
       status: BLOCKED
       code: POLICY_BLOCKED
@@ -3055,11 +3055,11 @@ cases:
       taskRisk: medium
       now: "2026-09-01T12:01:00Z"
       activeRouterResourceKey: codex
-      pinnedCandidate: { provider: codex, model: gpt-6-sol }
+      pinnedCandidate: { provider: codex, model: gpt-6.1-sol }
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-6-sol
+      model: gpt-6.1-sol
       router_reserve_band: ROUTER_CRITICAL_RESERVE
       router_reserve_override: true
 
@@ -3522,7 +3522,7 @@ cases:
     kind: selection
     why: >-
       Codex trajectory is acutely pressured, but the human pinned
-      codex/gpt-6-sol in the current instruction. Exact dispatch wins:
+      codex/gpt-6.1-sol in the current instruction. Exact dispatch wins:
       Codex is selected, pace is reported as a label, and pace_demotion is
       false because a pin does not reorder.
     slot: STRONG_IMPLEMENTER
@@ -3547,11 +3547,11 @@ cases:
       allowExperimental: false
       taskRisk: medium
       now: "2026-09-09T12:00:00Z"
-      pinnedCandidate: { provider: codex, model: gpt-6-sol }
+      pinnedCandidate: { provider: codex, model: gpt-6.1-sol }
     expect:
       status: SELECTED
       provider: codex
-      model: gpt-6-sol
+      model: gpt-6.1-sol
       pace_demotion: false
 
   - name: pace_inert_for_the_router_slot
