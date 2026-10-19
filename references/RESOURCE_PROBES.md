@@ -115,6 +115,17 @@ orca terminal close  --terminal <handle> --tab --json                 # release 
   - `GEMINI MODELS` (Gemini Flash, Gemini Pro) → `antigravity.gemini`
   - `CLAUDE AND GPT MODELS` (Claude Opus, Claude Sonnet, GPT-OSS) →
     `antigravity.non_gemini`
+  - `Gemini 4 Argon` (added 2026-10-19) → `antigravity.argon`. On Google AI Pro
+    this is a **weekly-only** bucket (`gemini-argon-wtu-weekly`, no 5-hour
+    window), separate from `GEMINI MODELS`; `agy` says Ultra folds a larger
+    Argon quota into the main Gemini bucket instead. Normalize it as a single
+    BUDGET window with no BURST window. Pool mapping lives in the registry's
+    `runtime_adapters.antigravity.model_resource_pools`.
+- **Run `/usage` from PowerShell, or with `MSYS_NO_PATHCONV=1` in Git Bash.**
+  2026-10-19: Git Bash rewrote `/usage` into `C:/Program Files/Git/usage`, so
+  `agy --print` treated it as an ordinary prompt and spent a real agent turn.
+  The JSON form `agy --print "/usage" --output-format json` returns
+  `command.data.groups[].buckets[].remaining_fraction` and `reset_time`.
 - **Reset timing (corrected 2026-09-02 on human-observed evidence).** The
   earlier note that Antigravity exposes no reset timing was wrong. A window
   that has been consumed prints a relative countdown:

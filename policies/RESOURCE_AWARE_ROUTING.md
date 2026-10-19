@@ -362,6 +362,9 @@ Dispatch target 是 **`runtime_adapter + provider_family + exact_model + effort`
   Gemini 一律經 `antigravity`。
 - 各 path 的 quota pool 不同：`antigravity` 的 Gemini ⇒ `antigravity.gemini`，
   Claude / GPT-OSS ⇒ `antigravity.non_gemini`，與 `claude_cli` 的 `claude` pool 無關。
+  有自己 bucket 的單一 model 以 registry 的 `model_resource_pools` 覆寫 family pool：
+  Gemini 4 Argon ⇒ `antigravity.argon`（AI Pro 上只有 weekly、沒有 5 小時窗口，
+  用完要等到 weekly reset）。Flash pool 為 RED 不代表 Argon 不可用，反之亦然。
 - Reviewer disjointness 仍比對 `provider` **與** `model_family`：經 Antigravity 的
   Claude 候選必須宣告 `claude-*` family，才不會與 `claude_cli` 的 implementer 混過。
 

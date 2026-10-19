@@ -155,13 +155,15 @@ cases:
       exact_runtime_attestation: MISMATCH
       workflow_policy_compliance: NON_COMPLIANT
 
-  - name: antigravity_exact_model_is_not_expressible_by_worker_start
+  - name: antigravity_exact_model_via_worker_start_passes
     kind: dispatch_compliance
     why: >-
-      Live probe 2026-09-24: worker-start --agent antigravity refuses --model
-      and reports launch.effective.model null. The registry support matrix
-      records it, so an exact Antigravity model is steered to custom dispatch
-      instead of being silently accepted at the runtime default.
+      Live probe 2026-10-19, orca 1.4.229: worker-start --agent antigravity
+      --model gemini-3.8-flash-low returned launch.effective with the same
+      model and effort null (effort is the id suffix), and the worker sent a
+      valid worker_done. An exact Antigravity model is now a supervised
+      WORKER_START, like Codex and Claude. On orca 1.4.209 the same call was
+      refused; a unit test keeps that branch covered.
     input:
       task_class: IMPLEMENTATION_WORKER
       dispatch_mode: ORCA_WORKER
@@ -169,18 +171,23 @@ cases:
       requested_identity:
         runtime_adapter: antigravity
         provider_family: gemini
-        exact_model: gemini-3.8-flash-medium
-        effort: medium
+        exact_model: gemini-3.8-flash-low
+        effort: low
       evidence:
-        task_id: task_a3ee398ff293
-        dispatch_id: ctx_668763af5286
+        task_id: task_62ce7ce358cb
+        dispatch_id: ctx_15d5734c98af
         launch:
-          requested: { agent: antigravity, model: null, effort: null }
-          effective: { agent: antigravity, model: null, effort: null }
+          requested: { agent: antigravity, model: gemini-3.8-flash-low, effort: null }
+          effective: { agent: antigravity, model: gemini-3.8-flash-low, effort: null }
+        lifecycle: { model_launched: true, worker_active: true, completed: true }
+        completion:
+          type: worker_done
+          body: "Probe ok. No files touched. Model self-report: Gemini 3.8 Flash."
+          payload: '{"taskId":"task_62ce7ce358cb","dispatchId":"ctx_15d5734c98af","outcome":"succeeded"}'
     expect:
-      result: DISPATCH_BLOCKED
-      reason_code: WORKER_START_CANNOT_EXPRESS_EXACT_MODEL
-      recommended_path: CUSTOM_DISPATCHED_WORKER
+      result: PASS
+      dispatch_path: WORKER_START
+      exact_runtime_attestation: MATCH
 
   - name: antigravity_custom_dispatched_worker_passes
     kind: dispatch_compliance

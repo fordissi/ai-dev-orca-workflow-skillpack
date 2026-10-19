@@ -265,19 +265,21 @@ terminal create → handle → launch → TERMINAL_STARTED → MODEL_LAUNCHED
 → WORKER_ACTIVE → terminal send → terminal wait → handoff → settle terminal
 ```
 
-新（supervised-first，依 installed orca 1.4.209 orchestration guide）：
+新（supervised-first，依 installed orca 1.4.229 orchestration guide；Antigravity 部分 2026-10-19 live probe）：
 
 ```text
 Router → runtime_adapter / provider / exact_model / effort
   │
   ├─ runtime_adapters.<x>.orca_worker_start.launch_model_selection = supported
-  │    （codex_cli、claude_cli、Cursor）
+  │    （codex_cli、claude_cli、antigravity、Cursor；Antigravity 以帶 effort 後綴的
+  │      catalog id 當 --model、不帶 --effort）
   │    → orca orchestration worker-start --task|--spec ... --agent <a>
   │         --model <m> --effort <e> --worktree <placement> --json
   │    → 回條 launch.effective == routing decision？    否 → EXACT_DISPATCH_FAILURE
   │    → WORKER_START（SUPERVISED，release = worker-release）
   │
-  └─ unsupported（Antigravity：--model 被拒、effective.model = null）
+  └─ unsupported（registry 記為 unsupported 的 runtime；目前沒有。orca 1.4.209 時
+       Antigravity 屬此類）
        → operator terminal/worktree 以 exact argv 啟動（agy --model <id> ...）
        → orca terminal wait --for tui-idle（只為 TUI ready）
        → orca orchestration dispatch --task <id> --to <handle> --inject
@@ -300,8 +302,9 @@ MODEL_LAUNCHED → WORKER_ACTIVE
 `CUSTOM_DISPATCHED_WORKER` **不**一律稱為 unsupervised：它的 Task 與 Dispatch 是
 authoritative、worker 以 `worker_done` 結算；差別只在 terminal 的 lifecycle
 ownership 與 release 語意（orca 顯示該 lane 為 `unsupervised` 指的是 process 資源列）。
-Codex / Claude / Cursor 也可走 custom 路徑，但會標 `WORKER_START_PREFERRED`
-advisory——它們的 exact model 應該由 `worker-start --model --effort` 表達。
+Codex / Claude / Cursor / Antigravity 也可走 custom 路徑，但會標
+`WORKER_START_PREFERRED` advisory——它們的 exact model 應該由 `worker-start
+--model`（Codex / Claude / Cursor 另帶 `--effort`）表達。
 
 Internal subagent 只有在 Router **明示** `dispatch_mode: INTERNAL_SUBAGENT`，且該
 task class 的 policy 明示允許時才可使用；它不繼承或滿足任何 Orca worker contract。
@@ -321,6 +324,11 @@ task class 的 policy 明示允許時才可使用；它不繼承或滿足任何 
   `launch_model_selection: unsupported` 的 runtime 以 `worker-start` 做 exact
   routing → `WORKER_START_CANNOT_EXPRESS_EXACT_MODEL`，建議
   `CUSTOM_DISPATCHED_WORKER`。
+- Live-catalog runtime（Antigravity）把 effort 編在 id 後綴（`gemini-3.8-flash-low`），
+  以 `--model` 單獨啟動，回條 `launch.effective.effort` 為 `null`。此時 effort
+  取 **effective** id 的後綴比對（不是 requested）；後綴與 routing decision 的 effort
+  不同即 `EXACT_DISPATCH_FAILURE`。此規則只適用於 `model_resolution: live_catalog`
+  的 runtime；Codex / Claude 回 `effort: null` 仍是不符。
 - `CUSTOM_DISPATCHED_WORKER`：inject 未被接受 → `CUSTOM_DISPATCH_NOT_INJECTED`；
   以實際 launch argv 與 runtime evidence 比對四欄 identity。effort mode `NONE`
   的 runtime（Antigravity Claude 4.6）以 `provider_default` 比對。
@@ -330,9 +338,10 @@ task class 的 policy 明示允許時才可使用；它不繼承或滿足任何 
 Runtime support matrix 記在 [`MODEL_REGISTRY.yaml`](MODEL_REGISTRY.yaml) 的
 `runtime_adapters.<x>.orca_worker_start`。每個能力欄位都標明 provenance
 （`evidence`）：`live_probe`（本機實際回條，必須有 `verified_at`）、`local_help`
-（本機 `--help`）、`version_matched_guide`（`orca skills get orchestration --full`）。
-只有 `live_probe` 可以被描述為「已實測」；provenance 不改變 routing。目前 Codex 與
-Antigravity 為 `live_probe`，Claude 為 `local_help` / `version_matched_guide`。實測
+（本機 `--help`）、`version_matched_guide`（`orca skills get orchestration` 與其 `--reference`）。
+只有 `live_probe` 可以被描述為「已實測」；provenance 不改變 routing。目前 Codex
+（2026-09-24）與 Antigravity（2026-10-19，orca 1.4.229）為 `live_probe`，Claude 為
+`local_help` / `version_matched_guide`。實測
 紀錄見 [`../references/OFFICIAL_COMMANDS.md`](../references/OFFICIAL_COMMANDS.md)。
 
 #### Fail-closed
@@ -348,7 +357,10 @@ Antigravity 為 `live_probe`，Claude 為 `local_help` / `version_matched_guide`
 來源優先序（命令行為衝突時，以 installed runtime 對應文件為準）：
 
 ```text
-1. installed-version:  orca skills get orchestration --full
+1. installed-version:  orca skills get orchestration            （compact kernel）
+                       + orca skills get orchestration --reference references/<file>.md
+                         （只在 kernel 指名的 action gate 讀該份；--references 列名稱；
+                          CLI 拒絕 --reference 時才用 --full 一次）
 2. local:              orca orchestration <verb> --help
 3. upstream docs:      https://www.onorca.dev/docs/cli/orchestration
 4. skillpack cached docs（本文件、OFFICIAL_COMMANDS.md）
@@ -366,8 +378,12 @@ orca orchestration check --wait --types "worker_done,escalation,question" --time
   worker 的 terminal 都決定下一個 owner（reuse / retain / release）之後，才
   `--ack <delivery_id>`。`--types` 只決定何時喚醒，不授權略過較舊的訊息。
 - Timeout 或空結果是 **checkpoint，不是 failure**；連續三次空 wait 後改為
-  `worker-list --run <run_id> --include-remote --json` 列舉，依每列
-  `projection.nextAction` 行事。
+  `worker-list --include-remote --json` 列舉（預設即 bound Run；`--run <run_id>`
+  覆寫，回條的 `scope` 說明用了哪個）。每列依 `projection.attention.categories`、
+  `projection.attention.requiresAction` 與字面的 `projection.nextAction` argv 行事。
+  列表新到舊、每頁 100：`page.hasMore` 為真時以 `--cursor <page.nextCursor>`
+  續讀到底，**不得**只看第一頁。`nextAction` 為 `none` 時沒有 argv 可跑：讀
+  `liveness.reason`，回到 `check --wait`。缺席永遠不產生 argv。
 - `terminal wait` **只用於** low-level topology 的 TUI-ready 等待，不再當 worker
   completion waiter；`terminal read` 輪詢與 Schedule 同樣不行。
 

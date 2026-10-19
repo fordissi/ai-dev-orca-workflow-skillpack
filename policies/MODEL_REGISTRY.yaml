@@ -56,6 +56,20 @@
 # model changes. Only this file changes when mapping changes.
 #
 # --------------------------------------------------------------------------
+# 0.10 (2026-10-19) GEMINI 4 ARGON AS A THIRD STAGE 3 FLAGSHIP
+#
+# Human decision: add `antigravity / gemini-4-argon` to ESCALATION_MODEL as
+# the THIRD candidate, after Sol and Opus, at reasoning `medium` (never max;
+# the catalog offers low|medium|high). Argon has its OWN quota on the Google AI
+# Pro plan - a weekly-only bucket with no 5-hour window, separate from the
+# Gemini Flash/Pro bucket - so it gets its own resource_state_key
+# `antigravity.argon` via runtime_adapters.antigravity.model_resource_pools.
+# It is deliberately kept out of every busy slot: the quota size is
+# unpublished and an exhausted weekly-only bucket stays empty until reset.
+# Live `agy models` 2026-10-19 lists gemini-4-argon-{low,medium,high};
+# `agy /usage` 2026-10-19 shows a "Gemini 4 Argon Weekly Limit" bucket.
+# See policies/registry-decisions/2026-10-19-gemini-4-argon.md.
+#
 # 0.9 (2026-10-12) GPT-6.1 SOL REPLACES GPT-6 SOL
 #
 # Human decision: every `codex / gpt-6-sol` candidate becomes
@@ -110,8 +124,8 @@
 # (policies/registry-decisions/2026-09-02-rebalance-implementer-tiers.md).
 # --------------------------------------------------------------------------
 
-version: "0.9"
-verified_at: "2026-10-12"
+version: "0.10"
+verified_at: "2026-10-19"
 
 capability_tier_order: [CHEAP, DEFAULT, STRONG, DEEP]
 
@@ -281,19 +295,28 @@ runtime_adapters:
     # provider_default.
     unsuffixed_model_effort: none
     resource_pools: { gemini: antigravity.gemini, claude: antigravity.non_gemini, gpt-oss: antigravity.non_gemini }
-    # Orca supervised-worker support (orca 1.4.209, live-probed 2026-09-24):
-    # `--agent antigravity` launches and honours worker_done, but
-    # `--model`/`--effort` is refused ("does not support launch-time model
-    # selection") and launch.effective.model is null. worker-start therefore
-    # cannot express or attest an exact Antigravity model: exact routing uses
-    # CUSTOM_DISPATCHED_WORKER (terminal with `agy --model <id>` + dispatch
-    # --inject). `--agent agy` is not a configured agent id.
+    # Per-model pool overrides, keyed by the catalog base id (the id without
+    # its -low|-medium|-high effort suffix). They win over resource_pools.
+    # Gemini 4 Argon has its own weekly-only bucket on AI Pro (`agy /usage`
+    # group "Gemini 4 Argon", bucket gemini-argon-wtu-weekly, 2026-10-19).
+    model_resource_pools: { gemini-4-argon: antigravity.argon }
+    # Orca supervised-worker support (orca 1.4.229, live-probed 2026-10-19):
+    # `worker-start --agent antigravity --model gemini-3.8-flash-low` returned
+    # launch.requested == launch.effective == {antigravity,
+    # gemini-3.8-flash-low, effort null}; the worker sent worker_done
+    # (succeeded) and self-reported "Gemini 3.8 Flash". Pass the effort-suffixed
+    # catalog id as --model and omit --effort (`--effort requires --model`;
+    # the catalog has no unsuffixed Gemini id to pair it with). Exact
+    # Antigravity routing therefore uses WORKER_START like Codex/Claude.
+    # History: on orca 1.4.209 (2026-09-24) --model was refused ("does not
+    # support launch-time model selection") and exact routing needed
+    # CUSTOM_DISPATCHED_WORKER. `--agent agy` is not a configured agent id.
     orca_worker_start:
       agent: antigravity
-      launch_model_selection: unsupported
-      effective_identity_reported: false
+      launch_model_selection: supported
+      effective_identity_reported: true
       evidence: { launch_model_selection: live_probe, effective_identity_reported: live_probe }
-      verified_at: "2026-09-24"
+      verified_at: "2026-10-19"
     verified_at: "2026-09-18"
     note: >-
       2026-09-18 `agy models` (live): Gemini 3.8/3.7/3.6 Flash (low|medium|high
@@ -797,6 +820,10 @@ capability_slots:
       # is a tie-break AFTER eligibility/disjointness/resource. Both default to
       # `medium`; neither is ever defaulted to max. A Stage 3 selection MUST
       # record a flagship admission reason (see MODEL_ROUTING_POLICY.md).
+      # Gemini 4 Argon (0.10) is the third peer, after Sol and Opus: the only
+      # flagship outside Codex and Claude, so it is the natural third opinion
+      # when qualified Codex and Claude reviewers disagree. Its pool is
+      # `antigravity.argon` (weekly-only, separate from Gemini Flash).
       - provider: codex
         resource_state_key: codex
         model: gpt-6.1-sol
@@ -827,3 +854,18 @@ capability_slots:
         source: "local CLI, Claude Code 2.1.258; default reasoning medium, raise to high only on task evidence; --effort medium|high supported"
         verified_at: "2026-09-02"
         expires_at: "2026-12-01"
+      - provider: antigravity
+        resource_state_key: antigravity.argon
+        model: gemini-4-argon
+        model_family: gemini
+        reasoning: medium
+        capability_tier: DEEP
+        stage: STAGE_3_FLAGSHIP
+        enabled: true
+        status: experimental
+        evidence_status: provisional
+        evidence_scope: escalation_reasoning
+        confidence: low
+        source: "human decision 2026-10-19: third Stage 3 flagship; live agy catalog lists gemini-4-argon-{low,medium,high}; vendor benchmark table only (not reproduced); separate weekly-only Argon quota on AI Pro, size unpublished"
+        verified_at: "2026-10-19"
+        expires_at: "2027-01-19"

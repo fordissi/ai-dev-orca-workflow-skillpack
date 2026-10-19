@@ -2909,7 +2909,7 @@ test("terminal cleanup is documented from the installed runtime, not invented", 
 
   // orca 1.4.209 ships per-terminal close and a live inventory; the pack must
   // stop calling them missing and must record them from the installed CLI.
-  assert.ok(commands.includes("Terminal lifecycle、inventory 與 cleanup（orca 1.4.209）"));
+  assert.ok(commands.includes("Terminal lifecycle、inventory 與 cleanup（orca 1.4.209；1.4.229 列舉補充）"));
   assert.ok(commands.includes("orca terminal close --terminal <handle>"));
   assert.ok(commands.includes("orca terminal list --json"));
   assert.ok(!commands.includes("沒有已驗證的 per-terminal"), "commands must not call per-terminal close missing");

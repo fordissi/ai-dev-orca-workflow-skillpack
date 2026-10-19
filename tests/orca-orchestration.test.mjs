@@ -27,9 +27,21 @@ const CODEX_WORKER_DONE = {
   body: "probe ok. no files touched. nothing remains.",
   payload: '{"taskId":"task_23b0611ccc69","dispatchId":"ctx_a50dbd1533d4","outcome":"succeeded"}',
 };
-const AGY_LAUNCH = {
+// orca 1.4.209 (2026-09-24): --model refused, effective model null.
+const AGY_LAUNCH_1_4_209 = {
   requested: { agent: "antigravity", model: null, effort: null },
   effective: { agent: "antigravity", model: null, effort: null },
+};
+// orca 1.4.229 (2026-10-19) live probe receipt: effort lives in the id.
+const AGY_LAUNCH = {
+  requested: { agent: "antigravity", model: "gemini-3.8-flash-low", effort: null },
+  effective: { agent: "antigravity", model: "gemini-3.8-flash-low", effort: null },
+};
+const AGY_WORKER_DONE = {
+  type: "worker_done",
+  subject: "Probe ok",
+  body: "Probe ok. No files touched. Model self-report: Gemini 3.8 Flash.",
+  payload: '{"taskId":"task_62ce7ce358cb","dispatchId":"ctx_15d5734c98af","outcome":"succeeded"}',
 };
 
 const codexRequest = { runtime_adapter: "codex_cli", provider_family: "openai", exact_model: "gpt-6-luna", effort: "low" };
@@ -131,14 +143,56 @@ test("launch.effective differing from the routing decision is an exact dispatch 
   assert.equal(r.exact_runtime_attestation, "MISMATCH");
 });
 
-test("worker-start cannot express an exact Antigravity model; custom dispatch is recommended", () => {
+const agyRequest = { runtime_adapter: "antigravity", provider_family: "gemini", exact_model: "gemini-3.8-flash-low", effort: "low" };
+const agyWorkerStart = (launch, overrides = {}) =>
+  workerStartEvidence({ task_id: "task_62ce7ce358cb", dispatch_id: "ctx_15d5734c98af", launch, completion: AGY_WORKER_DONE, ...overrides });
+const agyEvaluate = (evidence, reg = registry) =>
+  evaluateDispatchCompliance({
+    registry: reg,
+    task_class: "IMPLEMENTATION_WORKER",
+    dispatch_mode: "ORCA_WORKER",
+    execution_mechanism: "ORCA_WORKER_START",
+    requested_identity: agyRequest,
+    evidence,
+  });
+
+test("worker-start expresses an exact Antigravity model; effort is read from the effective id suffix", () => {
+  const r = agyEvaluate(agyWorkerStart(AGY_LAUNCH));
+  assert.equal(r.result, "PASS");
+  assert.equal(r.dispatch_path, "WORKER_START");
+  assert.equal(r.exact_runtime_attestation, "MATCH");
+});
+
+test("an Antigravity id suffix that differs from the requested effort is a mismatch", () => {
+  const launch = {
+    requested: { agent: "antigravity", model: "gemini-3.8-flash-low", effort: null },
+    effective: { agent: "antigravity", model: "gemini-3.8-flash-high", effort: null },
+  };
+  const r = agyEvaluate(agyWorkerStart(launch));
+  assert.equal(r.result, "HARD_FAIL");
+  assert.equal(r.exact_runtime_attestation, "MISMATCH");
+});
+
+test("the id-suffix effort rule is limited to live-catalog runtimes", () => {
+  const launch = {
+    requested: { agent: "codex", model: "gpt-6-luna", effort: null },
+    effective: { agent: "codex", model: "gpt-6-luna", effort: null },
+  };
   const r = evaluate({
     task_class: "IMPLEMENTATION_WORKER",
     dispatch_mode: "ORCA_WORKER",
     execution_mechanism: "ORCA_WORKER_START",
-    requested_identity: { runtime_adapter: "antigravity", provider_family: "gemini", exact_model: "gemini-3.8-flash-medium", effort: "medium" },
-    evidence: workerStartEvidence({ launch: AGY_LAUNCH, completion: undefined, lifecycle: { model_launched: true, worker_active: true } }),
+    requested_identity: codexRequest,
+    evidence: workerStartEvidence({ launch }),
   });
+  assert.equal(r.exact_runtime_attestation, "MISMATCH");
+});
+
+test("a runtime recorded as unable to select a model at launch is steered to custom dispatch", () => {
+  // The orca 1.4.209 state, kept as a regression for any runtime that regresses.
+  const old = structuredClone(registry);
+  Object.assign(old.runtime_adapters.antigravity.orca_worker_start, { launch_model_selection: "unsupported", effective_identity_reported: false });
+  const r = agyEvaluate(agyWorkerStart(AGY_LAUNCH_1_4_209, { completion: undefined }), old);
   assert.equal(r.result, "DISPATCH_BLOCKED");
   assert.equal(r.reason_code, "WORKER_START_CANNOT_EXPRESS_EXACT_MODEL");
   assert.equal(r.recommended_path, "CUSTOM_DISPATCHED_WORKER");
@@ -351,7 +405,8 @@ test("registry capability claims carry provenance; only real receipts are live_p
 
   const agy = workerStartSupport(registry, "antigravity");
   assert.equal(agy.live_probed, true);
-  assert.equal(agy.expressible, false);
+  assert.equal(agy.expressible, true);
+  assert.equal(agy.attestable, true);
 });
 
 test("the registry validator rejects unmarked or undated live_probe capability claims", () => {

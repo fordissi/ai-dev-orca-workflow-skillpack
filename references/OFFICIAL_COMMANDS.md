@@ -7,7 +7,9 @@ re-verified **2026-09-03** against `agy 1.1.24` — `gemini-3.8-flash-{low,
 medium,high}` now resolves and dispatches (see the Antigravity section below).
 Orca orchestration re-verified **2026-09-24** against `orca 1.4.209` using the
 installed `orca skills get orchestration --full`, local `--help`, and two bounded
-live `worker-start` probes (Codex, Antigravity) — see the Orca section.
+live `worker-start` probes (Codex, Antigravity); re-verified **2026-10-19** against
+`orca 1.4.229` (compact guide + `--reference` files, local `--help`, one bounded
+Antigravity `worker-start --model` probe) — see the Orca section.
 
 Provider-native **resource probe** invocations (Codex `/status`, Claude
 `/usage`, Antigravity `agy --print "/usage" --output-format json`) — verified
@@ -43,7 +45,7 @@ gh repo create --help
 
 | Tool | Version | 來源 |
 |---|---|---|
-| Orca runtime | 1.4.209 | `orca status --json` 的 `runtime.appVersion`（2026-09-24 重新驗證 orchestration；原記錄 1.4.192） |
+| Orca runtime | 1.4.229 | `orca status --json` 的 `runtime.appVersion`（2026-10-19 重新驗證 orchestration；先前 1.4.209、1.4.192） |
 | Codex CLI | 0.151.0 | `codex --version` |
 | Claude Code | 2.1.252 | `claude --version` |
 | Antigravity CLI | 1.1.24 | `agy --version`（重新驗證 2026-09-03；先前記錄 1.1.22） |
@@ -56,13 +58,17 @@ gh repo create --help
 **來源優先序**（命令行為衝突時以 installed runtime 為準）：
 
 ```text
-1. orca skills get orchestration --full     ← 與已安裝版本配對的完整 guide
+1. orca skills get orchestration            ← 與已安裝版本配對的 compact kernel
+   orca skills get orchestration --reference references/<file>.md
+                                             ← 只在 kernel 指名的 action gate 讀
+                                               （--references 列名稱；--full 為 fallback）
 2. orca orchestration <verb> --help
 3. https://www.onorca.dev/docs/cli/orchestration
 4. 本 pack 的快取文件（本檔、WORKFLOW_POLICY.md）
 ```
 
-本節依 **orca 1.4.209**（2026-09-24）重新驗證。Normative 協議（wait / worker_done /
+本節依 **orca 1.4.209**（2026-09-24）驗證，**orca 1.4.229**（2026-10-19）重新驗證
+guide 結構、列舉與 Antigravity launch。Normative 協議（wait / worker_done /
 ask / follow-up / recovery）見 [`../policies/WORKFLOW_POLICY.md`](../policies/WORKFLOW_POLICY.md)
 的 `ORCA_WORKER_DISPATCH_REQUIRED` 與 *Orca orchestration 協議*；本節只記命令與實測。
 
@@ -82,8 +88,9 @@ Task spec 必須自足並寫明 Target / Change / Constraints / Ownership / Obse
 acceptance。`--spec` 一次建立 Task 與其 attempt；有相依或重試已知 Task 時用
 `task-create` + `worker-start --task <id>`。`worker-start` 只有 `ready` 才 exit 0。
 
-`--help` 明載：`--model` 支援 Claude / Codex / Cursor 的 opaque model id；`--effort`
-需要 `--model`；兩者不能與 `--terminal` 併用。
+`--help`（1.4.229）明載：`--model` 支援 Claude / Codex / Cursor / Antigravity / Muse
+的 opaque model id；`--effort` 需要 `--model`；兩者不能與 `--terminal` 併用。
+（1.4.209 只列 Claude / Codex / Cursor。）
 
 #### Live probe（2026-09-24，orca 1.4.209）
 
@@ -104,7 +111,22 @@ created、dispatch_input accepted）、`residualResources: []`。worker 送回�
 `worker-release` 回 `state: "released"`、`processAction: "closed_agent_terminal"`、
 `archive.source: "transcript"`，Task 自動為 `completed`。
 
-**Antigravity** —
+**Antigravity（2026-10-19，orca 1.4.229）** —
+`worker-start --agent antigravity --model gemini-3.8-flash-low`（不帶 `--effort`）：
+
+```json
+"launch": {
+  "requested": { "agent": "antigravity", "model": "gemini-3.8-flash-low", "effort": null },
+  "effective": { "agent": "antigravity", "model": "gemini-3.8-flash-low", "effort": null }
+}
+```
+
+worker 依協議送回 `worker_done`（`outcome: succeeded`），自報 *Gemini 3.8 Flash*；
+`worker-release` 後 `worker-list --terminal-state reclaimable` 為空。Effort 編在 id
+後綴，回條 `effort` 為 `null`，attestation 取 effective id 的後綴（見
+`WORKFLOW_POLICY.md`）。結論：exact Antigravity model 走 `WORKER_START`。
+
+**Antigravity（歷史，2026-09-24，orca 1.4.209）** —
 
 | 嘗試 | 結果 |
 |---|---|
@@ -113,8 +135,8 @@ created、dispatch_input accepted）、`residualResources: []`。worker 送回�
 | `--agent agy …` | `agent_unconfigured`（`agy` 不是 agent id） |
 | `--agent antigravity`（不帶 model） | 啟動成功、照協議送回 `worker_done`；但 `launch.effective.model = null`，`archive.source: "terminal"`（無 hook transcript） |
 
-結論：`worker-start` 可以跑 Antigravity worker，但**無法表達也無法證明** exact
-Antigravity model；exact routing 走 `CUSTOM_DISPATCHED_WORKER`。Support matrix 記在
+當時結論（1.4.229 已不成立）：`worker-start` 可以跑 Antigravity worker，但無法
+表達也無法證明 exact Antigravity model，exact routing 走 `CUSTOM_DISPATCHED_WORKER`。Support matrix 記在
 [`../policies/MODEL_REGISTRY.yaml`](../policies/MODEL_REGISTRY.yaml) 的
 `runtime_adapters.<x>.orca_worker_start`。`claude_cli` 依 `--help` 為 supported，
 尚未在本機 live probe。
@@ -158,10 +180,10 @@ terminal 操作；拿它充當 Orca worker 是 `LIGHTWEIGHT_TERMINAL_PROMPT_AS_O
 | Path | Classification | Condition |
 |---|---|---|
 | `orca orchestration worker-start --agent --model --effort` | `EXACT_IDENTITY_PRESERVED` / `WORKER_START` | runtime 的 `orca_worker_start.launch_model_selection = supported`，且回條 `launch.effective` 與 contract 相符；`launch.requested` 單獨不算 |
-| `orca orchestration worker-start --agent antigravity` | `DEFAULT_FALLBACK_RISK` | 不接受 `--model`、`effective.model = null`，只能跑 runtime 預設模型 |
+| `orca orchestration worker-start --agent antigravity`（不帶 `--model`） | `DEFAULT_FALLBACK_RISK` | 省略 `--model` 時跑 runtime 預設模型、`effective.model` 不保證；1.4.229 起應帶 `--model <帶 effort 後綴的 catalog id>` 走上一列 |
 | operator terminal（exact argv）+ TUI ready + `dispatch --inject` | `EXACT_IDENTITY_PRESERVED` / `CUSTOM_DISPATCHED_WORKER` | terminal command 含 provider 支援的 exact model / effort 旗標、inject 被接受、並完成 runtime attestation |
 | `orca orchestration dispatch --inject` 到來歷不明的既有 terminal | `DEFAULT_FALLBACK_RISK` | 只注入 task；既有 terminal 的四欄 identity 未證明 |
-| `orca worktree create --agent` | `DEFAULT_FALLBACK_RISK` | agent-first convenience path 不接收 custom model / effort；且這是 ownership handoff，不是 supervised worker |
+| `orca worktree create --agent` / `orca agent launch` | handoff（不是 Orca worker） | ownership handoff，不建立 Run/Task/Dispatch。1.4.229 起兩者接受 `--model` / `--effort`；回條 `result.launch.outcome.kind` 為 `structured`（chat）或 `terminal`，chat 時沒有 terminal handle。未帶 `--model` 或回條未證明 model 時為 `DEFAULT_FALLBACK_RISK`；舊版 host 會拒絕 `--model` 並以 `result.agentTerminalHandle` 回 handle |
 | `terminal create` + `terminal send` | `LIGHTWEIGHT_TERMINAL_PROMPT` | 沒有 Task/Dispatch；不得作為 Orca worker |
 | Codex direct invocation | `EXACT_IDENTITY_PRESERVED` | `-m <model>` 與 `-c 'model_reasoning_effort="<effort>"'` 均明確傳入並完成 attestation；任一省略即 `DEFAULT_FALLBACK_RISK` |
 | Claude direct invocation | `EXACT_IDENTITY_PRESERVED` | `--model <model>` 與 `--effort <level>` 均明確傳入並完成 attestation；任一省略即 `DEFAULT_FALLBACK_RISK` |
@@ -189,9 +211,9 @@ Dispatch 後要驗證 worker 實際的 `provider` / `model` / `model_family` /
 `reasoning_effort` 是否等於 contract。
 
 - **可用（supervised worker）**：`worker-start` 回條的 `launch.effective`
-  （orca 1.4.209 live probe 已驗證於 Codex）。這是 `WORKER_START` 的 attestation
+  （live probe 已驗證於 Codex（1.4.209）與 Antigravity（1.4.229））。這是 `WORKER_START` 的 attestation
   證據；**永遠不得**只憑 `launch.requested` 宣稱模型或 effort。
-- **不可用**：Antigravity 經 `worker-start` 時 `launch.effective.model = null`。
+- **歷史**：orca 1.4.209 時 Antigravity 經 `worker-start` 的 `launch.effective.model = null`；1.4.229 已回報 exact id。
 - **可用（custom / direct）**：Codex interactive session 的 `/status` 面板會印出
   `Model: <id> (reasoning <effort> ...)`；以 `orca orchestration worker-read
   --dispatch <id> --source auto` 或 `orca terminal read` 取回比對（注意 Git-Bash 的
@@ -201,10 +223,8 @@ Dispatch 後要驗證 worker 實際的 `provider` / `model` / `model_family` /
 `WORKFLOW_POLICY.md` 處置，**不得**標為 `ROUTING_UNAVAILABLE`，也**不得**假裝比對
 通過。若任一已知欄位不符，則為 `DISPATCH_CONTRACT_MISMATCH`。
 
-值得提出的 upstream feature request：**Report `launch.effective` model/effort for
-agents that do not accept launch-time model selection (e.g. Antigravity), from the
-agent's own configured model.**（runtime 已宣告 `git.antigravity-configured-model.v1`
-capability，但 orchestration 回條尚未反映。）
+（先前記錄的 upstream feature request——Antigravity 的 `launch.effective`——已由
+orca 1.4.229 滿足。）
 
 ### Scoped worker capabilities（觀察到的機制）
 
@@ -253,11 +273,17 @@ orca terminal read --terminal <handle> --cursor <n> --limit 1000 --json
 
 PROHIBITED: 不要把 `--screen` 當成預設讀取方式；它沒有歷史，會漏掉已捲離畫面的輸出。
 
-新的獨立 worktree：
+新的獨立 worktree（ownership handoff，不是 supervised worker）：
 
 ```bash
-orca worktree create --name <task-name> --no-parent --agent <id> --prompt "<task brief>" --json
+orca worktree create --name <task-name> --no-parent --agent <id> --model <exact> --effort <e> --prompt "<task brief>" --json
+orca agent launch --agent <id> --worktree <selector> --model <exact> --effort <e> --prompt "<task brief>" --json   # 既有 worktree
 ```
+
+1.4.229：讀 `result.launch`——`outcome.kind` 為 `structured`（chat）或 `terminal`
+（由使用者的 Chat UI 設定決定，沒有旗標可改）、`outcome.handle`、`receipt.detail`、
+`prompt.outcome`（brief 是否送達）。chat 型 handoff 沒有 terminal handle，不要假設一定有。
+需要 supervision / `worker_done` 時改用 `orchestration worker-start`。
 
 Worktree metadata 與狀態：
 
@@ -268,7 +294,7 @@ orca worktree set --worktree active --comment "<text>" --workspace-status in-pro
 
 `--workspace-status` 的預設 id 為 `todo`、`in-progress`、`in-review`、`completed`。
 
-### Terminal lifecycle、inventory 與 cleanup（orca 1.4.209）
+### Terminal lifecycle、inventory 與 cleanup（orca 1.4.209；1.4.229 列舉補充）
 
 [`policies/WORKFLOW_POLICY.md`](../policies/WORKFLOW_POLICY.md) 的
 Session lifecycle and cleanup 定義了 `ACTIVE` / `PARKED` / `SUPERSEDED` /
@@ -278,7 +304,7 @@ Session lifecycle and cleanup 定義了 `ACTIVE` / `PARKED` / `SUPERSEDED` /
 
 | Terminal 歸屬 | Inventory | 收尾 |
 |---|---|---|
-| `WORKER_START`（supervised） | `orca orchestration worker-list --run <run_id> [--include-remote] --json`；`--terminal-state reclaimable` 列出仍欠決定者 | 結算後三擇一：reuse（`worker-start --task <next> --terminal <handle>`）、`worker-retain --dispatch <id>`、`worker-release --dispatch <id>`。**不得**以 `terminal close` 代替 release；回條 `release_pending` / `release_unknown` 時照回條處置 |
+| `WORKER_START`（supervised） | `orca orchestration worker-list [--run <run_id>] [--include-remote] --json`（1.4.229 預設 bound Run；每頁 100，`page.hasMore` 時以 `--cursor <page.nextCursor>` 續讀）；`--terminal-state reclaimable` 列出仍欠決定者 | 結算後三擇一：reuse（`worker-start --task <next> --terminal <handle>`）、`worker-retain --dispatch <id>`、`worker-release --dispatch <id>`。**不得**以 `terminal close` 代替 release；回條 `release_pending` / `release_unknown` 時照回條處置 |
 | `CUSTOM_DISPATCHED_WORKER`（operator-owned） | `worker-list` 顯示該 lane 為 `unsupervised`；terminal 本身用 `orca terminal list --json` | 已接受的 `worker_done` 之後，由 operator `orca terminal close --terminal <handle> [--tab] --json`（`worker-release` 對它不做 process action） |
 | `LIGHTWEIGHT_TERMINAL_PROMPT` / 其他 operator terminal | `orca terminal list [--worktree <sel>] --json` | `orca terminal close --terminal <handle> [--tab] --json` |
 
@@ -327,8 +353,9 @@ state as read-only CLI JSON.** 它符合 `RESOURCE_AWARE_ROUTING.md` 對
 
 在該介面存在之前，**不得**以任何需要 credential 的方式取得 quota 來冒充 HIGH trust。
 
-Structured DAG / stateful coordination：以 `orca skills get orchestration --full`
-（與已安裝版本配對）為準；上游網頁版：https://www.onorca.dev/docs/cli/orchestration
+Structured DAG / stateful coordination：以 `orca skills get orchestration`（compact
+kernel）加 kernel 指名的 `--reference references/coordinator-loop.md` 等為準（與已安裝
+版本配對；`--full` 為 fallback）；上游網頁版：https://www.onorca.dev/docs/cli/orchestration
 
 ---
 

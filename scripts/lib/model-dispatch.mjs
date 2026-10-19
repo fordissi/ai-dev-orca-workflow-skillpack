@@ -236,6 +236,18 @@ function launchArgs(adapterName, cliModel, effort) {
 }
 
 /**
+ * A per-model quota pool override (runtime_adapters.<x>.model_resource_pools),
+ * keyed by the catalog base id without its effort suffix. A model with its own
+ * provider bucket (Gemini 4 Argon) must not be charged to its family's pool.
+ */
+function modelResourcePool(adapter, cliModel) {
+  const pools = isPlainObject(adapter?.model_resource_pools) ? adapter.model_resource_pools : null;
+  if (pools === null || !isNonEmptyString(cliModel)) return null;
+  const base = cliModel.replace(/-(low|medium|high)$/, "");
+  return pools[cliModel] ?? pools[base] ?? null;
+}
+
+/**
  * Resolves runtime_adapter + provider_family + exact model + effort for one
  * dispatch. `provider` is the registry `provider:` value (or a bare family
  * name such as `gemini`, which has no direct adapter). `live_catalog` is the
@@ -288,7 +300,7 @@ export function resolveDispatchTarget({ registry, runtime_adapter = null, provid
     ...base,
     ...resolved,
     provider_family: family,
-    resource_state_key: adapter.resource_pools?.[family] ?? null,
+    resource_state_key: modelResourcePool(adapter, resolved.cli_model) ?? adapter.resource_pools?.[family] ?? null,
     launch_args: launchArgs(name, resolved.cli_model, effort),
   };
 }

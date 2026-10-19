@@ -59,6 +59,36 @@ test("AUTO_GEMINI resolves to the newest Gemini Flash generation for the effort"
   assert.equal(t.provider_family, "gemini");
 });
 
+const AGY_2026_10_19 = [
+  "gemini-4-argon-medium\tGemini 4 Argon (Medium)",
+  "gemini-4-argon-high\tGemini 4 Argon (High)",
+  "gemini-4-argon-low\tGemini 4 Argon (Low)",
+  "gemini-3.8-flash-high\tGemini 3.8 Flash (High)",
+  "gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)",
+  "gemini-3.8-flash-low\tGemini 3.8 Flash (Low)",
+].join("\n");
+
+test("Gemini 4 Argon resolves by effort and is charged to its own antigravity.argon pool", () => {
+  const t = resolveDispatchTarget({ registry, runtime_adapter: "antigravity", provider_family: "gemini", model: "gemini-4-argon", effort: "medium", live_catalog: AGY_2026_10_19 });
+  assert.equal(t.status, "RESOLVED");
+  assert.equal(t.cli_model, "gemini-4-argon-medium");
+  assert.equal(t.provider_family, "gemini");
+  assert.equal(t.resource_state_key, "antigravity.argon");
+});
+
+test("AUTO_GEMINI still resolves to Flash, never Argon, and stays on the Gemini pool", () => {
+  const t = resolveDispatchTarget({ registry, provider: "antigravity", model: "AUTO_GEMINI", effort: "low", live_catalog: AGY_2026_10_19 });
+  assert.equal(t.cli_model, "gemini-3.8-flash-low");
+  assert.equal(t.resource_state_key, "antigravity.gemini");
+});
+
+test("an Argon candidate declared on the Gemini Flash pool is a registry finding", () => {
+  const bad = structuredClone(registry);
+  const argon = bad.capability_slots.ESCALATION_MODEL.candidates.find((c) => c.model === "gemini-4-argon");
+  argon.resource_state_key = "antigravity.gemini";
+  assert.ok(validateRegistry(bad).some((f) => f.includes("gemini-4-argon has its own pool antigravity.argon")));
+});
+
 test("Claude is routed through Claude CLI with a catalog alias", () => {
   const t = resolveDispatchTarget({ registry, runtime_adapter: "claude_cli", provider_family: "claude", model: "sonnet", effort: "high" });
   assert.equal(t.status, "RESOLVED");

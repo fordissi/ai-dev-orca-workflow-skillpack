@@ -85,10 +85,11 @@ architecture / security / database specialist 一律套用
 **`TASK_ID` + `DISPATCH_ID` + launch evidence**；terminal handle 只是選填證據。
 
 - **預設：`orca orchestration worker-start`**。Codex / Claude / Cursor 一律帶
-  `--model <exact> --effort <e>`，並以回條的 **`launch.effective`**（不是 requested）
-  證明 exact model。
-- **`worker-start` 表達不了 exact runtime/model 時**（目前是 Antigravity：`--model`
-  被拒、`effective.model = null`）：operator terminal 以 exact argv 啟動 →
+  `--model <exact> --effort <e>`；Antigravity 帶 `--model <帶 effort 後綴的 catalog id>`
+  （如 `gemini-3.8-flash-low`）、不帶 `--effort`（orca 1.4.229 起，2026-10-19 實測）。
+  一律以回條的 **`launch.effective`**（不是 requested）證明 exact model。
+- **`worker-start` 表達不了 exact runtime/model 時**（registry 記為 unsupported 的
+  runtime；目前沒有）：operator terminal 以 exact argv 啟動 →
   `terminal wait --for tui-idle` → `orchestration dispatch --task <id> --to <handle>
   --inject` = `CUSTOM_DISPATCHED_WORKER`。它有 Task/Dispatch 與 `worker_done`，只是
   terminal 由 operator 收尾。
@@ -240,7 +241,8 @@ slow != blocked
 `orca orchestration check --wait --types "worker_done,escalation,question" --timeout-ms 900000 --json`：
 原生阻塞，逾時只是 checkpoint。整批訊息都處理完、每個已結算 worker 的 terminal 都
 決定 reuse / retain / release 之後才 `--ack`；連續三次空 wait 改看
-`worker-list --run <id> --include-remote`。`terminal wait` 只用於 custom topology 的
+`worker-list --include-remote`（讀完所有頁，依 `projection.attention.requiresAction`
+與 `projection.nextAction` 行事；`none` 就回去 `check --wait`）。`terminal wait` 只用於 custom topology 的
 TUI-ready，不當 completion waiter。`unverifiable` liveness 是缺席，**不授權** stop /
 retry / release。
 

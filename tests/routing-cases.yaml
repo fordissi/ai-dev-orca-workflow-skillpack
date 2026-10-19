@@ -274,6 +274,7 @@ cases:
     resource_states:
       claude: { state: GREEN, available: true, source: UNKNOWN }
       codex: { state: GREEN, available: true, source: UNKNOWN }
+      antigravity: { pools: { argon: { state: GREEN, available: true, source: UNKNOWN } } }
     options: { allowExperimental: false, taskRisk: critical }
     expect:
       status: BLOCKED
@@ -290,6 +291,7 @@ cases:
     resource_states:
       claude: { state: GREEN, available: true }
       codex: { state: GREEN, available: true }
+      antigravity: { pools: { argon: { state: GREEN, available: true } } }
     options: { allowExperimental: false, taskRisk: critical }
     expect:
       status: BLOCKED
@@ -1345,6 +1347,71 @@ cases:
       provider: antigravity
       model: AUTO_GEMINI
       conservation_demotion: true
+
+  - name: stage_3_argon_is_third_after_sol_and_opus
+    kind: selection
+    why: >-
+      Gemini 4 Argon is the third ESCALATION_MODEL candidate. With Sol, Opus
+      and Argon all healthy, registry order keeps Sol at the head; Argon is
+      not promoted ahead of the Codex and Claude flagships.
+    slot: ESCALATION_MODEL
+    resource_states:
+      codex: { state: GREEN, available: true, source: ORCA_RUNTIME }
+      claude: { state: GREEN, available: true, source: ORCA_RUNTIME }
+      antigravity: { pools: { argon: { state: GREEN, available: true, source: ORCA_RUNTIME } } }
+    options: { allowExperimental: false, taskRisk: critical }
+    flagship_reason:
+      escalation_reason: Stage 2 failed to converge
+      why_stage_2_insufficient: Two Stage 2 attempts left the same failing tests.
+    expect:
+      status: SELECTED
+      provider: codex
+      model: gpt-6.1-sol
+
+  - name: stage_3_argon_breaks_a_codex_claude_reviewer_disagreement
+    kind: selection
+    why: >-
+      Qualified Codex and Claude reviewers disagree, so both providers are
+      excluded from the tie-break. Argon is the only flagship outside them and
+      is selected on its own antigravity.argon pool.
+    slot: ESCALATION_MODEL
+    resource_states:
+      codex: { state: GREEN, available: true, source: ORCA_RUNTIME }
+      claude: { state: GREEN, available: true, source: ORCA_RUNTIME }
+      antigravity: { pools: { argon: { state: GREEN, available: true, source: ORCA_RUNTIME } } }
+    options: { allowExperimental: false, taskRisk: critical, excludeProvider: codex, excludeModelFamily: claude-opus }
+    flagship_reason:
+      escalation_reason: unresolved disagreement between qualified reviewers
+      why_stage_2_insufficient: >-
+        The Codex and Claude Stage 2 reviewers reached opposite verdicts on the
+        same RLS change and a third, independent flagship opinion is needed.
+    expect:
+      status: SELECTED
+      provider: antigravity
+      model: gemini-4-argon
+
+  - name: stage_3_argon_pool_is_not_the_gemini_flash_pool
+    kind: selection
+    why: >-
+      The Gemini Flash pool being RED says nothing about Argon, which has its
+      own weekly-only bucket. With Sol and Opus excluded, a healthy Argon pool
+      is still selected even though antigravity.gemini is exhausted.
+    slot: ESCALATION_MODEL
+    resource_states:
+      codex: { state: GREEN, available: true, source: ORCA_RUNTIME }
+      claude: { state: GREEN, available: true, source: ORCA_RUNTIME }
+      antigravity:
+        pools:
+          gemini: { state: RED, available: true, source: ORCA_RUNTIME }
+          argon: { state: GREEN, available: true, source: ORCA_RUNTIME }
+    options: { allowExperimental: false, taskRisk: critical, excludeProvider: codex, excludeModelFamily: claude-opus }
+    flagship_reason:
+      escalation_reason: unresolved disagreement between qualified reviewers
+      why_stage_2_insufficient: Codex and Claude reviewers disagree after Stage 2.
+    expect:
+      status: SELECTED
+      provider: antigravity
+      model: gemini-4-argon
 
   - name: stage_3_terminal_heavy_prefers_sol
     kind: selection

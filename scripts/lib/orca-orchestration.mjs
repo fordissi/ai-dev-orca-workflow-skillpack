@@ -1,7 +1,9 @@
-// Supervised-first Orca orchestration protocol (orca 1.4.209).
+// Supervised-first Orca orchestration protocol (orca 1.4.209; re-verified 1.4.229).
 //
 // Source precedence for everything in this file, highest first:
-//   1. installed-version guide: `orca skills get orchestration --full`
+//   1. installed-version guide: `orca skills get orchestration` (compact kernel)
+//      plus the `--reference references/<file>.md` it names at an action gate
+//      (`--full` only when the CLI rejects `--reference`)
 //   2. local `orca orchestration <verb> --help`
 //   3. https://www.onorca.dev/docs/cli/orchestration
 //   4. this skillpack's cached docs
@@ -223,7 +225,7 @@ export function processDelivery({
   const list = Array.isArray(messages) ? messages.filter(isPlainObject) : [];
   if (timed_out || list.length === 0) {
     return consecutive_empty_waits >= 3
-      ? { action: "ENUMERATE_WORKER_LIST", ack_allowed: false, reason: "three empty waits: enumerate worker-list and follow projection.nextAction" }
+      ? { action: "ENUMERATE_WORKER_LIST", ack_allowed: false, reason: "three empty waits: enumerate worker-list (every page) and follow projection.attention.requiresAction and projection.nextAction; a none nextAction means keep waiting" }
       : { action: "CHECKPOINT_CONTINUE_WAITING", ack_allowed: false, reason: "a timeout or empty result is a checkpoint, not a failure" };
   }
 

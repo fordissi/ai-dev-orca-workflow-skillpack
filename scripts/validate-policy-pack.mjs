@@ -685,6 +685,26 @@ export function validateRegistry(registry) {
     }
   }
 
+  // A candidate whose model has its own quota pool (model_resource_pools)
+  // must declare that pool, or the router would read the family's pool and
+  // misjudge both.
+  if (isPlainObject(registry.runtime_adapters)) {
+    for (const [slotName, slot] of Object.entries(slots)) {
+      (Array.isArray(slot?.candidates) ? slot.candidates : []).forEach((candidate, index) => {
+        if (!isPlainObject(candidate)) return;
+        const adapter = Object.values(registry.runtime_adapters).find((a) => a?.registry_provider === candidate.provider);
+        const pools = isPlainObject(adapter?.model_resource_pools) ? adapter.model_resource_pools : null;
+        if (pools === null || !isNonEmptyString(candidate.model)) return;
+        const pool = pools[candidate.model] ?? pools[candidate.model.replace(/-(low|medium|high)$/, "")];
+        if (isNonEmptyString(pool) && candidate.resource_state_key !== pool) {
+          findings.push(
+            `capability_slots.${slotName}.candidates[${index}].resource_state_key: ${candidate.model} has its own pool ${pool}, not ${candidate.resource_state_key}`,
+          );
+        }
+      });
+    }
+  }
+
   // Every candidate on a provider with a CLI alias catalog must name a catalog
   // alias or a reviewed model_override - never a display-name-derived id.
   for (const [slotName, slot] of Object.entries(slots)) {
@@ -2456,11 +2476,21 @@ export function evaluateDispatchCompliance(input) {
       return result({ ...pathValues, result: "DISPATCH_BLOCKED", reason_code: "EXACT_RUNTIME_UNVERIFIED" });
     }
     const agentOk = support.agent === null || effective.agent === support.agent;
+    // A live-catalog runtime (Antigravity) encodes effort in the model id
+    // (`gemini-3.8-flash-low`) and is launched with --model alone, so
+    // launch.effective.effort is null. The effort is then the effective id's
+    // suffix - read from what actually launched, never from the request.
+    let effectiveEffort = effective.effort;
+    const liveCatalog = i.registry?.runtime_adapters?.[requested.runtime_adapter]?.model_resolution === "live_catalog";
+    if (liveCatalog && normEffort(effectiveEffort) === "provider_default") {
+      const suffix = effective.model.match(/-(low|medium|high)$/);
+      if (suffix) effectiveEffort = suffix[1];
+    }
     actual = {
       runtime_adapter: agentOk ? requested.runtime_adapter : `agent:${effective.agent}`,
       provider_family: requested.provider_family,
       exact_model: effective.model,
-      effort: effective.effort,
+      effort: effectiveEffort,
     };
   } else {
     // Custom topology: the operator launched the exact argv; the Dispatch
