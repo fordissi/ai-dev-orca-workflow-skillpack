@@ -9,7 +9,10 @@ Orca orchestration re-verified **2026-09-24** against `orca 1.4.209` using the
 installed `orca skills get orchestration --full`, local `--help`, and two bounded
 live `worker-start` probes (Codex, Antigravity); re-verified **2026-10-19** against
 `orca 1.4.229` (compact guide + `--reference` files, local `--help`, one bounded
-Antigravity `worker-start --model` probe) — see the Orca section.
+Antigravity `worker-start --model` probe); re-verified **2026-10-30** against
+`orca 1.4.243` (compact guide, `coordinator-loop` / `worker-contract` references,
+local `worker-start` / `worker-list` / `check --help`; no new live probe) — see
+the Orca section.
 
 Provider-native **resource probe** invocations (Codex `/status`, Claude
 `/usage`, Antigravity `agy --print "/usage" --output-format json`) — verified
@@ -45,10 +48,10 @@ gh repo create --help
 
 | Tool | Version | 來源 |
 |---|---|---|
-| Orca runtime | 1.4.229 | `orca status --json` 的 `runtime.appVersion`（2026-10-19 重新驗證 orchestration；先前 1.4.209、1.4.192） |
-| Codex CLI | 0.151.0 | `codex --version` |
+| Orca runtime | 1.4.243 | `orca --version`（2026-10-30 重新核對 orchestration guide；先前 1.4.229、1.4.209、1.4.192） |
+| Codex CLI | 0.165.0 | `codex --version`（2026-10-30；先前 0.151.0） |
 | Claude Code | 2.1.252 | `claude --version` |
-| Antigravity CLI | 1.1.24 | `agy --version`（重新驗證 2026-09-03；先前記錄 1.1.22） |
+| Antigravity CLI | 1.4.9 | `agy --version`（2026-10-30；先前 1.1.24、1.1.22） |
 | GitHub CLI | 2.92.0 | `gh --version` |
 
 ---
@@ -67,8 +70,16 @@ gh repo create --help
 4. 本 pack 的快取文件（本檔、WORKFLOW_POLICY.md）
 ```
 
+**選定 executable（1.4.243 skill stub）**：有 `ORCA_CLI_COMMAND` 環境變數就用它（Orca 為
+managed WSL session 匯出）；dev checkout（有 `ORCA_DEV_REPO_ROOT`）用 `orca-dev`；Linux
+上 Orca terminal 以外用 `orca-ide`（裸 `orca` 會是 GNOME 螢幕閱讀器）；其餘用 `orca`。
+選定後整個 run 都用同一個；失敗就回報原始錯誤，**不得**換用另一個 executable。命令回
+`runtime_access_denied` 表示 sandbox（例如 Codex 的）擋了連線：以提升權限重跑，**不得**
+`orca open` 或重啟 Orca。
+
 本節依 **orca 1.4.209**（2026-09-24）驗證，**orca 1.4.229**（2026-10-19）重新驗證
-guide 結構、列舉與 Antigravity launch。Normative 協議（wait / worker_done /
+guide 結構、列舉與 Antigravity launch，**orca 1.4.243**（2026-10-30）重新核對 guide 與
+`--help`（無新 live probe）。Normative 協議（wait / worker_done /
 ask / follow-up / recovery）見 [`../policies/WORKFLOW_POLICY.md`](../policies/WORKFLOW_POLICY.md)
 的 `ORCA_WORKER_DISPATCH_REQUIRED` 與 *Orca orchestration 協議*；本節只記命令與實測。
 
@@ -91,6 +102,15 @@ acceptance。`--spec` 一次建立 Task 與其 attempt；有相依或重試已�
 `--help`（1.4.229）明載：`--model` 支援 Claude / Codex / Cursor / Antigravity / Muse
 的 opaque model id；`--effort` 需要 `--model`；兩者不能與 `--terminal` 併用。
 （1.4.209 只列 Claude / Codex / Cursor。）
+
+**1.4.243 launch preferences（2026-10-30，`references/coordinator-loop.md`）**：guide 說
+「只在使用者指名 model 時才傳 `--model`，否則省略以繼承使用者設定的 agent default」。
+本 pack 的 `MODEL_REGISTRY.yaml` 是**人類權威**的選模結果，Router 依 registry 選出的
+exact model 即屬「使用者指名」——**照常傳 `--model` / `--effort`**；省略仍是
+`DEFAULT_FALLBACK_RISK`。connected worker server 必須先 advertise launch-preference
+support，Orca 才會轉送這兩個欄位；沒有時 `launch.effective` 不會等於 requested，
+attestation 照常 fail closed。`--agent` 另列 muse / zcode / opencode / OMP，本 pack
+不路由這些 agent。
 
 #### Live probe（2026-09-24，orca 1.4.209）
 
@@ -449,6 +469,8 @@ Terra 依 human decision 自 registry 0.7 移除（catalog 仍有 `gpt-5.6-terra
 `ultra`），registry 0.9 以它取代 `gpt-6-sol`。同日 12:37 實測：`codex exec -m gpt-6.1-sol` 以
 `low` 與 `medium` 各跑一次，banner 皆回報 `model: gpt-6.1-sol` 與所要求的 effort，回覆 OK。**不得**派 `ultra`：它會讓 Codex 自行分派 subagent，脫離 Orca 監督。
 Cache 也列出 `gpt-6-astra`（未採用）。
+2026-10-30（codex-cli 0.165.0）：cache 新增 `gpt-6.1-terra`（effort low…max，另有 `ultra`）。
+評估後**未採用**，見 `../policies/registry-decisions/2026-10-30-gpt-6-1-terra-and-gemini-4-carbon.md`。
 這是 **provisional-local** 佐證，不是權威的 model discovery endpoint——Codex CLI 未提供
 等同 `agy models` 的列表命令。維持 `evidence_status: provisional`，見
 `references/MODEL_EVIDENCE.md`。

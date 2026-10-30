@@ -1,4 +1,4 @@
-// Supervised-first Orca orchestration protocol (orca 1.4.209; re-verified 1.4.229).
+// Supervised-first Orca orchestration protocol (orca 1.4.209; re-verified 1.4.229, 1.4.243).
 //
 // Source precedence for everything in this file, highest first:
 //   1. installed-version guide: `orca skills get orchestration` (compact kernel)

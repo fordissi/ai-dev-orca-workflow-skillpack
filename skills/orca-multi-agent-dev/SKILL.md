@@ -87,7 +87,8 @@ architecture / security / database specialist 一律套用
 - **預設：`orca orchestration worker-start`**。Codex / Claude / Cursor 一律帶
   `--model <exact> --effort <e>`；Antigravity 帶 `--model <帶 effort 後綴的 catalog id>`
   （如 `gemini-3.8-flash-low`）、不帶 `--effort`（orca 1.4.229 起，2026-10-19 實測）。
-  一律以回條的 **`launch.effective`**（不是 requested）證明 exact model。
+  一律以回條的 **`launch.effective`**（不是 requested）證明 exact model。Orca guide 的
+  「使用者指名才傳 `--model`」不改變這點：registry 選模即人類指名。
 - **`worker-start` 表達不了 exact runtime/model 時**（registry 記為 unsupported 的
   runtime；目前沒有）：operator terminal 以 exact argv 啟動 →
   `terminal wait --for tui-idle` → `orchestration dispatch --task <id> --to <handle>

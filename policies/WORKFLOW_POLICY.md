@@ -265,7 +265,7 @@ terminal create → handle → launch → TERMINAL_STARTED → MODEL_LAUNCHED
 → WORKER_ACTIVE → terminal send → terminal wait → handoff → settle terminal
 ```
 
-新（supervised-first，依 installed orca 1.4.229 orchestration guide；Antigravity 部分 2026-10-19 live probe）：
+新（supervised-first，依 installed orca 1.4.243 orchestration guide（2026-10-30 核對）；Antigravity 部分 2026-10-19 live probe，orca 1.4.229）：
 
 ```text
 Router → runtime_adapter / provider / exact_model / effort
@@ -366,6 +366,13 @@ Runtime support matrix 記在 [`MODEL_REGISTRY.yaml`](MODEL_REGISTRY.yaml) 的
 4. skillpack cached docs（本文件、OFFICIAL_COMMANDS.md）
 ```
 
+- **Executable 只選一次**：`ORCA_CLI_COMMAND` → `orca-dev`（dev checkout）→ `orca-ide`（Linux、
+  Orca terminal 外）→ `orca`，整個 run 沿用；失敗回報原始錯誤，**不得**換 executable。
+  `runtime_access_denied` = sandbox 擋連線：提升權限重跑，**不得** `orca open` / 重啟 Orca。
+  細節見 [`../references/OFFICIAL_COMMANDS.md`](../references/OFFICIAL_COMMANDS.md)。
+- **`--model` 照常傳**：installed guide 要求「使用者指名才傳 `--model`」；registry 的選模
+  就是人類指名，所以 Router 照常帶 `--model` / `--effort`，省略仍是 `DEFAULT_FALLBACK_RISK`。
+
 #### Wait protocol（coordinator）
 
 ```text
@@ -376,10 +383,13 @@ orca orchestration check --wait --types "worker_done,escalation,question" --time
   送 keepalive，stdout 只有最終結果，符合 `NO_LLM_BUSY_POLLING` 的 native watch。
 - 一個 Delivery 是整批 FIFO，未 ack 前會重送：**每則訊息都處理完**、每個已結算
   worker 的 terminal 都決定下一個 owner（reuse / retain / release）之後，才
-  `--ack <delivery_id>`。`--types` 只決定何時喚醒，不授權略過較舊的訊息。
+  `--ack <delivery_id>`。`--types` 只決定何時喚醒，不授權略過較舊的訊息（回傳的
+  Delivery 永遠是整批，不依 type 過濾）。多個 `--wait` 等同一個 inbox 時會拿到同一個
+  Delivery，重複 `--ack` 是 no-op。
 - Timeout 或空結果是 **checkpoint，不是 failure**；連續三次空 wait 後改為
   `worker-list --include-remote --json` 列舉（預設即 bound Run；`--run <run_id>`
-  覆寫，回條的 `scope` 說明用了哪個）。每列依 `projection.attention.categories`、
+  覆寫；回條 `scope.source` 為 `flag` / `bound` / `all`——呼叫端沒有 bound Run 時列的是
+  **所有** Run，先確認 scope 再行事）。每列依 `projection.attention.categories`、
   `projection.attention.requiresAction` 與字面的 `projection.nextAction` argv 行事。
   列表新到舊、每頁 100：`page.hasMore` 為真時以 `--cursor <page.nextCursor>`
   續讀到底，**不得**只看第一頁。`nextAction` 為 `none` 時沒有 argv 可跑：讀
@@ -433,7 +443,14 @@ orca orchestration send --from <handle> --dispatch-capability <cap> --type worke
   `orca orchestration send --to dispatch:<dispatch_id> --subject ... --body ...`；
   **不再**用 `terminal send` 做 tracked-worker follow-up（它繞過 durable inbox）。
 - `send` 成功只證明 durable enqueue，不證明對方已讀。worker 在自然檢查點（開新檔前、
-  測試後）與送 `worker_done` 前各跑一次 `check --terminal <handle> --json`。
+  測試後）與送 `worker_done` 前各跑一次 `check --terminal <handle> --json`；每批處理完
+  就 `check --terminal <handle> --ack <delivery_id> --json`（會回下一批），**重複到
+  `count` 為 0**——未 ack 的批次會一直重送並蓋住較新的訊息。
+- Worker 不得 `run-use` 綁定自己所屬的 Run 或其上層（已綁定的 no-op 除外），也不得
+  `--takeover-legacy`。Worker 可在自己的 Run 上以 `worker-start --spec` 啟動 helper
+  （不 `run-create`）：helper 向該 worker 回報、在 `worker-list` 帶 `creatorDispatchId`，
+  受 `nested_worker_depth_exceeded` 限制（新 Run 不重置 depth），且照樣適用
+  `ORCA_WORKER_DISPATCH_REQUIRED` 與 registry 選模。
 - `check` 回 `consumer_fenced`：此 process 已不擁有該 Dispatch——停止，**不送**
   `worker_done`，不重試。
 - `worker_done`、heartbeat 等 lifecycle 訊息**不得**發給群組地址（`@all`、`@codex`…）。
